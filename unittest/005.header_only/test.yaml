@@ -1,0 +1,12 @@
+description: Build and run an application using a header-only template.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        size=3 sum=6

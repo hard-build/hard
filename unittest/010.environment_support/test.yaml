@@ -1,0 +1,19 @@
+description: Use the force-included environment hard.h in build and test.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        hashable found
+
+  - test:
+      sources:
+        - hashable_test.cpp
+      binaries:
+        hashable_test:
+          passed: 1

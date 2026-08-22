@@ -1,0 +1,43 @@
+description: Build and test every supported source extension.
+
+steps:
+  - build:
+      sources:
+        - .
+
+  - run:
+      binary: c_application
+      exit_code: 0
+      stdout: |
+        source .c
+
+  - run:
+      binary: cc_application
+      exit_code: 0
+      stdout: |
+        source .cc
+
+  - run:
+      binary: cpp_application
+      exit_code: 0
+      stdout: |
+        source .cpp
+
+  - run:
+      binary: plus_application
+      exit_code: 0
+      stdout: |
+        source .c++
+
+  - test:
+      sources:
+        - .
+      binaries:
+        c_test:
+          passed: 1
+        cc_test:
+          passed: 1
+        cpp_test:
+          passed: 1
+        plus_test:
+          passed: 1

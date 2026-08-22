@@ -1,0 +1,12 @@
+description: Build and run one C++ application.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        hello world

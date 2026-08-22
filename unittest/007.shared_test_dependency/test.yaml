@@ -1,0 +1,13 @@
+description: Reuse one production object in two GoogleTest binaries.
+
+steps:
+  - test:
+      sources:
+        - .
+      compiled_once:
+        - counter.cpp
+      binaries:
+        increment_test:
+          passed: 3
+        reset_test:
+          passed: 2

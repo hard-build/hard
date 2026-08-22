@@ -1,0 +1,18 @@
+description: Deliver equal binary basenames without an output collision.
+
+steps:
+  - build:
+      sources:
+        - .
+
+  - run:
+      binary: first/example
+      exit_code: 0
+      stdout: |
+        first example
+
+  - run:
+      binary: second/example
+      exit_code: 0
+      stdout: |
+        second example

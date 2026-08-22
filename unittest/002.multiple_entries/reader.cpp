@@ -1,0 +1,9 @@
+#include <iostream>
+
+#include "common/greeting.h"
+
+int main()
+{
+	std::cout << fixtures::greeting("reader").message() << std::endl;
+	return 0;
+}

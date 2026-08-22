@@ -1,0 +1,20 @@
+description: Build two entry points sharing one implementation.
+
+steps:
+  - build:
+      sources:
+        - .
+      compiled_once:
+        - common/greeting.cpp
+
+  - run:
+      binary: reader
+      exit_code: 0
+      stdout: |
+        hello reader
+
+  - run:
+      binary: writer
+      exit_code: 0
+      stdout: |
+        hello writer

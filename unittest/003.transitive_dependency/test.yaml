@@ -1,0 +1,15 @@
+description: Discover transitive production implementations.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+      compiled_once:
+        - formatter/formatter.cpp
+        - value/value.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        value=42

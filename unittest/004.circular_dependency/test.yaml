@@ -1,0 +1,15 @@
+description: Resolve a cyclic header and implementation graph.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+      compiled_once:
+        - component/component.cpp
+        - container/container.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        [100 200 300]

@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-22.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -138,6 +138,11 @@ directories are treated as persistent cache entries and are not refreshed.
 | `hard.h` | Source environment support header; installations place or link it at `HARD_ROOT/env/HARD_ENV/hard.h` |
 | `format/format.v1` | Default clang-format style |
 | `environment/ubuntu2204.v1.dockerfile` | Ubuntu 22.04 environment image definition |
+| `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
+| `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios |
+| `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
+| `unittest/README.md` | Documents the YAML schema, commands, variables, and new-scenario workflow |
+| `unittest/001.*` through `unittest/010.*` | Self-contained C and C++ source scenarios whose local `test.yaml` files own every command argument and expectation |
 | `hard/go.mod`, `hard/go.sum` | Module identity, Go version, dependencies, and checksums |
 | `hard/main.go` | Process entry, dispatch, configuration loading, and shared search progress |
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
@@ -184,6 +189,11 @@ Indirect Go dependencies:
 
 - `github.com/inconshreveable/mousetrap v1.1.0`;
 - `github.com/spf13/pflag v1.0.9`.
+
+The integration runner below `unittest/` additionally requires Python 3.10 or
+later and `PyYAML>=6.0,<7`. These are test-infrastructure dependencies, not
+dependencies of the installed `hard` command. The runner uses PyYAML's safe
+loader with an added duplicate-key rejection rule.
 
 Do not change these versions or Go 1.23 without a requirement that needs the
 change.
@@ -1005,7 +1015,55 @@ Forward paths use canonical header paths. Object and binary paths use lexical
 absolute source paths. Both reject an environment name that escapes
 `HARD_ROOT/env`.
 
-## External examples and verification projects
+## Integration fixtures and external examples
+
+The repository contains a self-contained positive integration suite below
+`unittest/`. It has ten scenarios, thirteen application entry points, eight
+GoogleTest translation units, and fifteen GoogleTest cases. The scenarios cover
+a minimal application, multiple entries sharing an object, transitive
+implementation discovery, cyclic headers and implementation graphs, a
+header-only template, ordinary GoogleTest production dependencies, an object
+shared by two test plans, all supported source extensions, equal binary
+basenames in different directories, and the force-included environment support
+header.
+
+The self-contained unit is one numbered scenario, not each individual
+GoogleTest `TEST` declaration. Every scenario directory owns one readable
+`test.yaml` containing a description and an ordered `steps` list. Each step
+contains exactly one restricted action:
+
+- `build` runs verbose `hard build` for explicit source arguments and may
+  require exact source labels to compile once;
+- `run` requires the latest build to have copied one regular executable,
+  runs it, and compares the configured exit code and exact stdout/stderr;
+- `test` runs verbose `hard test`, may require exact source labels to
+  compile once, and requires the configured GoogleTest binaries and passing
+  counts.
+
+`unittest/run.py` automatically discovers immediate subdirectories containing
+`test.yaml`, validates the complete YAML schema, and executes steps in file
+order. It rejects unknown actions and fields, duplicate YAML keys, wrong value
+types, absolute or escaping paths, and `run` before `build`. Scenario YAML
+cannot invoke arbitrary shell commands. The runner stops the current scenario
+on its first failure, continues with independent scenarios, and returns one
+aggregate status.
+
+`unittest/Makefile` only passes configuration variables and an optional
+scenario name to the runner. It contains no scenario directory list,
+application names, expected stdout, GoogleTest binary names, or
+source-compilation expectations. The default command is:
+
+    make -C unittest
+
+`PYTHON`, `HARD`, `OUTPUT`, `JOBS`, and `SCENARIO` are Make variables.
+They default to `python3`, the installed `hard` command,
+`/tmp/hard-unittest`, zero, and empty respectively. Zero jobs select all
+logical CPUs through the public `hard` semantics. An empty `SCENARIO`
+discovers every YAML scenario; a name selects only that scenario. Direct
+runner invocation accepts zero or more scenario names. The fixtures use only
+local and system headers, so they require no external repository download.
+Generated headers, objects, and test binaries remain below `HARD_ROOT`;
+delivered application binaries remain below `OUTPUT/<scenario>`.
 
 The main example tree is:
 
@@ -1102,6 +1160,11 @@ to leave the library unchanged for now.
   configured force include remains.
 - The public installed command is `PREFIX/bin/hard`, a shell wrapper around
   `PREFIX/libexec/hard/hard`; data files are installed in `PREFIX/share/hard`.
+- Integration scenarios use a strict, ordered `test.yaml` step list interpreted
+  by one Python runner. Scenario files may use only `build`, `run`, and
+  `test`; they cannot contain arbitrary commands. Immediate directories are
+  discovered automatically, so a new scenario needs only sources and its local
+  YAML file.
 
 ## Known gaps and deliberately unchanged issues
 
@@ -1162,6 +1225,12 @@ to leave the library unchanged for now.
   color, continuation, aggregation, and command rendering.
 - `hard/main_test.go`: normal, verbose, and silent search progress for every
   command while retaining command-specific selection.
+- `unittest/`: ten declarative source-tree scenarios whose local `test.yaml`
+  files require thirteen applications to build and produce exact outputs,
+  eight GoogleTest binaries with fifteen cases to run successfully, automatic
+  dependency sources to be discovered, and one shared production object to
+  compile once; the Python runner validates and executes ordered steps, while
+  the top-level Makefile only passes configuration.
 
 ## Required verification
 
@@ -1221,6 +1290,32 @@ one passing and one failing executable. Confirm both run and aggregate status
 is nonzero. For parallelism changes, compare `-j1` and bare `-j` on
 `/home/taitov/projects/hard-build/library` and confirm shared numbering plus a
 material wall-time improvement.
+
+For `unittest/` fixture, runner, YAML schema, or Makefile changes, first
+verify the documented Python and PyYAML versions. Load every committed
+`test.yaml` through the strict schema and exercise rejection of duplicate
+keys, unknown actions and fields, invalid value types, escaping paths, and
+`run` before `build` using temporary YAML below `/tmp`.
+
+Build the current backend to an unused `/tmp` path and create an isolated
+`HARD_ROOT` containing the current `env/<environment>/hard.h` and format
+file. Run every numbered scenario independently by passing its name to:
+
+    python3 unittest/run.py \
+      --hard <temporary-backend> \
+      --output <temporary-output> \
+      <scenario>
+
+Then run automatic discovery through:
+
+    make -C unittest HARD=<temporary-backend> OUTPUT=<temporary-output>
+
+Require every scenario success message and the final aggregate suite success
+message. The YAML steps for `003.transitive_dependency` and
+`004.circular_dependency` must continue to select only `example.cpp`,
+require the production implementation sources to compile exactly once, and
+run the copied binaries. This verifies dependency discovery instead of relying
+on a full-directory source scan.
 
 ## Last known verification of the support-header rule
 
