@@ -112,8 +112,56 @@ func testSourcesWithProgress(
 	stderr io.Writer,
 	noCache bool,
 ) error {
+	return testSourcesWithProgressSelection(
+		root,
+		environment,
+		compiler,
+		cflags,
+		ldflags,
+		sources,
+		jobs,
+		verbose,
+		silent,
+		noColor,
+		progress,
+		stdout,
+		stderr,
+		noCache,
+		false,
+		nil,
+	)
+}
+
+func testSourcesWithProgressSelection(
+	root string,
+	environment string,
+	compiler string,
+	cflags []string,
+	ldflags []string,
+	sources []string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	noColor bool,
+	progress *progressBar,
+	stdout io.Writer,
+	stderr io.Writer,
+	noCache bool,
+	listTests bool,
+	testSelectors []string,
+) error {
 	if len(sources) == 0 {
-		return progress.finish()
+		var failures []error
+		for _, selector := range testSelectors {
+			failures = append(
+				failures,
+				fmt.Errorf("test selector %q matched no tests", selector),
+			)
+		}
+		if err := progress.finish(); err != nil {
+			failures = append(failures, err)
+		}
+		return errors.Join(failures...)
 	}
 	if jobs < 1 {
 		return errors.Join(fmt.Errorf("jobs must be positive: %d", jobs), progress.finish())
@@ -196,7 +244,11 @@ func testSourcesWithProgress(
 		return errors.Join(errors.Join(failures...), err, progress.finish())
 	}
 
-	progress.setTotal(1 + len(compileSources) + 2*len(plans))
+	stepsPerPlan := 2
+	if len(testSelectors) != 0 {
+		stepsPerPlan = 3
+	}
+	progress.setTotal(1 + len(compileSources) + stepsPerPlan*len(plans))
 	compileResults, err := compileSourceBatchWithCacheDependencies(
 		root,
 		environment,
@@ -260,29 +312,129 @@ func testSourcesWithProgress(
 		})
 	}
 
-	runResults := runTests(runJobs, jobs, verbose, silent, noColor, workingDirectory, progress, cache)
+	if listTests || len(testSelectors) != 0 {
+		listResults := runTestsWithArguments(
+			runJobs,
+			jobs,
+			verbose,
+			silent,
+			workingDirectory,
+			progress,
+			nil,
+			"Listing",
+			testListBinaryArguments(),
+		)
+		catalogs := make([][]string, len(listResults))
+		listingFailures, failedListOutputs := collectTestRunFailures(
+			listResults,
+			verbose,
+			silent,
+		)
+		for index, result := range listResults {
+			if result != nil && result.err == nil {
+				catalogs[index] = parseGoogleTestList(result.output)
+			}
+		}
+		failures = append(failures, listingFailures...)
+
+		if listTests {
+			if err := progress.finish(); err != nil {
+				failures = append(failures, err)
+			}
+			failures = append(
+				failures,
+				writeFailedTestOutputs(failedListOutputs, verbose, silent, stdout, stderr)...,
+			)
+			if err := writeTestCatalogs(stdout, runJobs, catalogs); err != nil {
+				failures = append(failures, err)
+			}
+			return errors.Join(failures...)
+		}
+
+		selectionFailed := len(listingFailures) != 0
+		for _, selector := range unmatchedTestSelectors(testSelectors, catalogs) {
+			selectionFailed = true
+			failures = append(
+				failures,
+				fmt.Errorf("test selector %q matched no tests", selector),
+			)
+		}
+		if selectionFailed {
+			if err := progress.finish(); err != nil {
+				failures = append(failures, err)
+			}
+			failures = append(
+				failures,
+				writeFailedTestOutputs(failedListOutputs, verbose, silent, stdout, stderr)...,
+			)
+			return errors.Join(failures...)
+		}
+	}
+
+	runResults := runTestsWithArguments(
+		runJobs,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		cache,
+		"Testing",
+		testBinaryArguments(noColor, testSelectors),
+	)
 	if err := progress.finish(); err != nil {
 		failures = append(failures, err)
 	}
-	var failedTestOutputs [][]byte
-	for _, result := range runResults {
-		if result.err != nil {
-			failures = append(failures, result.err)
-			if (!verbose || silent) && len(result.output) != 0 {
-				failedTestOutputs = append(failedTestOutputs, result.output)
-			}
+	runFailures, failedTestOutputs := collectTestRunFailures(runResults, verbose, silent)
+	failures = append(failures, runFailures...)
+	failures = append(
+		failures,
+		writeFailedTestOutputs(failedTestOutputs, verbose, silent, stdout, stderr)...,
+	)
+	return errors.Join(failures...)
+}
+
+func collectTestRunFailures(
+	results []*testRunResult,
+	verbose bool,
+	silent bool,
+) ([]error, [][]byte) {
+	var failures []error
+	var outputs [][]byte
+	for index, result := range results {
+		if result == nil {
+			failures = append(failures, fmt.Errorf("test run %d: not run", index))
+			continue
+		}
+		if result.err == nil {
+			continue
+		}
+		failures = append(failures, result.err)
+		if (!verbose || silent) && len(result.output) != 0 {
+			outputs = append(outputs, result.output)
 		}
 	}
+	return failures, outputs
+}
+
+func writeFailedTestOutputs(
+	outputs [][]byte,
+	verbose bool,
+	silent bool,
+	stdout io.Writer,
+	stderr io.Writer,
+) []error {
+	var failures []error
 	failedTestOutputWriter := stderr
 	if !verbose && !silent {
 		failedTestOutputWriter = stdout
 	}
-	for _, output := range failedTestOutputs {
+	for _, output := range outputs {
 		if _, err := io.Copy(failedTestOutputWriter, bytes.NewReader(output)); err != nil {
 			failures = append(failures, fmt.Errorf("write failed test output: %w", err))
 		}
 	}
-	return errors.Join(failures...)
+	return failures
 }
 
 func prepareTest(
@@ -744,6 +896,30 @@ func runTests(
 	progress *progressBar,
 	cache *artifactCache,
 ) []*testRunResult {
+	return runTestsWithArguments(
+		tasks,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		cache,
+		"Testing",
+		testBinaryArguments(noColor, nil),
+	)
+}
+
+func runTestsWithArguments(
+	tasks []testRunJob,
+	jobs int,
+	verbose bool,
+	silent bool,
+	workingDirectory string,
+	progress *progressBar,
+	cache *artifactCache,
+	action string,
+	arguments []string,
+) []*testRunResult {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -753,7 +929,6 @@ func runTests(
 	}
 	queue := make(chan testRunJob)
 	results := make(chan testRunResult, len(tasks))
-	arguments := testBinaryArguments(noColor)
 
 	var workers sync.WaitGroup
 	for worker := 0; worker < workerCount; worker++ {
@@ -772,7 +947,7 @@ func runTests(
 					detail = append(detail, renderTestCommand(job.binary, arguments)...)
 					detail = append(detail, output...)
 				}
-				step := "Testing " + sourceBinaryName(job.source)
+				step := action + " " + sourceBinaryName(job.source)
 				if cached {
 					step += " (CACHED)"
 				}
@@ -887,11 +1062,133 @@ func pkgConfigFlags(option, workingDirectory string, stderr io.Writer) ([]string
 	return flags, nil
 }
 
-func testBinaryArguments(noColor bool) []string {
-	if noColor {
-		return []string{"--gtest_color=no"}
+func testBinaryArguments(noColor bool, selectors []string) []string {
+	arguments := make([]string, 0, 2)
+	if len(selectors) != 0 {
+		arguments = append(arguments, "--gtest_filter="+strings.Join(selectors, ":"))
 	}
-	return []string{"--gtest_color=yes"}
+	if noColor {
+		return append(arguments, "--gtest_color=no")
+	}
+	return append(arguments, "--gtest_color=yes")
+}
+
+func testListBinaryArguments() []string {
+	return []string{"--gtest_list_tests", "--gtest_color=no"}
+}
+
+func parseGoogleTestList(output []byte) []string {
+	var tests []string
+	suite := ""
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		if line[0] != ' ' && line[0] != '\t' {
+			name := googleTestListName(line)
+			if strings.HasSuffix(name, ".") {
+				suite = strings.TrimSuffix(name, ".")
+			} else {
+				suite = ""
+			}
+			continue
+		}
+		if suite == "" {
+			continue
+		}
+		name := googleTestListName(strings.TrimSpace(line))
+		if name != "" {
+			tests = append(tests, suite+"."+name)
+		}
+	}
+	return tests
+}
+
+func googleTestListName(line string) string {
+	if index := strings.Index(line, "  #"); index >= 0 {
+		line = line[:index]
+	}
+	return strings.TrimSpace(line)
+}
+
+func unmatchedTestSelectors(selectors []string, catalogs [][]string) []string {
+	var unmatched []string
+	for _, selector := range selectors {
+		matched := false
+		for _, catalog := range catalogs {
+			for _, test := range catalog {
+				if matchTestSelector(selector, test) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			unmatched = append(unmatched, selector)
+		}
+	}
+	return unmatched
+}
+
+func matchTestSelector(selector, name string) bool {
+	current := make([]bool, len(name)+1)
+	current[0] = true
+	for index := 0; index < len(selector); index++ {
+		next := make([]bool, len(name)+1)
+		switch selector[index] {
+		case '*':
+			next[0] = current[0]
+			for nameIndex := 1; nameIndex <= len(name); nameIndex++ {
+				next[nameIndex] = next[nameIndex-1] || current[nameIndex]
+			}
+		case '?':
+			for nameIndex := 1; nameIndex <= len(name); nameIndex++ {
+				next[nameIndex] = current[nameIndex-1]
+			}
+		default:
+			for nameIndex := 1; nameIndex <= len(name); nameIndex++ {
+				next[nameIndex] = current[nameIndex-1] &&
+					selector[index] == name[nameIndex-1]
+			}
+		}
+		current = next
+	}
+	return current[len(name)]
+}
+
+func writeTestCatalogs(
+	writer io.Writer,
+	tasks []testRunJob,
+	catalogs [][]string,
+) error {
+	var output strings.Builder
+	if len(tasks) == 1 {
+		for _, test := range catalogs[0] {
+			output.WriteString(test)
+			output.WriteByte('\n')
+		}
+	} else {
+		for index, task := range tasks {
+			if index != 0 {
+				output.WriteByte('\n')
+			}
+			output.WriteString(task.source)
+			output.WriteString(":\n")
+			for _, test := range catalogs[index] {
+				output.WriteString("  ")
+				output.WriteString(test)
+				output.WriteByte('\n')
+			}
+		}
+	}
+	if _, err := io.WriteString(writer, output.String()); err != nil {
+		return fmt.Errorf("write test list: %w", err)
+	}
+	return nil
 }
 
 func renderTestCommand(binary string, arguments []string) []byte {

@@ -487,6 +487,73 @@ func TestRunTestsCachesOnlySuccessfulResults(t *testing.T) {
 	}
 }
 
+func TestRunTestsCacheSeparatesSelectorsAndNeverCachesListing(t *testing.T) {
+	directory := t.TempDir()
+	binary := filepath.Join(directory, "pass_test")
+	log := filepath.Join(directory, "test.log")
+	t.Setenv("CACHE_LOG", log)
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$CACHE_LOG\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake test binary: %v", err)
+	}
+	task := testRunJob{source: "pass_test.cpp", binary: binary}
+
+	run := func(arguments []string, cache *artifactCache, action string) string {
+		t.Helper()
+		var stdout bytes.Buffer
+		progress := newProgressBar(&stdout, 1, false, false, true)
+		results := runTestsWithArguments(
+			[]testRunJob{task},
+			1,
+			false,
+			false,
+			directory,
+			progress,
+			cache,
+			action,
+			arguments,
+		)
+		if err := progress.finish(); err != nil {
+			t.Fatalf("progress.finish() error = %v", err)
+		}
+		if len(results) != 1 || results[0] == nil || results[0].err != nil {
+			t.Fatalf("runTestsWithArguments() results = %#v", results)
+		}
+		return stdout.String()
+	}
+
+	firstSelector := testBinaryArguments(true, []string{"Suite.First"})
+	if output := run(firstSelector, newTestArtifactCache(t, true), "Testing"); strings.Contains(output, "(CACHED)") {
+		t.Fatalf("first selector output = %q, want cache miss", output)
+	}
+	if output := run(firstSelector, newTestArtifactCache(t, true), "Testing"); !strings.Contains(output, "(CACHED)") {
+		t.Fatalf("repeated selector output = %q, want cache hit", output)
+	}
+	secondSelector := testBinaryArguments(true, []string{"Suite.Second"})
+	if output := run(secondSelector, newTestArtifactCache(t, true), "Testing"); strings.Contains(output, "(CACHED)") {
+		t.Fatalf("different selector output = %q, want cache miss", output)
+	}
+	listArguments := testListBinaryArguments()
+	for attempt := 0; attempt < 2; attempt++ {
+		if output := run(listArguments, nil, "Listing"); strings.Contains(output, "(CACHED)") {
+			t.Fatalf("listing attempt %d output = %q, want cache miss", attempt+1, output)
+		}
+	}
+
+	got := readTestFile(t, log)
+	want := strings.Join([]string{
+		"--gtest_filter=Suite.First --gtest_color=no",
+		"--gtest_filter=Suite.Second --gtest_color=no",
+		"--gtest_list_tests --gtest_color=no",
+		"--gtest_list_tests --gtest_color=no",
+		"",
+	}, "\n")
+	if got != want {
+		t.Fatalf("test invocation log = %q, want %q", got, want)
+	}
+}
+
 func TestSourceParseCacheUsesDependencySnapshotAndNoCacheRefreshes(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()

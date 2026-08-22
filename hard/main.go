@@ -86,7 +86,7 @@ func main() {
 		}
 		return
 	}
-	if err := testSourcesWithProgress(
+	if err := testSourcesWithProgressSelection(
 		configuration.root,
 		configuration.env,
 		configuration.cc,
@@ -101,6 +101,8 @@ func main() {
 		os.Stdout,
 		os.Stderr,
 		parsed.noCache,
+		parsed.listTests,
+		parsed.testSelectors,
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 		os.Exit(1)

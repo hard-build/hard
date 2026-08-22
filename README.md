@@ -70,7 +70,8 @@ The public interface contains exactly these commands:
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [-s|--silent] [path...]
-hard test   [--no-cache] [-s|--silent] [path...]
+hard test   [--list-tests] [--test=<selector>]...
+            [--no-cache] [-s|--silent] [path...]
 ```
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
@@ -510,11 +511,69 @@ omit `Downloading`, but search and parsing are still reported.
 ### `hard test`
 
 ```bash
-hard test [--no-cache] [-s|--silent] [path...]
+hard test [--list-tests] [--test=<selector>]... \
+  [--no-cache] [-s|--silent] [path...]
 ```
 
-Every selected test source is built and run as a separate executable. Before
-processing a non-empty selection, `hard` obtains GoogleTest flags with:
+Every selected test source is built and run as a separate executable.
+
+Without a selection flag, every test in every selected executable runs.
+`--list-tests` builds the selected executables and prints the test names
+reported by them without running the tests. For one selected source, the
+normalized output contains one full name per line:
+
+```text
+Random.ReturnsValue
+Random.RejectsInvalidRange
+SeededRandom.IsRepeatable
+```
+
+For multiple selected sources, each list is grouped below the lexical source
+path:
+
+```text
+tests/random_test.cpp:
+  Random.ReturnsValue
+  Random.RejectsInvalidRange
+
+tests/parser_test.cpp:
+  Parser.AcceptsValidInput
+  Parser.RejectsInvalidInput
+```
+
+`--test=<selector>` runs only matching full test names and may be repeated.
+A selector without wildcards is exact. `*` matches any number of characters,
+including zero, and `?` matches exactly one character:
+
+```bash
+hard test --test=Random.ReturnsValue tests/random_test.cpp
+hard test --test='Random.*' tests/random_test.cpp
+hard test --test='Parser.Test?' tests/parser_test.cpp
+hard test \
+  --test='Random.Returns*' \
+  --test='Parser.Test?' \
+  tests
+```
+
+Quote selectors containing `*` or `?` so the invoking shell does not expand
+them. Repeated selectors form one positive selection. Empty selectors, `:`,
+and `-` are rejected; negative filtering is not part of the public interface.
+`--list-tests` and `--test` cannot be combined.
+
+Before filtered execution, `hard` asks every successfully linked executable
+for its actual test list. Every selector must match at least one test across
+the complete invocation. A selector may match no tests in an individual
+executable when it matches another selected executable, but a selector that
+matches nowhere is an error and no filtered test execution begins. Internally,
+`hard` converts the validated selectors to the corresponding GoogleTest
+filter. GoogleTest-specific command-line arguments are not part of the
+`hard test` interface.
+
+The list produced by `--list-tests` is command output rather than progress.
+It is therefore written to stdout even with `--silent`; that flag still
+hides search, parse, compile, link, and listing progress.
+
+Before processing a non-empty selection, `hard` obtains GoogleTest flags with:
 
 ```text
 pkg-config --cflags gtest_main
@@ -576,7 +635,16 @@ Source parse records use the same persistent analysis cache. A hit is reported
 as `Parsing <source> (CACHED)`.
 Compilation and linking use the same content cache as `hard build`. After a
 test executable exits successfully, `hard` also stores a successful-result
-record beside it.
+record beside it. The converted selector vector is part of that record's key,
+so exact tests, wildcard selectors, and selector combinations are cached
+independently. Repeating an unchanged filtered invocation can therefore report
+`Testing <binary> (CACHED)`.
+
+Listing is never cached as a successful test result because its normalized
+output is the requested result. A repeated `--list-tests` invocation executes
+the lightweight discovery mode again while still reusing eligible parsing,
+compilation, and linking artifacts. Selector validation also performs real
+discovery before considering a cached filtered result.
 An unchanged binary with the same test arguments and working directory is not
 run again; its progress entry is `Testing <binary> (CACHED)`.
 Failed tests are never cached, and a record is invalidated before an actual
@@ -590,13 +658,17 @@ The work is divided into invocation-wide phases:
 1. prepare the dependency closure and source forward of each selected test;
 2. compile each unique object;
 3. link every test whose required objects compiled successfully;
-4. run every successfully linked test.
+4. list tests when `--list-tests` or `--test` was requested;
+5. validate selectors and run every successfully linked test unless the
+   command is list-only.
 
 Each phase uses at most the selected `-j` worker count without multiplying
 that limit through nested pools. Link jobs and test executables from different
-test files therefore run concurrently. A preparation, compilation, or link
-failure skips only test plans that require the failed work; independent tests
-continue.
+test files therefore run concurrently. List-only progress uses
+`Listing <binary>` instead of `Testing <binary>`. Filtered execution has
+both steps for every successfully linked binary. A preparation, compilation,
+or link failure skips only test plans that require the failed work; independent
+tests continue.
 A nonzero test result is recorded while other tests continue. The command
 returns nonzero after all safe independent work has been attempted if any
 preparation, compilation, link, progress-output, process-start, or
@@ -604,9 +676,12 @@ test-execution step failed.
 
 All successfully prepared test plans share one progress counter. Its total is
 one preparation step plus the number of unique compiled sources and one link
-step and one test step for every test executable. A shared production source
-contributes one compilation step even when several tests use it. Four
-header-only tests use one continuous counter:
+step for every test executable. A normal invocation adds one test step per
+executable. A list-only invocation adds one listing step instead. A filtered
+invocation adds both listing and testing steps. A shared production source
+contributes one compilation step even when several tests use it.
+
+Four header-only tests without selectors use one continuous counter:
 
 ```text
 [1/?] Searching source files

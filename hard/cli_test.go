@@ -110,6 +110,35 @@ func TestParseArguments(t *testing.T) {
 			want: arguments{command: "test", paths: []string{"tests/unit"}, noCache: true},
 		},
 		{
+			name: "test lists selected source tests",
+			args: []string{"test", "--list-tests", "tests/unit"},
+			want: arguments{command: "test", paths: []string{"tests/unit"}, listTests: true},
+		},
+		{
+			name: "test accepts repeated selectors",
+			args: []string{
+				"test",
+				"--test=Random.Returns*",
+				"tests/random_test.cpp",
+				"--test",
+				"Parser.Test?",
+			},
+			want: arguments{
+				command:       "test",
+				paths:         []string{"tests/random_test.cpp"},
+				testSelectors: []string{"Random.Returns*", "Parser.Test?"},
+			},
+		},
+		{
+			name: "test selector defaults to current directory",
+			args: []string{"test", "--test=Random.ReturnsValue"},
+			want: arguments{
+				command:       "test",
+				paths:         []string{"."},
+				testSelectors: []string{"Random.ReturnsValue"},
+			},
+		},
+		{
 			name: "short verbose flag before command",
 			args: []string{"-v", "build", "src"},
 			want: arguments{command: "build", paths: []string{"src"}, verbose: true},
@@ -243,6 +272,28 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 		{name: "test rejects output flag", args: []string{"test", "--output=binary"}, wantErr: "unknown flag"},
 		{name: "format rejects no-cache flag", args: []string{"format", "--no-cache"}, wantErr: "unknown flag"},
 		{name: "fetch rejects no-cache flag", args: []string{"fetch", "--no-cache"}, wantErr: "unknown flag"},
+		{
+			name:    "test rejects list with selector",
+			args:    []string{"test", "--list-tests", "--test=Suite.Case"},
+			wantErr: "--list-tests and --test cannot be used together",
+		},
+		{
+			name:    "test rejects empty selector",
+			args:    []string{"test", "--test="},
+			wantErr: "test selector must not be empty",
+		},
+		{
+			name:    "test rejects selector separator",
+			args:    []string{"test", "--test=Suite.One:Suite.Two"},
+			wantErr: "test selector must not contain ':'",
+		},
+		{
+			name:    "test rejects negative filter syntax",
+			args:    []string{"test", "--test=Suite.*-Suite.Slow"},
+			wantErr: "test selector must not contain '-'",
+		},
+		{name: "build rejects list-tests flag", args: []string{"build", "--list-tests"}, wantErr: "unknown flag"},
+		{name: "build rejects test selector", args: []string{"build", "--test=Suite.Case"}, wantErr: "unknown flag"},
 	}
 
 	for _, tt := range tests {
@@ -313,7 +364,16 @@ func TestHelp(t *testing.T) {
 		{
 			name: "test",
 			args: []string{"test", "--help"},
-			want: []string{"hard test [path...]", "-j, --jobs", "--no-cache", "--no-color", "-s, --silent", "-v, --verbose"},
+			want: []string{
+				"hard test [--list-tests] [--test=<selector>]... [path...]",
+				"-j, --jobs",
+				"--list-tests",
+				"--no-cache",
+				"--no-color",
+				"-s, --silent",
+				"--test stringArray",
+				"-v, --verbose",
+			},
 		},
 	}
 
@@ -347,6 +407,9 @@ func TestHelp(t *testing.T) {
 			}
 			if tt.name != "build" && tt.name != "test" && strings.Contains(help, "--no-cache") {
 				t.Errorf("help contains build/test-only no-cache flag:\n%s", help)
+			}
+			if tt.name != "test" && (strings.Contains(help, "--list-tests") || strings.Contains(help, "--test")) {
+				t.Errorf("help contains test-only selection flag:\n%s", help)
 			}
 		})
 	}

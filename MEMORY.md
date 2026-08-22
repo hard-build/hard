@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-22.
+Last updated: 2026-08-23.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -113,8 +113,10 @@ Implemented:
   with `--no-cache` rebuild and rerun support;
 - persistent semantic libclang result caching for build/test source
   analysis, including `(CACHED)` preparation output and `--no-cache` refresh;
-- GoogleTest discovery, compilation, linking, parallel execution, output
-  grouping, and failure aggregation;
+- hard-owned GoogleTest listing and repeated exact or `*`/`?` selector
+  syntax with validation and internal GoogleTest-filter conversion;
+- GoogleTest compilation, linking, parallel execution, output grouping, and
+  failure aggregation;
 - the standalone `fetch` command;
 - a POSIX command wrapper and Make-based user-local build and installation;
 - exclusion of environment support `hard.h` declarations from source forwards
@@ -150,8 +152,8 @@ cache entries and are not refreshed automatically.
 | `hard/go.mod`, `hard/go.sum` | Module identity, Go version, dependencies, and checksums |
 | `hard/main.go` | Process entry, dispatch, configuration loading, and shared search progress |
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
-| `hard/cli.go` | Cobra command tree, flags, positional paths, and job normalization |
-| `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, and job forms |
+| `hard/cli.go` | Cobra command tree, flags, positional paths, test selectors, and job normalization |
+| `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, test selection, and job forms |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
 | `hard/source.go` | File classification, recursive discovery, symlink traversal, and deduplication |
@@ -171,12 +173,12 @@ cache entries and are not refreshed automatically.
 | `hard/entry_test.go` | Definitions, declarations, namespaces, macros, ambiguity, and empty config |
 | `hard/build.go` | Dependency closure, support-header exclusion, compilation, link graph, and delivery |
 | `hard/cache.go` | Content fingerprints, atomic artifact and parse-result records, semantic-result integrity, and file comparison |
-| `hard/cache_test.go` | Artifact and parse cache keys, invalidation, no-cache, integrity, forward restoration, and successful-test reuse |
+| `hard/cache_test.go` | Artifact and parse cache keys, invalidation, no-cache, integrity, forward restoration, selector separation, and successful-test reuse |
 | `hard/build_test.go` | Dependency, forwards, objects, entry binaries, output, and integrations |
 | `hard/fetch.go` | Dependency-only source closure and external snapshot fetching |
 | `hard/fetch_test.go` | Fetch progress, recursive repositories, caching, and absence of build artifacts |
-| `hard/test.go` | GoogleTest flags, plans, shared compilation, linking, and execution |
-| `hard/test_test.go` | Tool discovery, parallel phases, output modes, failures, and artifacts |
+| `hard/test.go` | GoogleTest listing, selector validation, plans, shared compilation, linking, caching, and execution |
+| `hard/test_test.go` | Tool and test discovery, wildcard selectors, parallel phases, output modes, failures, and artifacts |
 
 ## Toolchain and dependencies
 
@@ -269,7 +271,8 @@ The public command forms are:
     hard format [--format=<name>] [-s|--silent] [path...]
     hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
     hard fetch  [-s|--silent] [path...]
-    hard test   [--no-cache] [-s|--silent] [path...]
+    hard test   [--list-tests] [--test=<selector>]...
+                [--no-cache] [-s|--silent] [path...]
 
 Persistent flags accepted by every command:
 
@@ -289,6 +292,8 @@ Command-local flags:
 - every public command: `-s`, `--silent`;
 - `build`: `-o <path>`, `--output=<path>`;
 - `build` and `test`: `--no-cache`;
+- `test`: `--list-tests` or repeatable `--test=<selector>`, which are
+  mutually exclusive;
 - `fetch` and `test` do not accept `--format` or `--output`.
 
 Other CLI decisions:
@@ -304,10 +309,11 @@ Other CLI decisions:
 - root help exposes only `format`, `fetch`, `build`, and `test`.
 
 The parsed `arguments` value contains `command`, `paths`, `verbose`, `silent`,
-`noColor`, `noCache`, `jobs`, `format`, and `output`. Only `build` populates
-`output`; only `build` and `test` can set `noCache`. The raw output spelling
-preserves a trailing path separator because that separator declares directory
-intent.
+`noColor`, `noCache`, `listTests`, `testSelectors`, `jobs`, `format`,
+and `output`. Only `build` populates `output`; only `build` and `test` can
+set `noCache`; only `test` populates listing or selectors. The raw output
+spelling preserves a trailing path separator because that separator declares
+directory intent.
 
 ## Configuration contract
 
@@ -487,9 +493,10 @@ without advancing the counter. A negative total is displayed as `?`.
   binaries`; compilation begins at `[2/M]`.
 - `fetch`: search, parsing, and downloads form its single preparation step;
   live output stays `[1/?]` and final total is one.
-- `test`: search, parsing, and downloads reuse preparation step one; total is
-  `1 + unique compilations + 2 * prepared test executables`; compilation
-  begins at `[2/M]`.
+- `test`: search, parsing, and downloads reuse preparation step one. Ordinary
+  and list-only runs use `1 + unique compilations + 2 * prepared test
+  executables`; filtered runs use one additional listing step per prepared
+  executable. Compilation begins at `[2/M]`.
 
 Progress labels:
 
@@ -498,7 +505,8 @@ Progress labels:
   `Compiling ...`, `Linking ...`, `Copying ...`;
 - fetch: `Searching source files`, `Parsing ...`, `Downloading ...`;
 - test: `Searching source files`, `Parsing ...`, `Downloading ...`,
-  `Compiling ...`, `Linking ...`, `Testing ...`.
+  `Compiling ...`, `Linking ...`, `Listing ...`, `Testing ...`, with listing
+  present only when requested or required for selector validation.
 
 Paths below canonical `HARD_ROOT/source/github.com` are displayed relative to
 `HARD_ROOT/source`, for example
@@ -989,6 +997,40 @@ fetch still reports search and parsing but no Downloading activity.
 Test root selection includes only case-insensitive `*_test.c`, `*_test.cc`,
 `*_test.cpp`, and `*_test.c++`.
 
+The command owns its selection syntax:
+
+    hard test --list-tests [path...]
+    hard test --test=<selector> [--test=<selector>...] [path...]
+
+Without either flag, every test runs. `--list-tests` and `--test` are
+mutually exclusive. Listing builds and links each selected test executable,
+runs GoogleTest discovery without the successful-test cache, parses its output,
+and prints normalized full test names. One source produces one name per line.
+Multiple sources produce lexical source headings with indented names.
+`--silent` hides progress but not this requested list output.
+
+`--test` is repeatable. Each value is one positive full-name selector:
+`*` matches zero or more bytes and `?` matches exactly one byte. A selector
+without either wildcard is exact. Empty values, `:`, and `-` are rejected;
+there is no public negative-filter or raw GoogleTest-argument passthrough.
+Shell callers quote wildcard selectors. Validated selectors are joined
+internally as one GoogleTest positive filter, followed by hard's authoritative
+GoogleTest color argument.
+
+Filtered execution first runs uncached GoogleTest discovery on every
+successfully linked binary. Every selector must match at least one listed test
+across the complete invocation. It may match no test in one binary when it
+matches another, but any globally unmatched selector is an error and prevents
+the filtered execution phase. Discovery understands ordinary, typed, and
+parameterized GoogleTest list names by combining each suite heading and
+indented test name while removing GoogleTest's trailing explanatory comments.
+
+The converted selector argument participates in the successful-test cache
+fingerprint, so exact, wildcard, and repeated-selector combinations have
+independent records. A repeated filtered execution may report
+`Testing <binary> (CACHED)`, but discovery still runs first to validate the
+current public selector.
+
 For a non-empty selection it obtains flags using:
 
     pkg-config --cflags gtest_main
@@ -1015,12 +1057,15 @@ For each selected test root:
    dependency lists for a shared object;
 6. compile each unique source once;
 7. link each test with its reachable production objects and gtest_main flags;
-8. run each successfully linked test.
+8. list tests when listing or selectors require discovery;
+9. validate selectors and run each successfully linked test unless the
+   invocation is list-only.
 
 Separate test closures are prepared concurrently, but each worker uses one
 sequential closure walk. There is no nested `N x N` worker multiplication.
-Source preparation, global compilation, test linking, and test execution are
-separate invocation-wide phases, each with at most `-j` workers.
+Source preparation, global compilation, test linking, listing, and test
+execution are separate invocation-wide phases, each with at most `-j`
+workers.
 
 The link shape is:
 
@@ -1038,22 +1083,31 @@ skips only that test's execution. A process-start error or nonzero test status
 is recorded while other scheduled tests continue. All failures are joined for
 the final result.
 
-The shared total is:
+The normal and list-only shared total is:
 
     1 + unique compiled sources + 2 * prepared test executables
 
-The counter never resets. Compilation, linking, and testing entries occur in
-completion order. Skipped work can leave the final displayed counter below the
-planned total.
+Normal mode assigns the two per-test steps to linking and testing. List-only
+mode assigns them to linking and listing. A filtered invocation uses:
+
+    1 + unique compiled sources + 3 * prepared test executables
+
+for linking, listing, and testing. The counter never resets. Phase entries
+occur in completion order. Skipped work, including testing prevented by an
+unmatched selector, can leave the final displayed counter below the planned
+total.
 
 Output behavior:
 
 - normal captures combined test stdout/stderr, discards successful output, and
   writes failed output after the progress line finishes;
 - verbose attaches the test command and complete captured output atomically to
-  its completed Testing entry; parallel blocks cannot interleave;
+  its completed Listing or Testing entry; parallel blocks cannot interleave;
 - silent hides progress, verbose commands, successful tool diagnostics, and
   successful tests, but writes failed test output and build errors to stderr;
+- normalized `--list-tests` names are always stdout command output, including
+  in silent mode; raw successful GoogleTest listing output follows only a
+  verbose Listing entry;
 - without `--no-color`, every captured GoogleTest receives
   `--gtest_color=yes` so its output remains colored;
 - with `--no-color`, every test receives `--gtest_color=no`.
@@ -1064,6 +1118,9 @@ Compilation and linking share the build content cache. A successful test run
 writes `<internal-test-binary>.hard-test-cache.json`; its key contains the
 binary path and digest, test arguments, working directory, and `hard` digest.
 A valid hit skips process execution and reports `Testing <binary> (CACHED)`.
+Converted selectors are test arguments and therefore separate cache keys.
+Listing and selector-validation discovery deliberately receive no
+successful-test cache.
 The record is invalidated before every actual run and stored only after exit
 status zero, so failures are never cached. Runtime state outside the binary,
 arguments, and working directory is not inferred; use `hard test --no-cache`
@@ -1252,6 +1309,10 @@ to leave the library unchanged for now.
 - Test uses GoogleTest, has one invocation-wide progress total, hides successful
   output in normal mode, preserves failure output, supports silent mode, and
   parallelizes actual test processes.
+- Test listing and selection use hard-owned `--list-tests` and repeatable
+  `--test` syntax. Selectors are positive full-name patterns with only `*` and
+  `?`; hard validates them against real discovery and converts them internally
+  to one GoogleTest filter instead of exposing raw GoogleTest arguments.
 - An include beginning with `github.com/` triggers a default-branch snapshot,
   not a Git clone, below `HARD_ROOT/source`.
 - `hard/...` is the well-known alias for
@@ -1342,7 +1403,8 @@ to leave the library unchanged for now.
   token, standard-library parse reuse, `HARD_ENV` handling of `-isystem` header
   changes, source-forward restoration, no-cache refresh,
   compile/link/delivery reuse, build/test `Parsing ... (CACHED)` output, and
-  successful-only test-result reuse.
+  successful-only test-result reuse with selector-separated keys and uncached
+  listing.
 - `hard/fetch_test.go`: empty no-op, search/parse progress, recursive repository
   downloads, shared progress step, install order, cached reuse, absence of
   environment build artifacts and compiler arguments, and invalid job counts.
@@ -1350,8 +1412,9 @@ to leave the library unchanged for now.
   production objects, support-header exception, internal test binaries, common
   progress, shared-object compilation, global worker limits, grouped verbose
   output, successful-output suppression, failure output, silence, GoogleTest
-  color, continuation, aggregation, command rendering, and cache-aware helper
-  signatures.
+  color, normalized listing, exact and wildcard selectors, unmatched-selector
+  rejection, continuation, aggregation, command rendering, and cache-aware
+  helper signatures.
 - `hard/main_test.go`: normal, verbose, and silent search progress for every
   command while retaining command-specific selection.
 - `unittest/`: ten declarative source-tree scenarios whose local `test.yaml`
@@ -1416,7 +1479,11 @@ cache. Use a separate fresh root for subsequent build verification.
 
 For test changes, run a real GoogleTest under an isolated root and a pair with
 one passing and one failing executable. Confirm both run and aggregate status
-is nonzero. For parallelism changes, compare `-j1` and bare `-j` on
+is nonzero. For listing or selection changes, additionally verify normalized
+single- and multi-source lists, exact and repeated selection, quoted `*` and
+`?` patterns, rejection of an unmatched selector before execution, selector-
+specific successful-result caching, and uncached discovery on repeated list
+and filtered invocations. For parallelism changes, compare `-j1` and bare `-j` on
 `/home/taitov/projects/hard-build/library` and confirm shared numbering plus a
 material wall-time improvement.
 
@@ -1545,6 +1612,31 @@ its dependency. The second build reported 23 cached analyses; nlohmann
 `json.hpp` remained the sole direct input parsed again because it contains
 `__has_include`. The measured wall times were 30.60 seconds for the first build
 and 23.80 seconds for the second build.
+
+## Last known verification of hard test selection
+
+On 2026-08-23, the hard-owned GoogleTest listing and selection interface passed
+clean gofmt, ordinary and race tests, vet, an out-of-tree backend build, module
+verification, and repository diff checking.
+
+With GoogleTest 1.14.0 and an isolated `HARD_ROOT`, a single-source list
+reported five normalized `calculator_test.*` names. Repeating it reused
+parsing, compilation, and linking while executing `Listing calculator_test`
+again. A repeated exact selector still performed listing and then reported
+`Testing calculator_test (CACHED)`.
+
+One filtered run used the repeated selectors
+`calculator_test.?dds_values` and `calculator_test.*zero`. The rendered
+GoogleTest filter preserved both patterns and exactly the expected two cases
+passed. A two-source silent list printed lexical source headings and five
+normalized names. Repeated exact selectors matching different binaries ran one
+case in each. An unmatched selector returned status 1 after listing both
+binaries and before any Testing entry.
+
+A separate real passing/failing pair scheduled both test binaries and returned
+status 1 after the expected failure. Finally, all ten declarative integration
+scenarios passed with the newly built backend, including eight GoogleTest
+binaries and fifteen successful cases.
 
 ## Last known verification of source-context forwards
 

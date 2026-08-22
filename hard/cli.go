@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -13,15 +14,17 @@ const defaultFormat = "format.v1"
 const defaultJobs = 1
 
 type arguments struct {
-	command string
-	paths   []string
-	verbose bool
-	silent  bool
-	noColor bool
-	noCache bool
-	jobs    int
-	format  string
-	output  string
+	command       string
+	paths         []string
+	verbose       bool
+	silent        bool
+	noColor       bool
+	noCache       bool
+	listTests     bool
+	testSelectors []string
+	jobs          int
+	format        string
+	output        string
 }
 
 func parseArguments(args []string, stdout, stderr io.Writer) (arguments, error) {
@@ -40,6 +43,8 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 	var silent bool
 	var noColor bool
 	var noCache bool
+	var listTests bool
+	var testSelectors []string
 	jobs := defaultJobs
 	format := defaultFormat
 	var output string
@@ -84,6 +89,8 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&silent,
 		nil,
 		nil,
+		nil,
+		nil,
 		parsed,
 	)
 	formatCommand.Flags().StringVar(
@@ -103,6 +110,8 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&silent,
 		&output,
 		&noCache,
+		nil,
+		nil,
 		parsed,
 	)
 	buildCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
@@ -118,6 +127,8 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&silent,
 		nil,
 		nil,
+		nil,
+		nil,
 		parsed,
 	)
 	fetchCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
@@ -131,10 +142,15 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&silent,
 		nil,
 		&noCache,
+		&listTests,
+		&testSelectors,
 		parsed,
 	)
+	testCommand.Use = "test [--list-tests] [--test=<selector>]... [path...]"
 	testCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
 	testCommand.Flags().BoolVar(&noCache, "no-cache", false, "rebuild and rerun tests without using cached results")
+	testCommand.Flags().BoolVar(&listTests, "list-tests", false, "list tests without running them")
+	testCommand.Flags().StringArrayVar(&testSelectors, "test", nil, "run tests matching selector; may be repeated")
 	root.AddCommand(
 		formatCommand,
 		buildCommand,
@@ -155,6 +171,8 @@ func newPathCommand(
 	silent *bool,
 	output *string,
 	noCache *bool,
+	listTests *bool,
+	testSelectors *[]string,
 	parsed *arguments,
 ) *cobra.Command {
 	return &cobra.Command{
@@ -162,6 +180,11 @@ func newPathCommand(
 		Short: description,
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, paths []string) error {
+			if listTests != nil && testSelectors != nil {
+				if err := validateTestSelection(*listTests, *testSelectors); err != nil {
+					return err
+				}
+			}
 			jobCount, err := resolveJobCount(*jobs)
 			if err != nil {
 				return err
@@ -189,10 +212,34 @@ func newPathCommand(
 			if noCache != nil {
 				result.noCache = *noCache
 			}
+			if listTests != nil {
+				result.listTests = *listTests
+			}
+			if testSelectors != nil {
+				result.testSelectors = append([]string(nil), (*testSelectors)...)
+			}
 			*parsed = result
 			return nil
 		},
 	}
+}
+
+func validateTestSelection(listTests bool, selectors []string) error {
+	if listTests && len(selectors) != 0 {
+		return errors.New("--list-tests and --test cannot be used together")
+	}
+	for _, selector := range selectors {
+		if selector == "" {
+			return errors.New("test selector must not be empty")
+		}
+		if strings.Contains(selector, ":") {
+			return fmt.Errorf("test selector must not contain ':': %s", selector)
+		}
+		if strings.Contains(selector, "-") {
+			return fmt.Errorf("test selector must not contain '-': %s", selector)
+		}
+	}
+	return nil
 }
 
 func normalizeJobArguments(args []string) []string {

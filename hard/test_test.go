@@ -210,6 +210,196 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	}
 }
 
+func TestTestSourcesRejectsSelectorsWithoutTestSources(t *testing.T) {
+	var stdout bytes.Buffer
+	progress := newProgressBar(&stdout, -1, false, false, true)
+	err := testSourcesWithProgressSelection(
+		t.TempDir(),
+		"host",
+		"unused-compiler",
+		nil,
+		nil,
+		nil,
+		1,
+		false,
+		false,
+		true,
+		progress,
+		&stdout,
+		io.Discard,
+		false,
+		false,
+		[]string{"Suite.Case", "Other.*"},
+	)
+	if err == nil {
+		t.Fatal("testSourcesWithProgressSelection() error = nil")
+	}
+	for _, want := range []string{
+		`test selector "Suite.Case" matched no tests`,
+		`test selector "Other.*" matched no tests`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("testSourcesWithProgressSelection() error does not contain %q: %q", want, err)
+		}
+	}
+
+	listProgress := newProgressBar(io.Discard, -1, false, true, true)
+	if err := testSourcesWithProgressSelection(
+		t.TempDir(), "host", "unused-compiler", nil, nil, nil, 1,
+		false, true, true, listProgress, io.Discard, io.Discard, false, true, nil,
+	); err != nil {
+		t.Fatalf("empty --list-tests error = %v", err)
+	}
+}
+
+func TestTestSourcesListsTestsEveryTime(t *testing.T) {
+	root := t.TempDir()
+	project := t.TempDir()
+	writeBuildFile(t, project, "pass_test.cpp", "")
+	compiler, log := installTestTools(t)
+	withWorkingDirectory(t, project)
+
+	run := func() string {
+		t.Helper()
+		var stdout bytes.Buffer
+		progress := newProgressBar(&stdout, -1, false, true, true)
+		if err := testSourcesWithProgressSelection(
+			root,
+			"host",
+			compiler,
+			nil,
+			nil,
+			[]string{"pass_test.cpp"},
+			1,
+			false,
+			true,
+			true,
+			progress,
+			&stdout,
+			io.Discard,
+			false,
+			true,
+			nil,
+		); err != nil {
+			t.Fatalf("testSourcesWithProgressSelection() error = %v", err)
+		}
+		return stdout.String()
+	}
+
+	want := "Random.ReturnsValue\n" +
+		"Random.ReturnsOther\n" +
+		"Parser.Test1\n" +
+		"Parser.TestA\n"
+	if got := run(); got != want {
+		t.Fatalf("first test list = %q, want %q", got, want)
+	}
+	if got := run(); got != want {
+		t.Fatalf("second test list = %q, want %q", got, want)
+	}
+	toolLog := readTestFile(t, log)
+	if got := strings.Count(toolLog, "test --gtest_list_tests --gtest_color=no\n"); got != 2 {
+		t.Fatalf("list process runs = %d, want 2:\n%s", got, toolLog)
+	}
+}
+
+func TestTestSourcesRunsMatchingSelectors(t *testing.T) {
+	root := t.TempDir()
+	project := t.TempDir()
+	writeBuildFile(t, project, "pass_test.cpp", "")
+	compiler, log := installTestTools(t)
+	withWorkingDirectory(t, project)
+
+	var stdout bytes.Buffer
+	progress := newProgressBar(&stdout, -1, true, false, true)
+	selectors := []string{"Random.Returns*", "Parser.Test?"}
+	if err := testSourcesWithProgressSelection(
+		root,
+		"host",
+		compiler,
+		nil,
+		nil,
+		[]string{"pass_test.cpp"},
+		1,
+		true,
+		false,
+		true,
+		progress,
+		&stdout,
+		io.Discard,
+		false,
+		false,
+		selectors,
+	); err != nil {
+		t.Fatalf("testSourcesWithProgressSelection() error = %v", err)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Listing pass_test\n",
+		"Testing pass_test\n",
+		"--gtest_filter=Random.Returns*:Parser.Test?",
+		"ran pass_test --gtest_filter=Random.Returns*:Parser.Test? --gtest_color=no\n",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("selector test output does not contain %q: %q", want, output)
+		}
+	}
+	toolLog := readTestFile(t, log)
+	for _, want := range []string{
+		"test --gtest_list_tests --gtest_color=no\n",
+		"test --gtest_filter=Random.Returns*:Parser.Test? --gtest_color=no\n",
+	} {
+		if !strings.Contains(toolLog, want) {
+			t.Errorf("selector tool log does not contain %q: %q", want, toolLog)
+		}
+	}
+}
+
+func TestTestSourcesRejectsUnmatchedSelector(t *testing.T) {
+	root := t.TempDir()
+	project := t.TempDir()
+	writeBuildFile(t, project, "pass_test.cpp", "")
+	compiler, log := installTestTools(t)
+	withWorkingDirectory(t, project)
+
+	var stdout bytes.Buffer
+	progress := newProgressBar(&stdout, -1, true, false, true)
+	err := testSourcesWithProgressSelection(
+		root,
+		"host",
+		compiler,
+		nil,
+		nil,
+		[]string{"pass_test.cpp"},
+		1,
+		true,
+		false,
+		true,
+		progress,
+		&stdout,
+		io.Discard,
+		false,
+		false,
+		[]string{"Missing.*"},
+	)
+	if err == nil {
+		t.Fatal("testSourcesWithProgressSelection() error = nil")
+	}
+	if !strings.Contains(err.Error(), `test selector "Missing.*" matched no tests`) {
+		t.Fatalf("testSourcesWithProgressSelection() error = %q", err)
+	}
+	if !strings.Contains(stdout.String(), "Listing pass_test") {
+		t.Fatalf("unmatched selector did not list tests: %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "Testing pass_test") {
+		t.Fatalf("unmatched selector ran test: %q", stdout.String())
+	}
+	toolLog := readTestFile(t, log)
+	if strings.Contains(toolLog, "--gtest_filter") {
+		t.Fatalf("unmatched selector reached GoogleTest filter: %q", toolLog)
+	}
+}
+
 func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
@@ -525,16 +715,77 @@ func TestTestSourcesUsesJobsAcrossTestFiles(t *testing.T) {
 }
 
 func TestTestBinaryArgumentsAndCommand(t *testing.T) {
-	if got, want := testBinaryArguments(false), []string{"--gtest_color=yes"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("testBinaryArguments(false) = %#v, want %#v", got, want)
+	if got, want := testBinaryArguments(false, nil), []string{"--gtest_color=yes"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("testBinaryArguments(false, nil) = %#v, want %#v", got, want)
 	}
-	if got, want := testBinaryArguments(true), []string{"--gtest_color=no"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("testBinaryArguments(true) = %#v, want %#v", got, want)
+	if got, want := testBinaryArguments(true, nil), []string{"--gtest_color=no"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("testBinaryArguments(true, nil) = %#v, want %#v", got, want)
+	}
+	selectors := []string{"Random.Returns*", "Parser.Test?"}
+	wantArguments := []string{
+		"--gtest_filter=Random.Returns*:Parser.Test?",
+		"--gtest_color=no",
+	}
+	if got := testBinaryArguments(true, selectors); !reflect.DeepEqual(got, wantArguments) {
+		t.Fatalf("testBinaryArguments(true, selectors) = %#v, want %#v", got, wantArguments)
+	}
+	if got, want := testListBinaryArguments(), []string{"--gtest_list_tests", "--gtest_color=no"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("testListBinaryArguments() = %#v, want %#v", got, want)
 	}
 	got := string(renderTestCommand("/tmp/test binary", []string{"--gtest_filter=two words", "O'Reilly"}))
 	want := "'/tmp/test binary' '--gtest_filter=two words' 'O'\"'\"'Reilly'\n"
 	if got != want {
 		t.Fatalf("renderTestCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestMatchTestSelector(t *testing.T) {
+	tests := []struct {
+		selector string
+		name     string
+		want     bool
+	}{
+		{selector: "Suite.Case", name: "Suite.Case", want: true},
+		{selector: "Suite.Case", name: "Suite.Other"},
+		{selector: "Suite.*", name: "Suite.Case", want: true},
+		{selector: "Suite.*", name: "Suite.", want: true},
+		{selector: "*.Case", name: "Nested/Suite.Case", want: true},
+		{selector: "Suite.Test?", name: "Suite.Test1", want: true},
+		{selector: "Suite.Test?", name: "Suite.TestA", want: true},
+		{selector: "Suite.Test?", name: "Suite.Test"},
+		{selector: "Suite.Prefix?Suffix*", name: "Suite.Prefix1SuffixTail", want: true},
+		{selector: "Suite.Prefix?Suffix*", name: "Suite.PrefixSuffixTail"},
+		{selector: "*", name: "", want: true},
+		{selector: "?", name: "x", want: true},
+		{selector: "?", name: "xy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.selector+"/"+tt.name, func(t *testing.T) {
+			if got := matchTestSelector(tt.selector, tt.name); got != tt.want {
+				t.Fatalf("matchTestSelector(%q, %q) = %v, want %v", tt.selector, tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseGoogleTestList(t *testing.T) {
+	output := []byte(
+		"Running main() from gtest_main.cc\n" +
+			"Random.\n" +
+			"  ReturnsValue\n" +
+			"Typed/ParserTest/0.  # TypeParam = int\n" +
+			"  AcceptsValue  # GetParam() = 42\n",
+	)
+	want := []string{
+		"Random.ReturnsValue",
+		"Typed/ParserTest/0.AcceptsValue",
+	}
+	if got := parseGoogleTestList(output); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseGoogleTestList() = %#v, want %#v", got, want)
+	}
+	selectors := []string{"Random.*", "Missing.?", "Typed/*.Accepts*"}
+	if got, want := unmatchedTestSelectors(selectors, [][]string{want}), []string{"Missing.?"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unmatchedTestSelectors() = %#v, want %#v", got, want)
 	}
 }
 
@@ -702,6 +953,15 @@ func installTestTools(t *testing.T) (string, string) {
 		"fi\n" +
 		"printf '%s\\n' '#!/bin/sh' > \"$output\"\n" +
 		"printf '%s\\n' 'name=${0##*/}' >> \"$output\"\n" +
+		"printf '%s\\n' 'printf \"test %s\\n\" \"$*\" >> \"$TOOL_LOG\"' >> \"$output\"\n" +
+		"printf '%s\\n' 'for argument in \"$@\"; do' >> \"$output\"\n" +
+		"printf '%s\\n' '  case \"$argument\" in' >> \"$output\"\n" +
+		"printf '%s\\n' '    --gtest_list_tests)' >> \"$output\"\n" +
+		"printf '%s\\n' '      printf \"Random.\\n  ReturnsValue\\n  ReturnsOther\\nParser.\\n  Test1\\n  TestA\\n\"' >> \"$output\"\n" +
+		"printf '%s\\n' '      exit 0' >> \"$output\"\n" +
+		"printf '%s\\n' '      ;;' >> \"$output\"\n" +
+		"printf '%s\\n' '  esac' >> \"$output\"\n" +
+		"printf '%s\\n' 'done' >> \"$output\"\n" +
 		"printf '%s\\n' 'printf \"ran %s %s\\n\" \"$name\" \"$*\"' >> \"$output\"\n" +
 		"printf '%s\\n' 'case \"$name\" in fail_test) exit 7 ;; esac' >> \"$output\"\n" +
 		"/bin/chmod 755 \"$output\"\n"
