@@ -271,19 +271,34 @@ func sourceDependencySetWithClang(
 	source string,
 	workingDirectory string,
 ) (bool, clangDependencySet, []byte, error) {
+	fatal, dependencies, _, diagnostics, err := sourceAnalysisWithClang(
+		githubResolver,
+		cflags,
+		source,
+		workingDirectory,
+	)
+	return fatal, dependencies, diagnostics, err
+}
+
+func sourceAnalysisWithClang(
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	source string,
+	workingDirectory string,
+) (bool, clangDependencySet, clangAnalysis, []byte, error) {
 	attemptedRepositories := make(map[string]struct{})
 	for {
 		analysis, err := analyzeClangDependencies(source, workingDirectory, cflags)
 		if err != nil {
-			return true, clangDependencySet{}, nil, err
+			return true, clangDependencySet{}, clangAnalysis{}, nil, err
 		}
 		unresolved := clangUnresolvedIncludes(analysis)
 		if len(unresolved) == 0 {
 			dependencies, err := clangDependencyPathSet(analysis, source, workingDirectory)
 			if err != nil {
-				return true, clangDependencySet{}, clangErrorDiagnostics(analysis), err
+				return true, clangDependencySet{}, analysis, clangErrorDiagnostics(analysis), err
 			}
-			return false, dependencies, nil, nil
+			return false, dependencies, analysis, nil, nil
 		}
 
 		newRepository := false
@@ -312,7 +327,7 @@ func sourceDependencySetWithClang(
 			}
 		}
 		if err := errors.Join(downloadErrors...); err != nil {
-			return false, clangDependencySet{}, clangErrorDiagnostics(analysis), err
+			return false, clangDependencySet{}, analysis, clangErrorDiagnostics(analysis), err
 		}
 		if newRepository {
 			continue
@@ -320,7 +335,7 @@ func sourceDependencySetWithClang(
 
 		diagnostics := clangErrorDiagnostics(analysis)
 		if managedInclude {
-			return false, clangDependencySet{}, diagnostics, fmt.Errorf(
+			return false, clangDependencySet{}, analysis, diagnostics, fmt.Errorf(
 				"GitHub dependency remains unavailable for %s: %s",
 				source,
 				strings.Join(unresolved, ", "),
@@ -329,7 +344,7 @@ func sourceDependencySetWithClang(
 		if len(diagnostics) == 0 {
 			diagnostics = []byte(strings.Join(unresolved, "\n") + "\n")
 		}
-		return false, clangDependencySet{}, diagnostics, fmt.Errorf(
+		return false, clangDependencySet{}, analysis, diagnostics, fmt.Errorf(
 			"dependencies %s: unresolved include: %s",
 			source,
 			strings.Join(unresolved, ", "),

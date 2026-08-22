@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"sync"
 
@@ -21,7 +20,6 @@ type testPlan struct {
 	sources                   []string
 	dependenciesBySource      [][]string
 	cacheDependenciesBySource [][]string
-	headers                   []string
 	compileIndexes            []int
 }
 
@@ -35,16 +33,6 @@ type testPreparationResult struct {
 	plan        testPlan
 	diagnostics []byte
 	err         error
-}
-
-type testForwardJob struct {
-	index  int
-	header string
-}
-
-type testForwardResult struct {
-	index int
-	err   error
 }
 
 type testLinkJob struct {
@@ -195,21 +183,8 @@ func testSourcesWithProgress(
 				supportHeader,
 			)
 		}
-		result.plan.headers = removeDependencyPath(result.plan.headers, supportHeader)
 		plans = append(plans, result.plan)
 	}
-
-	plans, forwardFailures := generateTestForwardDeclarationsWithCache(
-		root,
-		environment,
-		plans,
-		testCFlags,
-		jobs,
-		workingDirectory,
-		activity,
-		cache,
-	)
-	failures = append(failures, forwardFailures...)
 
 	plans, compileSources, compileDependencies, compileCacheDependencies, err := mergeTestCompileSources(
 		root,
@@ -379,17 +354,6 @@ func prepareTestWithCache(
 			fmt.Errorf("prepare test %s: %w", testSource, err)
 	}
 
-	dependencies := make(map[string]struct{})
-	for _, sourceDependencies := range dependenciesBySource {
-		for _, dependency := range sourceDependencies {
-			dependencies[dependency] = struct{}{}
-		}
-	}
-	paths := make([]string, 0, len(dependencies))
-	for dependency := range dependencies {
-		paths = append(paths, dependency)
-	}
-	sort.Strings(paths)
 	preparationError := errors.Join(failures...)
 	if preparationError != nil {
 		return testPlan{}, append([]byte(nil), diagnostics.Bytes()...),
@@ -400,7 +364,6 @@ func prepareTestWithCache(
 		sources:                   sources,
 		dependenciesBySource:      dependenciesBySource,
 		cacheDependenciesBySource: cacheDependenciesBySource,
-		headers:                   paths,
 	}, append([]byte(nil), diagnostics.Bytes()...), nil
 }
 
@@ -510,139 +473,6 @@ func prepareTestsWithCache(
 		ordered[result.index] = &result
 	}
 	return ordered
-}
-
-func generateTestForwardDeclarations(
-	root string,
-	environment string,
-	plans []testPlan,
-	cflags []string,
-	jobs int,
-	workingDirectory string,
-) ([]testPlan, []error) {
-	return generateTestForwardDeclarationsWithActivity(
-		root,
-		environment,
-		plans,
-		cflags,
-		jobs,
-		workingDirectory,
-		nil,
-	)
-}
-
-func generateTestForwardDeclarationsWithActivity(
-	root string,
-	environment string,
-	plans []testPlan,
-	cflags []string,
-	jobs int,
-	workingDirectory string,
-	activity func(string),
-) ([]testPlan, []error) {
-	var parsingActivity func(string, bool)
-	if activity != nil {
-		parsingActivity = func(path string, _ bool) {
-			activity(path)
-		}
-	}
-	return generateTestForwardDeclarationsWithCache(
-		root,
-		environment,
-		plans,
-		cflags,
-		jobs,
-		workingDirectory,
-		parsingActivity,
-		nil,
-	)
-}
-
-func generateTestForwardDeclarationsWithCache(
-	root string,
-	environment string,
-	plans []testPlan,
-	cflags []string,
-	jobs int,
-	workingDirectory string,
-	activity func(string, bool),
-	cache *artifactCache,
-) ([]testPlan, []error) {
-	if len(plans) == 0 {
-		return nil, nil
-	}
-	headerIndexes := make(map[string]int)
-	headers := make([]string, 0)
-	for _, plan := range plans {
-		for _, header := range plan.headers {
-			if _, ok := headerIndexes[header]; ok {
-				continue
-			}
-			headerIndexes[header] = len(headers)
-			headers = append(headers, header)
-		}
-	}
-	if len(headers) == 0 {
-		return plans, nil
-	}
-
-	workerCount := jobs
-	if workerCount > len(headers) {
-		workerCount = len(headers)
-	}
-	queue := make(chan testForwardJob)
-	results := make(chan testForwardResult, len(headers))
-	var workers sync.WaitGroup
-	for worker := 0; worker < workerCount; worker++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for job := range queue {
-				results <- testForwardResult{
-					index: job.index,
-					err: generateForwardDeclarationsWithFlagsAndCache(
-						root,
-						environment,
-						[]string{job.header},
-						cflags,
-						1,
-						workingDirectory,
-						activity,
-						cache,
-					),
-				}
-			}
-		}()
-	}
-	go func() {
-		defer close(queue)
-		for index, header := range headers {
-			queue <- testForwardJob{index: index, header: header}
-		}
-	}()
-	workers.Wait()
-	close(results)
-
-	forwardErrors := make([]error, len(headers))
-	for result := range results {
-		forwardErrors[result.index] = result.err
-	}
-	ready := make([]testPlan, 0, len(plans))
-	var failures []error
-	for _, plan := range plans {
-		var planFailures []error
-		for _, header := range plan.headers {
-			if err := forwardErrors[headerIndexes[header]]; err != nil {
-				planFailures = append(planFailures, err)
-			}
-		}
-		if err := errors.Join(planFailures...); err != nil {
-			failures = append(failures, fmt.Errorf("prepare test %s: %w", plan.source, err))
-			continue
-		}
-		ready = append(ready, plan)
-	}
-	return ready, failures
 }
 
 func mergeTestCompileSources(

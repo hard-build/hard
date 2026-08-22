@@ -89,52 +89,45 @@ func TestExtractForwardDeclarationsRejectsInvalidSyntax(t *testing.T) {
 	}
 }
 
-func TestForwardHeaderPathMirrorsAbsoluteHeader(t *testing.T) {
+func TestSourceForwardHeaderPathMirrorsAbsoluteSource(t *testing.T) {
 	root := t.TempDir()
-	header := filepath.Join(string(filepath.Separator), "home", "user", "project", "include", "file.hpp")
+	source := filepath.Join(string(filepath.Separator), "home", "user", "project", "src", "file.cpp")
 
-	got, err := forwardHeaderPath(root, "target", header)
+	got, err := sourceForwardHeaderPath(root, "target", source)
 	if err != nil {
-		t.Fatalf("forwardHeaderPath() error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath() error = %v", err)
 	}
-	want := filepath.Join(root, "env", "target", "build", "home", "user", "project", "include", "file_fwd.hpp")
+	want := filepath.Join(root, "env", "target", "build", "home", "user", "project", "src", "file.cpp.fwd.h")
 	if got != want {
-		t.Fatalf("forwardHeaderPath() = %q, want %q", got, want)
+		t.Fatalf("sourceForwardHeaderPath() = %q, want %q", got, want)
 	}
 }
 
-func TestForwardHeaderPathPreservesExtension(t *testing.T) {
+func TestSourceForwardHeaderPathPreservesSourceExtension(t *testing.T) {
 	root := t.TempDir()
-	tests := map[string]string{
-		"file.h":   "file_fwd.h",
-		"file.hh":  "file_fwd.hh",
-		"file.hpp": "file_fwd.hpp",
-		"file.h++": "file_fwd.h++",
-		"file":     "file_fwd",
-	}
-	for input, wantName := range tests {
-		header := filepath.Join(string(filepath.Separator), "project", input)
-		got, err := forwardHeaderPath(root, "host", header)
+	for _, input := range []string{"file.c", "file.cc", "file.cpp", "file.c++"} {
+		source := filepath.Join(string(filepath.Separator), "project", input)
+		got, err := sourceForwardHeaderPath(root, "host", source)
 		if err != nil {
-			t.Fatalf("forwardHeaderPath(%q) error = %v", input, err)
+			t.Fatalf("sourceForwardHeaderPath(%q) error = %v", input, err)
 		}
-		want := filepath.Join(root, "env", "host", "build", "project", wantName)
+		want := filepath.Join(root, "env", "host", "build", "project", input+".fwd.h")
 		if got != want {
-			t.Errorf("forwardHeaderPath(%q) = %q, want %q", input, got, want)
+			t.Errorf("sourceForwardHeaderPath(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestForwardHeaderPathRejectsEnvironmentEscape(t *testing.T) {
+func TestSourceForwardHeaderPathRejectsEnvironmentEscape(t *testing.T) {
 	root := t.TempDir()
-	header := filepath.Join(string(filepath.Separator), "home", "user", "file.h")
+	source := filepath.Join(string(filepath.Separator), "home", "user", "file.cpp")
 
-	_, err := forwardHeaderPath(root, "../outside", header)
+	_, err := sourceForwardHeaderPath(root, "../outside", source)
 	if err == nil {
-		t.Fatal("forwardHeaderPath() error = nil")
+		t.Fatal("sourceForwardHeaderPath() error = nil")
 	}
 	if !strings.Contains(err.Error(), "HARD_ENV escapes environment directory") {
-		t.Fatalf("forwardHeaderPath() error = %q", err)
+		t.Fatalf("sourceForwardHeaderPath() error = %q", err)
 	}
 }
 
@@ -150,116 +143,87 @@ func TestRenderForwardDeclarationsSupportsInlineAndNestedNamespaces(t *testing.T
 	}
 }
 
-func TestGenerateForwardDeclarationsUsesOnlyEachHeaderContents(t *testing.T) {
+func TestSourceForwardContentsUsesActiveNonSystemDependencies(t *testing.T) {
 	project := t.TempDir()
 	root := t.TempDir()
-	dependency := filepath.Join(project, "dependency.h")
-	header := filepath.Join(project, "include", "file.h")
 	writeBuildFile(t, project, "dependency.h", "struct dependency {};\n")
 	writeBuildFile(t, project, "include/file.h", "#include \"../dependency.h\"\nnamespace project { class direct {}; }\n")
-
-	if err := generateForwardDeclarations(root, "host", []string{header, dependency, header}, 2); err != nil {
-		t.Fatalf("generateForwardDeclarations() error = %v", err)
-	}
-
-	headerOutput, err := forwardHeaderPath(root, "host", header)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath(header) error = %v", err)
-	}
-	dependencyOutput, err := forwardHeaderPath(root, "host", dependency)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath(dependency) error = %v", err)
-	}
-	if got := readTestFile(t, headerOutput); got != "#pragma once\n\nnamespace project\n{\nclass direct;\n}\n" {
-		t.Fatalf("generated header = %q", got)
-	}
-	if got := readTestFile(t, dependencyOutput); got != "#pragma once\n\nstruct dependency;\n" {
-		t.Fatalf("generated dependency = %q", got)
-	}
-}
-
-func TestGenerateForwardDeclarationsPreservesHeaderExtensions(t *testing.T) {
-	project := t.TempDir()
-	root := t.TempDir()
-	first := filepath.Join(project, "file.h")
-	second := filepath.Join(project, "file.hpp")
-	writeBuildFile(t, project, "file.h", "class first;\n")
-	writeBuildFile(t, project, "file.hpp", "class second;\n")
-
-	if err := generateForwardDeclarations(root, "host", []string{first, second}, 2); err != nil {
-		t.Fatalf("generateForwardDeclarations() error = %v", err)
-	}
-	firstOutput, err := forwardHeaderPath(root, "host", first)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath(first) error = %v", err)
-	}
-	secondOutput, err := forwardHeaderPath(root, "host", second)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath(second) error = %v", err)
-	}
-	if filepath.Base(firstOutput) != "file_fwd.h" {
-		t.Fatalf("first output = %q", firstOutput)
-	}
-	if filepath.Base(secondOutput) != "file_fwd.hpp" {
-		t.Fatalf("second output = %q", secondOutput)
-	}
-	if got := readTestFile(t, firstOutput); got != "#pragma once\n\nclass first;\n" {
-		t.Fatalf("generated .h forward header = %q", got)
-	}
-	if got := readTestFile(t, secondOutput); got != "#pragma once\n\nclass second;\n" {
-		t.Fatalf("generated .hpp forward header = %q", got)
-	}
-}
-
-func TestGenerateForwardDeclarationsReportsHeaderBeforeParsing(t *testing.T) {
-	project := t.TempDir()
-	root := t.TempDir()
-	header := filepath.Join(project, "broken.h")
-	writeBuildFile(t, project, "broken.h", "class broken {\n")
-
-	var activities []string
-	err := generateForwardDeclarationsWithFlagsAndActivity(
-		root,
-		"host",
-		[]string{header},
-		nil,
-		1,
+	writeBuildFile(
+		t,
 		project,
-		func(path string) {
-			activities = append(activities, path)
-		},
+		"source.cpp",
+		"#include <vector>\n#include \"include/file.h\"\nclass source_type {};\n",
 	)
-	if err == nil {
-		t.Fatal("generateForwardDeclarationsWithFlagsAndActivity() error = nil")
+	analysis, err := analyzeClangDependencies("source.cpp", project, []string{"-std=c++20"})
+	if err != nil {
+		t.Fatalf("analyzeClangDependencies() error = %v", err)
 	}
-	want := []string{header}
-	if !reflect.DeepEqual(activities, want) {
-		t.Fatalf("forward parsing activities = %#v, want %#v", activities, want)
+	dependencies, err := clangDependencyPaths(analysis, "source.cpp", project)
+	if err != nil {
+		t.Fatalf("clangDependencyPaths() error = %v", err)
+	}
+	output, err := sourceForwardHeaderPath(root, "host", filepath.Join(project, "source.cpp"))
+	if err != nil {
+		t.Fatalf("sourceForwardHeaderPath() error = %v", err)
+	}
+	contents, err := sourceForwardContents(output, analysis, dependencies, nil, project)
+	if err != nil {
+		t.Fatalf("sourceForwardContents() error = %v", err)
+	}
+	want := "#pragma once\n\nstruct dependency;\n\nnamespace project\n{\nclass direct;\n}\n"
+	if got := string(contents); got != want {
+		t.Fatalf("source forward contents = %q, want %q", got, want)
+	}
+	for _, forbidden := range []string{"source_type", "vector"} {
+		if strings.Contains(string(contents), forbidden) {
+			t.Fatalf("source forward contents contain %q: %q", forbidden, contents)
+		}
 	}
 }
 
-func TestGenerateForwardHeaderPreservesExistingFileOnParseError(t *testing.T) {
+func TestSourceForwardContentsUsesTranslationUnitContext(t *testing.T) {
 	project := t.TempDir()
 	root := t.TempDir()
-	header := filepath.Join(project, "broken.h")
-	writeBuildFile(t, project, "broken.h", "class broken {\n")
-	output, err := forwardHeaderPath(root, "host", header)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath() error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
-		t.Fatalf("create output directory: %v", err)
-	}
-	if err := os.WriteFile(output, []byte("existing\n"), 0o644); err != nil {
-		t.Fatalf("write existing output: %v", err)
-	}
+	writeBuildFile(
+		t,
+		project,
+		"conditional.h",
+		"#ifdef FIRST\nclass first_only {};\n#else\nclass second_only {};\n#endif\n",
+	)
+	writeBuildFile(t, project, "first.cpp", "#include \"conditional.h\"\n")
+	writeBuildFile(t, project, "second.cpp", "#include \"conditional.h\"\n")
 
-	err = generateForwardHeader(header, output)
-	if err == nil {
-		t.Fatal("generateForwardHeader() error = nil")
+	tests := []struct {
+		source    string
+		cflags    []string
+		want      string
+		forbidden string
+	}{
+		{source: "first.cpp", cflags: []string{"-DFIRST"}, want: "class first_only;", forbidden: "second_only"},
+		{source: "second.cpp", want: "class second_only;", forbidden: "first_only"},
 	}
-	if got := readTestFile(t, output); got != "existing\n" {
-		t.Fatalf("existing output = %q", got)
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			analysis, err := analyzeClangDependencies(tt.source, project, tt.cflags)
+			if err != nil {
+				t.Fatalf("analyzeClangDependencies() error = %v", err)
+			}
+			dependencies, err := clangDependencyPaths(analysis, tt.source, project)
+			if err != nil {
+				t.Fatalf("clangDependencyPaths() error = %v", err)
+			}
+			output, err := sourceForwardHeaderPath(root, "host", filepath.Join(project, tt.source))
+			if err != nil {
+				t.Fatalf("sourceForwardHeaderPath() error = %v", err)
+			}
+			contents, err := sourceForwardContents(output, analysis, dependencies, tt.cflags, project)
+			if err != nil {
+				t.Fatalf("sourceForwardContents() error = %v", err)
+			}
+			if !strings.Contains(string(contents), tt.want) || strings.Contains(string(contents), tt.forbidden) {
+				t.Fatalf("source forward contents = %q, want %q without %q", contents, tt.want, tt.forbidden)
+			}
+		})
 	}
 }
 

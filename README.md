@@ -55,8 +55,8 @@ The default job count is one. `-jN` or `--jobs=N` selects `N` workers. Bare
 `-j`, bare `--jobs`, `-j0`, and `--jobs=0` use all logical CPUs. Negative job
 counts are rejected. A command never creates a nested `N × N` pool. In
 `hard fetch`, the selected count is used for dependency analysis. In `hard test`,
-the selected count is the invocation-wide maximum for each dependency,
-forward-generation, compilation, linking, and test-execution phase.
+the selected count is the invocation-wide maximum for source preparation,
+compilation, linking, and test-execution phases.
 
 `-v` writes permanent progress entries and command-specific details.
 `--no-color` disables ANSI colors. Every command accepts `-s` or `--silent`,
@@ -140,9 +140,9 @@ is required.
 hard build [--no-cache] [-s|--silent] [-o <path>] [path...]
 ```
 
-The implemented build pipeline currently discovers dependencies, generates
-forward-declaration headers, compiles object files, detects configured entry
-functions, links their reachable objects, and delivers executable binaries.
+The implemented build pipeline currently discovers dependencies, generates one
+source-context forward per translation unit, compiles objects, detects
+configured entry functions, links reachable objects, and delivers binaries.
 
 Every root or automatically discovered translation unit is analyzed through
 libclang 18. `hard` passes `HARD_CFLAGS`, the project working directory, and
@@ -151,14 +151,15 @@ preprocessing record supplies one active, preprocessor-aware include graph for
 direct, transitive, macro-expanded, conditional, and force-included headers.
 
 libclang classifies system headers, so only resolved non-system dependencies
-participate in implementation discovery, forward generation, and forced
-inclusion. Their canonical absolute paths are deduplicated and sorted per
-source. `HARD_ENV` is the immutability boundary for the compiler toolchain,
-standard library, libc, sysroot, Clang resource headers, and every path marked
-as system by libclang, including user-provided `-isystem` directories. System
-headers are therefore excluded from parse and compilation cache fingerprints.
-No preliminary header list is printed, although preparation progress identifies
-the source or header currently being parsed. The same analysis reports
+participate in implementation discovery, source-context forward extraction,
+and cache fingerprints. Their canonical absolute paths are deduplicated and
+sorted per source. `HARD_ENV` is the immutability boundary for the compiler
+toolchain, standard library, libc, sysroot, Clang resource headers, and every
+path marked as system by libclang, including user-provided `-isystem`
+directories. System headers are excluded from parse and compilation cache
+fingerprints.
+No preliminary header list is printed; preparation progress identifies only
+the translation unit currently being parsed. The same analysis reports
 unresolved include spellings. A missing include whose expanded path begins
 with:
 
@@ -217,48 +218,46 @@ it reports `Downloading github.com/<owner>/<repository>` as the command's first
 progress step. A missing non-GitHub header retains the original libclang
 diagnostic and does not cause a network request.
 
-Each discovered header is parsed independently through the same libclang
-bridge and `HARD_CFLAGS`. The preprocessor is active, but declarations are
-filtered by physical source file, so included headers cannot contribute to the
-current header's forward file. `hard` emits only named classes, structs, and
-class templates declared directly at global or namespace scope. It preserves
-ordinary and inline namespace nesting, removes template defaults, skips class
-template specializations, and excludes local, nested, and anonymous-namespace
-types.
+Each root or automatically discovered translation unit produces one
+source-context forward file from the declarations visible in its final
+libclang analysis. Only declarations physically originating in active managed
+non-system dependencies can enter the output; declarations from the source
+file itself and from system headers are excluded. `hard` emits named classes,
+structs, and class templates declared directly at global or namespace scope.
+It preserves ordinary and inline namespace nesting, removes template defaults,
+skips class template specializations, and excludes local, nested, and
+anonymous-namespace types.
 
 Downloaded repositories are managed source trees, not opaque system libraries.
-Their discovered headers receive the same forward-generation and force-include
-treatment as project headers. Same-stem implementation sources are discovered,
-compiled, and linked through the same dependency graph. Well-known paths are
-canonicalized through their aliases before artifact paths and forward headers
-are derived.
+Their active headers can contribute declarations to each translation unit
+forward file, and same-stem implementation sources are discovered, compiled,
+and linked through the same dependency graph. Well-known paths are
+canonicalized through their aliases before dependency and object paths are
+derived.
 
-Each candidate declaration is validated by reparsing the generated forward
-header with libclang. A candidate that makes the standalone forward header
-invalid is omitted, allowing valid declarations from macro-heavy amalgamated
-headers to remain usable. Syntax errors reported in the source header itself
-still fail generation.
+Each candidate declaration is validated by reparsing the cumulative generated
+forward file with libclang. A candidate that makes it invalid is omitted,
+allowing valid declarations from macro-heavy amalgamated headers to remain
+usable. Since extraction uses the translation-unit AST, conditional and
+macro-dependent declarations remain specific to that source and flag context.
 
-Forward headers mirror canonical absolute header paths below the environment
-build directory and preserve the original extension:
+The forward path mirrors the lexical absolute source path below the environment
+build directory and appends `.fwd.h` to the complete source name:
 
 ```text
-file.h   -> file_fwd.h
-file.hh  -> file_fwd.hh
-file.hpp -> file_fwd.hpp
-file.h++ -> file_fwd.h++
+first.cpp  -> first.cpp.fwd.h
+second.cpp -> second.cpp.fwd.h
 ```
 
-When regenerated content is byte-for-byte unchanged, the existing regular
-forward header is retained instead of being replaced.
+There is no `value_fwd.h` or other per-header forward output. Every generated
+source forward begins with `#pragma once`. When regenerated content is
+byte-for-byte unchanged, the existing regular file is retained.
 
-A successful source or header analysis is also persisted as a versioned
-`.hard-parse-cache.json` record beside that input's mirrored build path. A
-source record stores its managed dependency list, complete active non-system
-dependency snapshot, and detected entry point. A header record stores its
-complete active non-system dependency snapshot and the final forward-header
-text after candidate validation. Records include a checksum of the stored
-semantic result.
+A successful translation-unit analysis is persisted as a versioned
+`.hard-parse-cache.json` record beside the mirrored source path. The record
+stores its managed dependency list, complete active non-system dependency
+snapshot, detected entry point, and final validated source-forward text.
+Records include a checksum of the stored semantic result.
 
 A parse-cache key includes the `hard` executable digest, libclang version,
 working directory, `HARD_CFLAGS`, configured entry-point names when relevant,
@@ -267,7 +266,7 @@ from the previous successful analysis, including non-system force-included
 headers. System headers are represented by the selected `HARD_ENV` rather than
 individual content hashes. Missing, malformed, changed, or internally
 inconsistent records are misses. A hit skips libclang analysis, restores a
-missing generated forward header when needed, and reports
+missing generated source forward when needed, and reports
 `Parsing <path> (CACHED)`.
 
 No parse record is written when `__has_include` occurs in the input itself or
@@ -280,29 +279,23 @@ that shadows an already resolved include, while the input and every previously
 known non-system dependency remain unchanged. Use `--no-cache` after such
 include-path topology changes.
 
-After dependency and forward generation succeed, every root source and
-automatically discovered implementation source is compiled in parallel. Its
-own direct, transitive, and force-included non-system dependencies are
-mapped to their generated forward headers and force-included in sorted
-dependency order:
+After source preparation succeeds, every root source and automatically
+discovered implementation source is compiled in parallel. Exactly one
+source-context forward is force-included for that translation unit:
 
 ```text
 HARD_CC <HARD_CFLAGS...> \
-  -include <first-dependency-forward-header> \
-  -include <second-dependency-forward-header> \
-  ... \
+  -include <source.cpp.fwd.h> \
   -c <source> -o <object>
 ```
 
-The repeated `-include` pairs appear after `HARD_CFLAGS` and before `-c`.
-Shared dependencies are included for every source that needs them, while
-forward headers belonging only to unrelated sources are not added. A source
-with no discovered non-system dependencies receives no additional `-include`.
+The generated `-include` pair appears after `HARD_CFLAGS` and before `-c`.
+Even when no eligible declarations exist, the source forward is present and
+contains `#pragma once`, which keeps the compiler command shape uniform.
 
 The canonical target of `HARD_ROOT/env/HARD_ENV/hard.h` is the one managed
-header exception. It remains force-included through `HARD_CFLAGS`, but `hard`
-does not parse it as a standalone forward target, generate a corresponding
-`hard_fwd.h`, or append another `-include` for that forward. Other project or
+header exception. It remains force-included through `HARD_CFLAGS`, but its
+declarations are excluded from the generated source forward. Other project or
 external headers named `hard.h` are treated normally.
 
 The object path mirrors the absolute source path. The original source
@@ -320,14 +313,14 @@ as `file.c` and `file.cpp`:
 Each successful compilation stores an atomic cache record beside its object.
 The cache key includes the `hard` executable, compiler path and content,
 working directory, complete compiler argument vector, source content, every
-resolved active non-system include, and all generated forward headers. System
+resolved active non-system include, and the generated source forward. System
 headers and other toolchain state are represented by `HARD_ENV`. A hit is
 accepted only when the object is still a regular file with the recorded
 content digest. Missing, changed, malformed, or non-regular artifacts and
 records are cache misses.
 
 `--no-cache` disables build and test cache reads for this invocation. It
-forces source and header analysis, forward generation, compilation, linking,
+forces source analysis, source-forward generation, compilation, linking,
 binary delivery, and, for `hard test`, test execution, then writes fresh
 successful records. It does not remove or refresh downloaded GitHub snapshots
 below `HARD_ROOT/source`.
@@ -424,7 +417,7 @@ binary. `--no-cache` forces the copy as well.
 
 Output modes:
 
-Search, source analysis, header analysis, and repository downloads share the
+Search, source analysis, and repository downloads share the
 first step of one progress counter. After preparation, the exact total is one
 preparation step plus one step for every root or automatically discovered
 source and two steps for every binary—one link and one copy. Repository
@@ -441,7 +434,7 @@ unknown denominator:
 ```
 
 A cached preparation analysis is reported as
-`[1/?] Parsing <source-or-header> (CACHED)`.
+`[1/?] Parsing <source> (CACHED)`.
 A cache hit still completes its progress step and appends `(CACHED)`, for
 example `[2/4] Compiling example.cpp (CACHED)`. Cached compile and link steps
 do not print a verbose command because no process was started. A skipped
@@ -449,7 +442,7 @@ delivery step is reported as `Copying <binary> (CACHED)`.
 
 Each download update is emitted immediately before its HTTP request. Cached
 repositories omit `Downloading`, but search and parsing still occupy step one.
-After dependency and forward preparation, compilation always continues at
+After source preparation, compilation always continues at
 `[2/M]`. Normal mode rewrites one line, verbose mode writes permanent activity
 lines, and silent mode hides the complete progress stream. All entries follow
 `--no-color`.
@@ -461,7 +454,7 @@ lines, and silent mode hides the complete progress stream. All entries follow
   POSIX-shell escaped, so the command can be copied and run manually. Copying
   is internal Go code and has no command line.
 - Build does not print a preliminary header list. Preparation progress may show
-  `Parsing <source-or-header>` while libclang analysis is running.
+  `Parsing <source>` while libclang analysis is running.
 - `-s` suppresses progress and successful compiler output; compiler, linker,
   and copy errors still go to stderr.
 
@@ -507,7 +500,7 @@ is a successful no-op. `-j` limits concurrent libclang analyses.
 
 Search, dependency parsing, and every actual request reuse one command
 preparation step. Live activity is shown as `[1/?] Searching source files`,
-`[1/?] Parsing <source-or-header>`, or
+`[1/?] Parsing <source>`, or
 `[1/?] Downloading github.com/<owner>/<repository>`; each download label is
 emitted immediately before its HTTP request. The exact final total is one.
 Normal mode rewrites one line, `-v` writes permanent activity lines, and `-s`
@@ -537,24 +530,26 @@ before any test is built. An empty selection succeeds without requiring
 
 For each test source, `hard` uses the build dependency analyzer to recursively
 find same-stem, non-test implementation sources required by its non-system
-headers. Other `*_test.*` sources are never added automatically. It generates
-the required forward headers and compiles the test plus its production
-dependencies with the combined compiler flags. Dependency closures for
-different test roots are prepared concurrently. A header or object output
-shared by several test plans is generated or compiled only once. The shared
-object is then reused by every test that reaches it. The canonical environment
-support header remains force-included but receives no generated forward, as in
-`build`. `HARD_ENTRYPOINTS` is ignored for this command because `gtest_main`
-supplies the test executable entry function.
+headers. Other `*_test.*` sources are never added automatically. It prepares
+one source-context forward for every test and production translation unit,
+then compiles them with the combined compiler flags. Dependency closures for
+different test roots are prepared concurrently. An object output shared by
+several test plans is compiled only once, and every source forward belongs only
+to its translation unit. The shared object is then reused by every test that
+reaches it. The canonical environment support header remains force-included,
+but its declarations do not enter generated source forwards, as in `build`.
+`HARD_ENTRYPOINTS` is ignored for this command because `gtest_main` supplies
+the test executable entry function.
 
 The same GitHub snapshot resolver is shared by every test plan, so missing
 expanded `github.com/` and well-known includes use the build download and cache
 rules described above. Downloaded repositories are handled as managed source
-trees: their forward headers and same-stem implementations participate in the
-test build, and their `Compiling` labels use canonical `github.com/...` paths.
-Search, dependency parsing, forward parsing, and all live download entries
-share preparation step `[1/?]` for the test invocation. Downloads do not add a
-separate step. After preparation, the exact total includes that first step and
+trees: their headers contribute to source forwards, and same-stem
+implementations participate in the test build. Their `Compiling` labels use
+canonical `github.com/...` paths. Search, source parsing, and all live download
+entries share preparation step `[1/?]` for the test invocation. Downloads do
+not add a separate step. After preparation, the exact total includes that first
+step and
 compilation continues at `[2/M]`, whether dependencies were downloaded or
 already cached.
 
@@ -577,8 +572,8 @@ The internal binary follows the same mirrored path rule as a build binary:
 Test binaries remain in the environment build tree and are not copied into
 the project. The `test` command does not accept `-o`.
 
-Source and header parse records are shared with the same persistent analysis
-cache. A hit is reported as `Parsing <source-or-header> (CACHED)`.
+Source parse records use the same persistent analysis cache. A hit is reported
+as `Parsing <source> (CACHED)`.
 Compilation and linking use the same content cache as `hard build`. After a
 test executable exits successfully, `hard` also stores a successful-result
 record beside it.
@@ -592,11 +587,10 @@ use `hard test --no-cache` when those inputs matter.
 
 The work is divided into invocation-wide phases:
 
-1. prepare the dependency closure of each selected test;
-2. generate each unique forward header;
-3. compile each unique object;
-4. link every test whose required objects compiled successfully;
-5. run every successfully linked test.
+1. prepare the dependency closure and source forward of each selected test;
+2. compile each unique object;
+3. link every test whose required objects compiled successfully;
+4. run every successfully linked test.
 
 Each phase uses at most the selected `-j` worker count without multiplying
 that limit through nested pools. Link jobs and test executables from different
@@ -761,11 +755,9 @@ HARD_ROOT/
         └── build/
             └── <absolute path without the leading slash>/
                 ├── file.cpp.hard-parse-cache.json
-                ├── file.h.hard-parse-cache.json
+                ├── file.cpp.fwd.h
                 ├── file.cpp.o
                 ├── file.cpp.o.hard-cache.json
-                ├── file_fwd.h
-                ├── file_fwd.hpp
                 ├── application
                 ├── application.hard-cache.json
                 └── application.hard-test-cache.json

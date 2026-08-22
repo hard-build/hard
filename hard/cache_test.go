@@ -126,6 +126,13 @@ func TestCompileSourceBatchCachesAndNoCacheRebuilds(t *testing.T) {
 		t.Fatalf("write fake compiler: %v", err)
 	}
 	withWorkingDirectory(t, project)
+	forward, err := sourceForwardHeaderPath(root, "host", "source.cpp")
+	if err != nil {
+		t.Fatalf("sourceForwardHeaderPath() error = %v", err)
+	}
+	if err := writeForwardHeader(forward, []byte("#pragma once\n")); err != nil {
+		t.Fatalf("write source forward header: %v", err)
+	}
 
 	run := func(read bool) string {
 		t.Helper()
@@ -297,7 +304,6 @@ func TestBuildSourcesWithProgressCachesCompileLinkAndCopy(t *testing.T) {
 	second := run(false)
 	for _, want := range []string{
 		"Parsing application.cpp (CACHED)",
-		"Parsing application.h (CACHED)",
 		"Compiling application.cpp (CACHED)",
 		"Linking " + output + " (CACHED)",
 		"Copying " + output + " (CACHED)",
@@ -530,6 +536,10 @@ func TestSourceParseCacheUsesDependencySnapshotAndNoCacheRefreshes(t *testing.T)
 			[]string{dependency},
 		)
 	}
+	wantForward := "#pragma once\n\nstruct dependency;\n"
+	if record.Forward != wantForward {
+		t.Fatalf("parse cache forward = %q, want %q", record.Forward, wantForward)
+	}
 
 	_, cached = inspectCachedBuildSource(
 		t,
@@ -730,39 +740,6 @@ func TestParseCacheSkipsHasIncludeAndFailedParses(t *testing.T) {
 		}
 	})
 
-	t.Run("header", func(t *testing.T) {
-		root := t.TempDir()
-		project := t.TempDir()
-		header := filepath.Join(project, "public.h")
-		writeBuildFile(
-			t,
-			project,
-			"public.h",
-			"#if __has_include(\"optional.h\")\n#include \"optional.h\"\n#endif\nstruct public_type {};\n",
-		)
-		withWorkingDirectory(t, project)
-		err := generateForwardDeclarationsWithFlagsAndCache(
-			root,
-			"host",
-			[]string{header},
-			nil,
-			1,
-			project,
-			nil,
-			newTestArtifactCache(t, true),
-		)
-		if err != nil {
-			t.Fatalf("generate forward header: %v", err)
-		}
-		recordPath, err := parseCachePath(root, "host", header)
-		if err != nil {
-			t.Fatalf("parseCachePath() error = %v", err)
-		}
-		if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
-			t.Fatalf("__has_include header parse cache error = %v, want not exist", err)
-		}
-	})
-
 	t.Run("cflags", func(t *testing.T) {
 		project := t.TempDir()
 		writeBuildFile(t, project, "source.cpp", "")
@@ -776,34 +753,6 @@ func TestParseCacheSkipsHasIncludeAndFailedParses(t *testing.T) {
 		}
 		if !unsafe {
 			t.Fatal("parseCacheInputContainsHasInclude() = false, want true")
-		}
-	})
-
-	t.Run("failed header parse", func(t *testing.T) {
-		root := t.TempDir()
-		project := t.TempDir()
-		header := filepath.Join(project, "public.h")
-		writeBuildFile(t, project, "public.h", "struct {\n")
-		withWorkingDirectory(t, project)
-		err := generateForwardDeclarationsWithFlagsAndCache(
-			root,
-			"host",
-			[]string{header},
-			nil,
-			1,
-			project,
-			nil,
-			newTestArtifactCache(t, true),
-		)
-		if err == nil {
-			t.Fatal("failed header parse error = nil")
-		}
-		recordPath, err := parseCachePath(root, "host", header)
-		if err != nil {
-			t.Fatalf("parseCachePath() error = %v", err)
-		}
-		if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
-			t.Fatalf("failed header parse cache error = %v, want not exist", err)
 		}
 	})
 
@@ -826,11 +775,11 @@ func TestParseCacheSkipsHasIncludeAndFailedParses(t *testing.T) {
 	})
 }
 
-func TestForwardParseCacheRestoresOutputAndTracksDependencies(t *testing.T) {
+func TestSourceParseCacheRestoresForwardAndTracksDependencies(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
-	header := filepath.Join(project, "public.h")
 	dependency := filepath.Join(project, "dependency.h")
+	public := filepath.Join(project, "public.h")
 	writeBuildFile(t, project, "dependency.h", "#pragma once\nstruct dependency {};\n")
 	writeBuildFile(
 		t,
@@ -838,41 +787,27 @@ func TestForwardParseCacheRestoresOutputAndTracksDependencies(t *testing.T) {
 		"public.h",
 		"#include \"dependency.h\"\nstruct public_type {};\n",
 	)
+	writeBuildFile(t, project, "source.cpp", "#include \"public.h\"\n")
 	withWorkingDirectory(t, project)
-	output, err := forwardHeaderPath(root, "host", header)
+	output, err := sourceForwardHeaderPath(root, "host", "source.cpp")
 	if err != nil {
-		t.Fatalf("forwardHeaderPath() error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath() error = %v", err)
 	}
 
 	run := func(read bool) []bool {
 		t.Helper()
-		var cached []bool
-		err := generateForwardDeclarationsWithFlagsAndCache(
-			root,
-			"host",
-			[]string{header},
-			nil,
-			1,
-			project,
-			func(_ string, hit bool) {
-				cached = append(cached, hit)
-			},
-			newTestArtifactCache(t, read),
-		)
-		if err != nil {
-			t.Fatalf("generateForwardDeclarationsWithFlagsAndCache() error = %v", err)
-		}
+		_, cached := inspectCachedBuildSource(t, root, project, "source.cpp", nil, nil, read)
 		return cached
 	}
 
 	if cached := run(true); len(cached) != 1 || cached[0] {
-		t.Fatalf("first forward parse cache activity = %#v, want miss", cached)
+		t.Fatalf("first source parse cache activity = %#v, want miss", cached)
 	}
-	want := "#pragma once\n\nstruct public_type;\n"
+	want := "#pragma once\n\nstruct dependency;\nstruct public_type;\n"
 	if got := readTestFile(t, output); got != want {
 		t.Fatalf("forward output = %q, want %q", got, want)
 	}
-	recordPath, err := parseCachePath(root, "host", header)
+	recordPath, err := parseCachePath(root, "host", "source.cpp")
 	if err != nil {
 		t.Fatalf("parseCachePath() error = %v", err)
 	}
@@ -880,14 +815,15 @@ func TestForwardParseCacheRestoresOutputAndTracksDependencies(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("readParseCacheRecord() = ok %v, error %v", ok, err)
 	}
-	if !reflect.DeepEqual(record.Dependencies, []string{dependency}) {
-		t.Fatalf("forward parse cache dependencies = %#v, want %#v", record.Dependencies, []string{dependency})
+	wantDependencies := []string{dependency, public}
+	if !reflect.DeepEqual(record.Dependencies, wantDependencies) {
+		t.Fatalf("source parse cache dependencies = %#v, want %#v", record.Dependencies, wantDependencies)
 	}
 	if err := os.Remove(output); err != nil {
 		t.Fatalf("remove generated forward header: %v", err)
 	}
 	if cached := run(true); len(cached) != 1 || !cached[0] {
-		t.Fatalf("second forward parse cache activity = %#v, want hit", cached)
+		t.Fatalf("second source parse cache activity = %#v, want hit", cached)
 	}
 	if got := readTestFile(t, output); got != want {
 		t.Fatalf("restored forward output = %q, want %q", got, want)
@@ -902,7 +838,7 @@ func TestForwardParseCacheRestoresOutputAndTracksDependencies(t *testing.T) {
 		t.Fatalf("write corrupted parse cache record: %v", err)
 	}
 	if cached := run(true); len(cached) != 1 || cached[0] {
-		t.Fatalf("corrupted result forward cache activity = %#v, want miss", cached)
+		t.Fatalf("corrupted source result cache activity = %#v, want miss", cached)
 	}
 	if got := readTestFile(t, output); got != want {
 		t.Fatalf("regenerated forward output = %q, want %q", got, want)
@@ -910,13 +846,17 @@ func TestForwardParseCacheRestoresOutputAndTracksDependencies(t *testing.T) {
 
 	writeBuildFile(t, project, "dependency.h", "#pragma once\nstruct changed_dependency {};\n")
 	if cached := run(true); len(cached) != 1 || cached[0] {
-		t.Fatalf("changed dependency forward cache activity = %#v, want miss", cached)
+		t.Fatalf("changed dependency source cache activity = %#v, want miss", cached)
+	}
+	changed := readTestFile(t, output)
+	if !strings.Contains(changed, "struct changed_dependency;") || strings.Contains(changed, "struct dependency;") {
+		t.Fatalf("changed source forward output = %q", changed)
 	}
 	if cached := run(false); len(cached) != 1 || cached[0] {
-		t.Fatalf("no-cache forward activity = %#v, want miss", cached)
+		t.Fatalf("no-cache source activity = %#v, want miss", cached)
 	}
 	if cached := run(true); len(cached) != 1 || !cached[0] {
-		t.Fatalf("forward activity after refresh = %#v, want hit", cached)
+		t.Fatalf("source activity after refresh = %#v, want hit", cached)
 	}
 }
 

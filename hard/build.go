@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -23,6 +22,7 @@ type buildResult struct {
 	dependencies      []string
 	cacheDependencies []string
 	entrypoint        string
+	forward           string
 	diagnostics       []byte
 	fatal             bool
 	err               error
@@ -161,29 +161,6 @@ func buildSourcesWithProgress(
 		if entryPointsBySource[index] != "" {
 			linkCount++
 		}
-	}
-	dependencies := make(map[string]struct{})
-	for _, sourceDependencies := range dependenciesBySource {
-		for _, dependency := range sourceDependencies {
-			dependencies[dependency] = struct{}{}
-		}
-	}
-	paths := make([]string, 0, len(dependencies))
-	for dependency := range dependencies {
-		paths = append(paths, dependency)
-	}
-	sort.Strings(paths)
-	if err := generateForwardDeclarationsWithFlagsAndCache(
-		root,
-		environment,
-		paths,
-		cflags,
-		jobs,
-		workingDirectory,
-		parsingActivity,
-		cache,
-	); err != nil {
-		failures = append(failures, err)
 	}
 	if err := errors.Join(failures...); err != nil {
 		return errors.Join(err, progress.finish())
@@ -530,9 +507,19 @@ func inspectBuildSourceWithCache(
 			if activity != nil {
 				activity(job.source, true)
 			}
+			forward, err := sourceForwardHeaderPath(root, environment, job.source)
+			if err != nil {
+				result.err = err
+				return result
+			}
+			if err := writeForwardHeader(forward, []byte(record.Forward)); err != nil {
+				result.err = fmt.Errorf("write cached forward header %s: %w", forward, err)
+				return result
+			}
 			result.dependencies = append([]string(nil), record.ManagedDependencies...)
 			result.cacheDependencies = append([]string(nil), record.Dependencies...)
 			result.entrypoint = record.EntryPoint
+			result.forward = record.Forward
 			return result
 		}
 		if err := cache.invalidateParse(recordPath); err != nil {
@@ -544,7 +531,7 @@ func inspectBuildSourceWithCache(
 		activity(job.source, false)
 	}
 
-	fatal, dependencies, diagnostics, err := sourceDependencySetWithClang(
+	fatal, dependencies, analysis, diagnostics, err := sourceAnalysisWithClang(
 		githubResolver,
 		cflags,
 		job.source,
@@ -563,7 +550,33 @@ func inspectBuildSourceWithCache(
 			configuredEntryPoints,
 		)
 	}
-	result.err = errors.Join(entryError, err)
+	var forwardError error
+	if err == nil && entryError == nil && cache != nil {
+		forward, pathError := sourceForwardHeaderPath(root, environment, job.source)
+		if pathError != nil {
+			forwardError = pathError
+		} else {
+			forwardDependencies := removeDependencyPath(
+				result.dependencies,
+				environmentSupportHeader(root, environment, workingDirectory),
+			)
+			contents, contentError := sourceForwardContents(
+				forward,
+				analysis,
+				forwardDependencies,
+				cflags,
+				workingDirectory,
+			)
+			if contentError != nil {
+				forwardError = fmt.Errorf("generate forward header for %s: %w", job.source, contentError)
+			} else if writeError := writeForwardHeader(forward, contents); writeError != nil {
+				forwardError = fmt.Errorf("write forward header %s: %w", forward, writeError)
+			} else {
+				result.forward = string(contents)
+			}
+		}
+	}
+	result.err = errors.Join(entryError, forwardError, err)
 	if cache == nil || result.fatal || result.err != nil {
 		return result
 	}
@@ -574,6 +587,7 @@ func inspectBuildSourceWithCache(
 			Dependencies:        append([]string(nil), result.cacheDependencies...),
 			ManagedDependencies: append([]string(nil), result.dependencies...),
 			EntryPoint:          result.entrypoint,
+			Forward:             result.forward,
 		},
 		job.source,
 		arguments,
@@ -745,13 +759,9 @@ func compileSourceBatchWithCacheDependencies(
 		if err != nil {
 			return nil, err
 		}
-		forwards := make([]string, 0, len(dependenciesBySource[index]))
-		for _, dependency := range dependenciesBySource[index] {
-			forward, err := forwardHeaderPath(root, environment, dependency)
-			if err != nil {
-				return nil, err
-			}
-			forwards = append(forwards, forward)
+		forward, err := sourceForwardHeaderPath(root, environment, source)
+		if err != nil {
+			return nil, err
 		}
 		cacheDependencies := cacheDependenciesBySource[index]
 		tasks = append(tasks, compileJob{
@@ -759,7 +769,7 @@ func compileSourceBatchWithCacheDependencies(
 			source:            source,
 			display:           compileSourceDisplayPath(root, source, workingDirectory),
 			object:            object,
-			forwards:          forwards,
+			forwards:          []string{forward},
 			cacheDependencies: cacheDependencies,
 		})
 	}

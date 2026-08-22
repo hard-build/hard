@@ -165,7 +165,7 @@ func TestCompileSourceUsesCompilerAndCFlags(t *testing.T) {
 	}
 }
 
-func TestCompileSourceBatchIncludesGitHubForwardHeaders(t *testing.T) {
+func TestCompileSourceBatchIncludesSourceForwardHeader(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
 	writeBuildFile(t, project, "source.cpp", "")
@@ -213,9 +213,9 @@ func TestCompileSourceBatchIncludesGitHubForwardHeaders(t *testing.T) {
 	if err := compileResultsError(results); err != nil {
 		t.Fatalf("compileSourceBatch() result error = %v", err)
 	}
-	forward, err := forwardHeaderPath(root, "host", external)
+	forward, err := sourceForwardHeaderPath(root, "host", "source.cpp")
 	if err != nil {
-		t.Fatalf("forwardHeaderPath() error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath() error = %v", err)
 	}
 	if want := "-include " + forward; !strings.Contains(stdout.String(), want) {
 		t.Fatalf("compile command does not contain %q: %q", want, stdout.String())
@@ -443,9 +443,6 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 			want: []string{
 				"[1/?] Parsing first.cpp",
 				"[1/?] Parsing second.cpp",
-				"[1/?] Parsing include/common.h",
-				"[1/?] Parsing include/first.h",
-				"[1/?] Parsing include/second.h",
 				"[2/5] Compiling ",
 				"[3/5] Compiling ",
 				"[4/5] Linking first",
@@ -525,13 +522,6 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 			if tt.name == "normal" && strings.Count(output, "\n") != 1 {
 				t.Errorf("buildSources() normal output has multiple lines: %q", output)
 			}
-			forward, err := forwardHeaderPath(root, "host", filepath.Join(root, "include", "common.h"))
-			if err != nil {
-				t.Fatalf("forwardHeaderPath() error = %v", err)
-			}
-			if got := readTestFile(t, forward); got != "#pragma once\n" {
-				t.Fatalf("generated forward header = %q", got)
-			}
 			for _, source := range []string{"first.cpp", "second.cpp"} {
 				object, err := objectFilePath(root, "host", source)
 				if err != nil {
@@ -540,20 +530,14 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 				if got := readTestFile(t, object); got != "object\n" {
 					t.Fatalf("generated object for %s = %q", source, got)
 				}
-				header := strings.TrimSuffix(source, ".cpp") + ".h"
-				dependencies := []string{
-					filepath.Join(root, "include", "common.h"),
-					filepath.Join(root, "include", header),
+				forward, err := sourceForwardHeaderPath(root, "host", source)
+				if err != nil {
+					t.Fatalf("sourceForwardHeaderPath(%q) error = %v", source, err)
 				}
-				forwards := make([]string, 0, len(dependencies))
-				for _, dependency := range dependencies {
-					forward, err := forwardHeaderPath(root, "host", dependency)
-					if err != nil {
-						t.Fatalf("forwardHeaderPath(%q) error = %v", dependency, err)
-					}
-					forwards = append(forwards, forward)
+				if got := readTestFile(t, forward); got != "#pragma once\n" {
+					t.Fatalf("generated forward header for %s = %q", source, got)
 				}
-				command := string(renderCompileCommand(compiler, cflags, forwards, source, object))
+				command := string(renderCompileCommand(compiler, cflags, []string{forward}, source, object))
 				if tt.verbose && !tt.silent {
 					if !strings.Contains(output, source+"\n"+command) {
 						t.Errorf("buildSources() output does not contain command after %q: %q", source, output)
@@ -569,7 +553,7 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 	}
 }
 
-func TestBuildSourcesDoesNotGenerateForwardForEnvironmentSupportHeader(t *testing.T) {
+func TestBuildSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
 	supportDirectory := t.TempDir()
@@ -608,20 +592,16 @@ func TestBuildSourcesDoesNotGenerateForwardForEnvironmentSupportHeader(t *testin
 		t.Fatalf("buildSources() error = %v", err)
 	}
 
-	projectHeader := filepath.Join(project, "hard.h")
-	projectForward, err := forwardHeaderPath(root, "host", projectHeader)
+	sourceForward, err := sourceForwardHeaderPath(root, "host", "source.cpp")
 	if err != nil {
-		t.Fatalf("forwardHeaderPath(project hard.h) error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath(source.cpp) error = %v", err)
 	}
-	if _, err := os.Stat(projectForward); err != nil {
-		t.Fatalf("stat project forward header: %v", err)
+	forwardContents := readTestFile(t, sourceForward)
+	if !strings.Contains(forwardContents, "struct project_type;") {
+		t.Fatalf("source forward header = %q, want project_type", forwardContents)
 	}
-	supportForward, err := forwardHeaderPath(root, "host", supportHeader)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath(hard.h) error = %v", err)
-	}
-	if _, err := os.Stat(supportForward); !os.IsNotExist(err) {
-		t.Fatalf("stat support forward header error = %v, want not exist", err)
+	if strings.Contains(forwardContents, "hard_support") {
+		t.Fatalf("source forward header = %q, want no hard_support", forwardContents)
 	}
 
 	object, err := objectFilePath(root, "host", "source.cpp")
@@ -632,21 +612,18 @@ func TestBuildSourcesDoesNotGenerateForwardForEnvironmentSupportHeader(t *testin
 	wantCommand := string(renderCompileCommand(
 		compiler,
 		cflags,
-		[]string{projectForward},
+		[]string{sourceForward},
 		"source.cpp",
 		object,
 	))
-	for _, want := range []string{
-		"Parsing hard.h\n",
-		"Compiling source.cpp\n" + wantCommand,
-	} {
+	for _, want := range []string{"Compiling source.cpp\n" + wantCommand} {
 		if !strings.Contains(output, want) {
 			t.Errorf("buildSources() output does not contain %q: %q", want, output)
 		}
 	}
 	for _, forbidden := range []string{
+		"Parsing hard.h",
 		"Parsing " + buildParsingDisplayPath(root, supportHeader, project),
-		supportForward,
 	} {
 		if strings.Contains(output, forbidden) {
 			t.Errorf("buildSources() output contains %q: %q", forbidden, output)

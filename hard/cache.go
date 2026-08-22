@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-const artifactCacheVersion = 2
+const artifactCacheVersion = 3
 
 const (
 	buildCacheSuffix      = ".hard-cache.json"

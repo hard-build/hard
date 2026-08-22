@@ -114,7 +114,6 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	for _, want := range []string{
 		"Parsing pass_test.cpp\n",
 		"Parsing fail_test.cpp\n",
-		"Parsing shared.h\n",
 		"Linking pass_test\n",
 		"Testing pass_test\n",
 		"ran pass_test --gtest_color=no\n",
@@ -155,9 +154,9 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("objectFilePath(shared.cpp) error = %v", err)
 	}
-	forward, err := forwardHeaderPath(root, "host", filepath.Join(project, "shared.h"))
+	forward, err := sourceForwardHeaderPath(root, "host", "pass_test.cpp")
 	if err != nil {
-		t.Fatalf("forwardHeaderPath(shared.h) error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath(pass_test.cpp) error = %v", err)
 	}
 	passArtifact, err := binaryArtifactPath(root, "host", "pass_test.cpp")
 	if err != nil {
@@ -211,7 +210,7 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	}
 }
 
-func TestTestSourcesDoesNotGenerateForwardForEnvironmentSupportHeader(t *testing.T) {
+func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
 	supportDirectory := t.TempDir()
@@ -248,20 +247,16 @@ func TestTestSourcesDoesNotGenerateForwardForEnvironmentSupportHeader(t *testing
 		t.Fatalf("testSources() error = %v", err)
 	}
 
-	projectHeader := filepath.Join(project, "hard.h")
-	projectForward, err := forwardHeaderPath(root, "host", projectHeader)
+	sourceForward, err := sourceForwardHeaderPath(root, "host", "pass_test.cpp")
 	if err != nil {
-		t.Fatalf("forwardHeaderPath(project hard.h) error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath(pass_test.cpp) error = %v", err)
 	}
-	if _, err := os.Stat(projectForward); err != nil {
-		t.Fatalf("stat project forward header: %v", err)
+	forwardContents := readTestFile(t, sourceForward)
+	if !strings.Contains(forwardContents, "struct project_type;") {
+		t.Fatalf("source forward header = %q, want project_type", forwardContents)
 	}
-	supportForward, err := forwardHeaderPath(root, "host", supportHeader)
-	if err != nil {
-		t.Fatalf("forwardHeaderPath(hard.h) error = %v", err)
-	}
-	if _, err := os.Stat(supportForward); !os.IsNotExist(err) {
-		t.Fatalf("stat support forward header error = %v, want not exist", err)
+	if strings.Contains(forwardContents, "hard_support") {
+		t.Fatalf("source forward header = %q, want no hard_support", forwardContents)
 	}
 
 	object, err := objectFilePath(root, "host", "pass_test.cpp")
@@ -272,21 +267,18 @@ func TestTestSourcesDoesNotGenerateForwardForEnvironmentSupportHeader(t *testing
 	wantCommand := string(renderCompileCommand(
 		compiler,
 		[]string{"-include", environmentHeader, "-DGTEST=1"},
-		[]string{projectForward},
+		[]string{sourceForward},
 		"pass_test.cpp",
 		object,
 	))
-	for _, want := range []string{
-		"Parsing hard.h\n",
-		"Compiling pass_test.cpp\n" + wantCommand,
-	} {
+	for _, want := range []string{"Compiling pass_test.cpp\n" + wantCommand} {
 		if !strings.Contains(output, want) {
 			t.Errorf("testSources() output does not contain %q: %q", want, output)
 		}
 	}
 	for _, forbidden := range []string{
+		"Parsing hard.h",
 		"Parsing " + buildParsingDisplayPath(root, supportHeader, project),
-		supportForward,
 	} {
 		if strings.Contains(output, forbidden) {
 			t.Errorf("testSources() output contains %q: %q", forbidden, output)
