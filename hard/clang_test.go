@@ -222,6 +222,27 @@ func TestSourceDependenciesCanonicalizesAndDeduplicatesSymlinks(t *testing.T) {
 	}
 }
 
+func TestClangDependencyPathSetExcludesSystemHeadersFromCache(t *testing.T) {
+	directory := t.TempDir()
+	source := writeClangTestFile(t, directory, "source.cpp", "")
+	managed := writeClangTestFile(t, directory, "managed.hpp", "")
+	system := writeClangTestFile(t, directory, "system.hpp", "")
+	analysis := clangAnalysis{includes: []clangInclude{
+		{target: source},
+		{target: system, system: true},
+		{target: managed},
+		{target: managed},
+	}}
+
+	dependencies, err := clangDependencyPathSet(analysis, source, directory)
+	if err != nil {
+		t.Fatalf("clangDependencyPathSet() error = %v", err)
+	}
+	if want := []string{managed}; !reflect.DeepEqual(dependencies.managed, want) {
+		t.Fatalf("managed dependencies = %#v, want %#v", dependencies.managed, want)
+	}
+}
+
 func clangQualifiedName(namespaces []forwardNamespace, name string) string {
 	parts := make([]string, 0, len(namespaces)+1)
 	for _, namespace := range namespaces {

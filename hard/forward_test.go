@@ -283,6 +283,30 @@ func TestWriteForwardHeaderRemovesTemporaryFileWhenRenameFails(t *testing.T) {
 	}
 }
 
+func TestWriteForwardHeaderPreservesUnchangedRegularFile(t *testing.T) {
+	directory := t.TempDir()
+	output := filepath.Join(directory, "output_fwd.h")
+	contents := []byte("#pragma once\n")
+	if err := writeForwardHeader(output, contents); err != nil {
+		t.Fatalf("first writeForwardHeader() error = %v", err)
+	}
+	before, err := os.Stat(output)
+	if err != nil {
+		t.Fatalf("stat first forward header: %v", err)
+	}
+
+	if err := writeForwardHeader(output, contents); err != nil {
+		t.Fatalf("second writeForwardHeader() error = %v", err)
+	}
+	after, err := os.Stat(output)
+	if err != nil {
+		t.Fatalf("stat second forward header: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("unchanged forward header was replaced")
+	}
+}
+
 func TestStripTemplateDefault(t *testing.T) {
 	tests := map[string]string{
 		"typename type = int":                                 "typename type",

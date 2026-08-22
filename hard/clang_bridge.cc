@@ -363,6 +363,12 @@ const char* parse_error(CXErrorCode code)
 
 } // namespace
 
+extern "C" const char* hard_clang_version()
+{
+	static const std::string version = to_string(clang_getClangVersion());
+	return version.c_str();
+}
+
 extern "C" hard_clang_analysis* hard_clang_analyze(
         const char* source,
         const char* contents,

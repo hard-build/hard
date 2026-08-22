@@ -18,6 +18,7 @@ type arguments struct {
 	verbose bool
 	silent  bool
 	noColor bool
+	noCache bool
 	jobs    int
 	format  string
 	output  string
@@ -38,6 +39,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 	var verbose bool
 	var silent bool
 	var noColor bool
+	var noCache bool
 	jobs := defaultJobs
 	format := defaultFormat
 	var output string
@@ -81,6 +83,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&format,
 		&silent,
 		nil,
+		nil,
 		parsed,
 	)
 	formatCommand.Flags().StringVar(
@@ -99,10 +102,12 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		nil,
 		&silent,
 		&output,
+		&noCache,
 		parsed,
 	)
 	buildCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
 	buildCommand.Flags().StringVarP(&output, "output", "o", "", "copy binary to file or directory")
+	buildCommand.Flags().BoolVar(&noCache, "no-cache", false, "rebuild without using cached results")
 	fetchCommand := newPathCommand(
 		"fetch",
 		"Download C++ dependencies",
@@ -111,6 +116,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&jobs,
 		nil,
 		&silent,
+		nil,
 		nil,
 		parsed,
 	)
@@ -124,9 +130,11 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		nil,
 		&silent,
 		nil,
+		&noCache,
 		parsed,
 	)
 	testCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
+	testCommand.Flags().BoolVar(&noCache, "no-cache", false, "rebuild and rerun tests without using cached results")
 	root.AddCommand(
 		formatCommand,
 		buildCommand,
@@ -146,6 +154,7 @@ func newPathCommand(
 	format *string,
 	silent *bool,
 	output *string,
+	noCache *bool,
 	parsed *arguments,
 ) *cobra.Command {
 	return &cobra.Command{
@@ -176,6 +185,9 @@ func newPathCommand(
 			}
 			if output != nil {
 				result.output = *output
+			}
+			if noCache != nil {
+				result.noCache = *noCache
 			}
 			*parsed = result
 			return nil

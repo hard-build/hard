@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -81,6 +82,34 @@ func generateForwardDeclarationsWithFlagsAndActivity(
 	workingDirectory string,
 	activity func(string),
 ) error {
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	return generateForwardDeclarationsWithFlagsAndCache(
+		root,
+		environment,
+		headers,
+		cflags,
+		jobs,
+		workingDirectory,
+		parsingActivity,
+		nil,
+	)
+}
+
+func generateForwardDeclarationsWithFlagsAndCache(
+	root string,
+	environment string,
+	headers []string,
+	cflags []string,
+	jobs int,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+) error {
 	if len(headers) == 0 {
 		return nil
 	}
@@ -128,16 +157,17 @@ func generateForwardDeclarationsWithFlagsAndActivity(
 		go func() {
 			defer workers.Done()
 			for task := range queue {
-				if activity != nil {
-					activity(task.header)
-				}
 				results <- forwardResult{
 					index: task.index,
-					err: generateForwardHeaderWithFlags(
+					err: generateForwardHeaderWithFlagsAndCache(
+						cache,
+						root,
+						environment,
 						task.header,
 						task.output,
 						cflags,
 						workingDirectory,
+						activity,
 					),
 				}
 			}
@@ -174,7 +204,64 @@ func generateForwardHeaderWithFlags(
 	cflags []string,
 	workingDirectory string,
 ) error {
-	declarations, err := extractForwardDeclarationsFromHeader(
+	return generateForwardHeaderWithFlagsAndCache(
+		nil,
+		"",
+		"",
+		header,
+		output,
+		cflags,
+		workingDirectory,
+		nil,
+	)
+}
+
+func generateForwardHeaderWithFlagsAndCache(
+	cache *artifactCache,
+	root string,
+	environment string,
+	header string,
+	output string,
+	cflags []string,
+	workingDirectory string,
+	activity func(string, bool),
+) error {
+	arguments := parseCacheArguments(cflags, nil)
+	var recordPath string
+	if cache != nil {
+		var err error
+		recordPath, err = parseCachePath(root, environment, header)
+		if err != nil {
+			return err
+		}
+		record, cached, err := cache.parseHit(
+			recordPath,
+			"header-parse",
+			header,
+			arguments,
+			workingDirectory,
+		)
+		if err != nil {
+			return fmt.Errorf("read parse cache for %s: %w", header, err)
+		}
+		if cached {
+			if activity != nil {
+				activity(header, true)
+			}
+			if err := writeForwardHeader(output, []byte(record.Forward)); err != nil {
+				return fmt.Errorf("write cached forward header %s: %w", output, err)
+			}
+			return nil
+		}
+		if err := cache.invalidateParse(recordPath); err != nil {
+			return fmt.Errorf("invalidate parse cache for %s: %w", header, err)
+		}
+	}
+	if activity != nil {
+		activity(header, false)
+	}
+
+	declarations, dependencies, err := extractForwardDeclarationsFromHeaderWithDependencies(
 		header,
 		nil,
 		cflags,
@@ -196,6 +283,23 @@ func generateForwardHeaderWithFlags(
 	if err := writeForwardHeader(output, contents); err != nil {
 		return fmt.Errorf("write forward header %s: %w", output, err)
 	}
+	if cache == nil {
+		return nil
+	}
+	_, err = cache.storeParse(
+		recordPath,
+		parseCacheRecord{
+			Kind:         "header-parse",
+			Dependencies: append([]string(nil), dependencies...),
+			Forward:      string(contents),
+		},
+		header,
+		arguments,
+		workingDirectory,
+	)
+	if err != nil {
+		return fmt.Errorf("store parse cache for %s: %w", header, err)
+	}
 	return nil
 }
 
@@ -214,13 +318,28 @@ func extractForwardDeclarationsFromHeader(
 	cflags []string,
 	workingDirectory string,
 ) ([]forwardDeclaration, error) {
+	declarations, _, err := extractForwardDeclarationsFromHeaderWithDependencies(
+		header,
+		contents,
+		cflags,
+		workingDirectory,
+	)
+	return declarations, err
+}
+
+func extractForwardDeclarationsFromHeaderWithDependencies(
+	header string,
+	contents []byte,
+	cflags []string,
+	workingDirectory string,
+) ([]forwardDeclaration, []string, error) {
 	absoluteHeader := header
 	if !filepath.IsAbs(absoluteHeader) {
 		absoluteHeader = filepath.Join(workingDirectory, absoluteHeader)
 	}
 	absoluteHeader, err := filepath.Abs(absoluteHeader)
 	if err != nil {
-		return nil, fmt.Errorf("make forward header absolute %s: %w", header, err)
+		return nil, nil, fmt.Errorf("make forward header absolute %s: %w", header, err)
 	}
 	analysis, err := analyzeClangFile(
 		absoluteHeader,
@@ -229,10 +348,19 @@ func extractForwardDeclarationsFromHeader(
 		clangAnalysisOptions{skipFunctionBodies: true},
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := clangForwardSyntaxError(analysis, absoluteHeader); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	var dependencies []string
+	if contents == nil {
+		dependencySet, err := clangDependencyPathSet(analysis, absoluteHeader, workingDirectory)
+		if err != nil {
+			return nil, nil, err
+		}
+		dependencies = dependencySet.managed
 	}
 
 	declarations := append([]clangDeclaration(nil), analysis.declarations...)
@@ -276,7 +404,7 @@ func extractForwardDeclarationsFromHeader(
 			name:       declaration.name,
 		})
 	}
-	return result, nil
+	return result, dependencies, nil
 }
 
 func clangHeaderArguments(cflags []string, workingDirectory string) []string {
@@ -471,6 +599,19 @@ func forwardHeaderPath(root, environment, header string) (string, error) {
 }
 
 func writeForwardHeader(path string, contents []byte) error {
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode().IsRegular() {
+		existing, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(existing, contents) {
+			return nil
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err

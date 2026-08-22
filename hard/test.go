@@ -17,11 +17,12 @@ import (
 const googleTestPackage = "gtest_main"
 
 type testPlan struct {
-	source               string
-	sources              []string
-	dependenciesBySource [][]string
-	headers              []string
-	compileIndexes       []int
+	source                    string
+	sources                   []string
+	dependenciesBySource      [][]string
+	cacheDependenciesBySource [][]string
+	headers                   []string
+	compileIndexes            []int
 }
 
 type testPreparationJob struct {
@@ -103,6 +104,7 @@ func testSources(
 		progress,
 		stdout,
 		stderr,
+		false,
 	)
 }
 
@@ -120,6 +122,7 @@ func testSourcesWithProgress(
 	progress *progressBar,
 	stdout io.Writer,
 	stderr io.Writer,
+	noCache bool,
 ) error {
 	if len(sources) == 0 {
 		return progress.finish()
@@ -131,6 +134,10 @@ func testSourcesWithProgress(
 	workingDirectory, err := os.Getwd()
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
+	}
+	cache, err := newArtifactCache(!noCache)
+	if err != nil {
+		return errors.Join(err, progress.finish())
 	}
 	pkgConfigDiagnostics := stderr
 	if silent {
@@ -148,16 +155,23 @@ func testSourcesWithProgress(
 	testLDFlags := append(append([]string(nil), ldflags...), googleLDFlags...)
 
 	githubResolver := newGitHubSnapshotResolver(root, progress)
-	activity := func(path string) {
-		progress.updateStep("Parsing " + buildParsingDisplayPath(root, path, workingDirectory))
+	activity := func(path string, cached bool) {
+		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
+		if cached {
+			step += " (CACHED)"
+		}
+		progress.updateStep(step)
 	}
-	preparationResults := prepareTestsWithActivity(
+	preparationResults := prepareTestsWithCache(
+		root,
+		environment,
 		githubResolver,
 		testCFlags,
 		sources,
 		jobs,
 		workingDirectory,
 		activity,
+		cache,
 	)
 	supportHeader := environmentSupportHeader(root, environment, workingDirectory)
 	plans := make([]testPlan, 0, len(sources))
@@ -185,7 +199,7 @@ func testSourcesWithProgress(
 		plans = append(plans, result.plan)
 	}
 
-	plans, forwardFailures := generateTestForwardDeclarationsWithActivity(
+	plans, forwardFailures := generateTestForwardDeclarationsWithCache(
 		root,
 		environment,
 		plans,
@@ -193,10 +207,11 @@ func testSourcesWithProgress(
 		jobs,
 		workingDirectory,
 		activity,
+		cache,
 	)
 	failures = append(failures, forwardFailures...)
 
-	plans, compileSources, compileDependencies, err := mergeTestCompileSources(
+	plans, compileSources, compileDependencies, compileCacheDependencies, err := mergeTestCompileSources(
 		root,
 		environment,
 		plans,
@@ -207,18 +222,20 @@ func testSourcesWithProgress(
 	}
 
 	progress.setTotal(1 + len(compileSources) + 2*len(plans))
-	compileResults, err := compileSourceBatch(
+	compileResults, err := compileSourceBatchWithCacheDependencies(
 		root,
 		environment,
 		compiler,
 		testCFlags,
 		compileSources,
 		compileDependencies,
+		compileCacheDependencies,
 		jobs,
 		verbose,
 		silent,
 		workingDirectory,
 		progress,
+		cache,
 	)
 	if err != nil {
 		return errors.Join(errors.Join(failures...), err, progress.finish())
@@ -244,6 +261,7 @@ func testSourcesWithProgress(
 		silent,
 		workingDirectory,
 		progress,
+		cache,
 	)
 	runJobs := make([]testRunJob, 0, len(linkJobs))
 	for index, result := range linkResults {
@@ -267,7 +285,7 @@ func testSourcesWithProgress(
 		})
 	}
 
-	runResults := runTests(runJobs, jobs, verbose, silent, noColor, workingDirectory, progress)
+	runResults := runTests(runJobs, jobs, verbose, silent, noColor, workingDirectory, progress, cache)
 	if err := progress.finish(); err != nil {
 		failures = append(failures, err)
 	}
@@ -314,8 +332,38 @@ func prepareTestWithActivity(
 	workingDirectory string,
 	activity func(string),
 ) (testPlan, []byte, error) {
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	return prepareTestWithCache(
+		"",
+		"",
+		githubResolver,
+		cflags,
+		testSource,
+		workingDirectory,
+		parsingActivity,
+		nil,
+	)
+}
+
+func prepareTestWithCache(
+	root string,
+	environment string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	testSource string,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+) (testPlan, []byte, error) {
 	var diagnostics bytes.Buffer
-	sources, dependenciesBySource, _, failures, err := discoverBuildSourceClosureWithActivity(
+	sources, dependenciesBySource, cacheDependenciesBySource, _, failures, err := discoverBuildSourceClosureWithCache(
+		root,
+		environment,
 		githubResolver,
 		cflags,
 		nil,
@@ -324,6 +372,7 @@ func prepareTestWithActivity(
 		workingDirectory,
 		&diagnostics,
 		activity,
+		cache,
 	)
 	if err != nil {
 		return testPlan{}, append([]byte(nil), diagnostics.Bytes()...),
@@ -347,10 +396,11 @@ func prepareTestWithActivity(
 			fmt.Errorf("prepare test %s: %w", testSource, preparationError)
 	}
 	return testPlan{
-		source:               testSource,
-		sources:              sources,
-		dependenciesBySource: dependenciesBySource,
-		headers:              paths,
+		source:                    testSource,
+		sources:                   sources,
+		dependenciesBySource:      dependenciesBySource,
+		cacheDependenciesBySource: cacheDependenciesBySource,
+		headers:                   paths,
 	}, append([]byte(nil), diagnostics.Bytes()...), nil
 }
 
@@ -379,6 +429,36 @@ func prepareTestsWithActivity(
 	workingDirectory string,
 	activity func(string),
 ) []*testPreparationResult {
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	return prepareTestsWithCache(
+		"",
+		"",
+		githubResolver,
+		cflags,
+		sources,
+		jobs,
+		workingDirectory,
+		parsingActivity,
+		nil,
+	)
+}
+
+func prepareTestsWithCache(
+	root string,
+	environment string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	sources []string,
+	jobs int,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+) []*testPreparationResult {
 	if len(sources) == 0 {
 		return nil
 	}
@@ -395,12 +475,15 @@ func prepareTestsWithActivity(
 		go func() {
 			defer workers.Done()
 			for job := range queue {
-				plan, diagnostics, err := prepareTestWithActivity(
+				plan, diagnostics, err := prepareTestWithCache(
+					root,
+					environment,
 					githubResolver,
 					cflags,
 					job.source,
 					workingDirectory,
 					activity,
+					cache,
 				)
 				results <- testPreparationResult{
 					index:       job.index,
@@ -457,6 +540,34 @@ func generateTestForwardDeclarationsWithActivity(
 	workingDirectory string,
 	activity func(string),
 ) ([]testPlan, []error) {
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	return generateTestForwardDeclarationsWithCache(
+		root,
+		environment,
+		plans,
+		cflags,
+		jobs,
+		workingDirectory,
+		parsingActivity,
+		nil,
+	)
+}
+
+func generateTestForwardDeclarationsWithCache(
+	root string,
+	environment string,
+	plans []testPlan,
+	cflags []string,
+	jobs int,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+) ([]testPlan, []error) {
 	if len(plans) == 0 {
 		return nil, nil
 	}
@@ -489,7 +600,7 @@ func generateTestForwardDeclarationsWithActivity(
 			for job := range queue {
 				results <- testForwardResult{
 					index: job.index,
-					err: generateForwardDeclarationsWithFlagsAndActivity(
+					err: generateForwardDeclarationsWithFlagsAndCache(
 						root,
 						environment,
 						[]string{job.header},
@@ -497,6 +608,7 @@ func generateTestForwardDeclarationsWithActivity(
 						1,
 						workingDirectory,
 						activity,
+						cache,
 					),
 				}
 			}
@@ -537,23 +649,27 @@ func mergeTestCompileSources(
 	root string,
 	environment string,
 	plans []testPlan,
-) ([]testPlan, []string, [][]string, error) {
+) ([]testPlan, []string, [][]string, [][]string, error) {
 	compileIndexes := make(map[string]int)
 	sources := make([]string, 0)
 	dependenciesBySource := make([][]string, 0)
+	cacheDependenciesBySource := make([][]string, 0)
 	for planIndex := range plans {
 		plans[planIndex].compileIndexes = make([]int, len(plans[planIndex].sources))
 		for sourceIndex, source := range plans[planIndex].sources {
 			object, err := objectFilePath(root, environment, source)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			if compileIndex, ok := compileIndexes[object]; ok {
 				if !equalStringSlices(
 					dependenciesBySource[compileIndex],
 					plans[planIndex].dependenciesBySource[sourceIndex],
+				) || !equalStringSlices(
+					cacheDependenciesBySource[compileIndex],
+					plans[planIndex].cacheDependenciesBySource[sourceIndex],
 				) {
-					return nil, nil, nil, fmt.Errorf(
+					return nil, nil, nil, nil, fmt.Errorf(
 						"conflicting dependency lists for shared test object %s",
 						object,
 					)
@@ -569,9 +685,13 @@ func mergeTestCompileSources(
 				dependenciesBySource,
 				plans[planIndex].dependenciesBySource[sourceIndex],
 			)
+			cacheDependenciesBySource = append(
+				cacheDependenciesBySource,
+				plans[planIndex].cacheDependenciesBySource[sourceIndex],
+			)
 		}
 	}
-	return plans, sources, dependenciesBySource, nil
+	return plans, sources, dependenciesBySource, cacheDependenciesBySource, nil
 }
 
 func equalStringSlices(left, right []string) bool {
@@ -685,6 +805,7 @@ func linkTests(
 	silent bool,
 	workingDirectory string,
 	progress *progressBar,
+	cache *artifactCache,
 ) []*testLinkResult {
 	if len(tasks) == 0 {
 		return nil
@@ -722,7 +843,8 @@ func linkTests(
 						return
 					}
 					var diagnostics bytes.Buffer
-					fatal, err := linkBinary(
+					fatal, cached, err := linkBinaryWithCache(
+						cache,
 						compiler,
 						ldflags,
 						job.objects,
@@ -735,7 +857,7 @@ func linkTests(
 						stopWork()
 					}
 					var command []byte
-					if verbose && !silent {
+					if verbose && !silent && !cached {
 						command = renderLinkCommand(
 							compiler,
 							ldflags,
@@ -743,7 +865,11 @@ func linkTests(
 							job.artifact,
 						)
 					}
-					progress.complete("Linking "+sourceBinaryName(job.source), command)
+					step := "Linking " + sourceBinaryName(job.source)
+					if cached {
+						step += " (CACHED)"
+					}
+					progress.complete(step, command)
 					results <- testLinkResult{
 						index:       job.index,
 						diagnostics: append([]byte(nil), diagnostics.Bytes()...),
@@ -786,6 +912,7 @@ func runTests(
 	noColor bool,
 	workingDirectory string,
 	progress *progressBar,
+	cache *artifactCache,
 ) []*testRunResult {
 	if len(tasks) == 0 {
 		return nil
@@ -804,29 +931,25 @@ func runTests(
 		go func() {
 			defer workers.Done()
 			for job := range queue {
-				command := exec.Command(job.binary, arguments...)
-				command.Dir = workingDirectory
-				var output bytes.Buffer
-				command.Stdout = &output
-				command.Stderr = &output
-				err := command.Run()
-				if err != nil {
-					var exitError *exec.ExitError
-					if errors.As(err, &exitError) {
-						err = fmt.Errorf("test %s: %w", job.source, err)
-					} else {
-						err = fmt.Errorf("run test %s: %w", job.source, err)
-					}
-				}
+				cached, output, err := runTestWithCache(
+					cache,
+					job,
+					arguments,
+					workingDirectory,
+				)
 				var detail []byte
-				if verbose && !silent {
+				if verbose && !silent && !cached {
 					detail = append(detail, renderTestCommand(job.binary, arguments)...)
-					detail = append(detail, output.Bytes()...)
+					detail = append(detail, output...)
 				}
-				progress.complete("Testing "+sourceBinaryName(job.source), detail)
+				step := "Testing " + sourceBinaryName(job.source)
+				if cached {
+					step += " (CACHED)"
+				}
+				progress.complete(step, detail)
 				results <- testRunResult{
 					index:  job.index,
-					output: append([]byte(nil), output.Bytes()...),
+					output: append([]byte(nil), output...),
 					err:    err,
 				}
 			}
@@ -847,6 +970,61 @@ func runTests(
 		ordered[result.index] = &result
 	}
 	return ordered
+}
+
+func runTestWithCache(
+	cache *artifactCache,
+	job testRunJob,
+	arguments []string,
+	workingDirectory string,
+) (bool, []byte, error) {
+	var input string
+	if cache != nil {
+		var err error
+		input, err = cache.actionFingerprint(
+			"test",
+			"",
+			arguments,
+			[]string{job.binary},
+			workingDirectory,
+		)
+		if err != nil {
+			return false, nil, fmt.Errorf("fingerprint test %s: %w", job.source, err)
+		}
+		cached, err := cache.hit(job.binary, testResultCacheSuffix, input)
+		if err != nil {
+			return false, nil, fmt.Errorf("read test cache %s: %w", job.source, err)
+		}
+		if cached {
+			return true, nil, nil
+		}
+		if err := cache.invalidate(job.binary, testResultCacheSuffix); err != nil {
+			return false, nil, fmt.Errorf("invalidate test cache %s: %w", job.source, err)
+		}
+	}
+
+	command := exec.Command(job.binary, arguments...)
+	command.Dir = workingDirectory
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	err := command.Run()
+	if err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			err = fmt.Errorf("test %s: %w", job.source, err)
+		} else {
+			err = fmt.Errorf("run test %s: %w", job.source, err)
+		}
+		return false, append([]byte(nil), output.Bytes()...), err
+	}
+	if cache != nil {
+		if err := cache.store(job.binary, testResultCacheSuffix, input); err != nil {
+			return false, append([]byte(nil), output.Bytes()...),
+				fmt.Errorf("store test cache %s: %w", job.source, err)
+		}
+	}
+	return false, append([]byte(nil), output.Bytes()...), nil
 }
 
 func pkgConfigFlags(option, workingDirectory string, stderr io.Writer) ([]string, error) {

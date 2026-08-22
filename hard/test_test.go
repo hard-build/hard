@@ -410,6 +410,7 @@ func TestTestSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 		progress,
 		&stdout,
 		io.Discard,
+		false,
 	); err != nil {
 		t.Fatalf("testSourcesWithProgress() error = %v", err)
 	}
@@ -566,6 +567,7 @@ func TestRunTestsForcesAndPreservesGoogleTestColor(t *testing.T) {
 		false,
 		directory,
 		progress,
+		nil,
 	)
 	if err := progress.finish(); err != nil {
 		t.Fatalf("progress.finish() error = %v", err)

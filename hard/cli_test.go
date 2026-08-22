@@ -75,6 +75,11 @@ func TestParseArguments(t *testing.T) {
 			want: arguments{command: "build", paths: []string{"src"}, output: "bin/"},
 		},
 		{
+			name: "build accepts no-cache flag",
+			args: []string{"build", "--no-cache", "src"},
+			want: arguments{command: "build", paths: []string{"src"}, noCache: true},
+		},
+		{
 			name: "fetch defaults to current directory",
 			args: []string{"fetch"},
 			want: arguments{command: "fetch", paths: []string{"."}},
@@ -98,6 +103,11 @@ func TestParseArguments(t *testing.T) {
 			name: "test accepts silent flag",
 			args: []string{"test", "-s", "tests/unit"},
 			want: arguments{command: "test", paths: []string{"tests/unit"}, silent: true},
+		},
+		{
+			name: "test accepts no-cache flag",
+			args: []string{"test", "tests/unit", "--no-cache"},
+			want: arguments{command: "test", paths: []string{"tests/unit"}, noCache: true},
 		},
 		{
 			name: "short verbose flag before command",
@@ -231,6 +241,8 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 		{name: "format rejects output flag", args: []string{"format", "-o", "binary"}, wantErr: "unknown shorthand flag"},
 		{name: "fetch rejects output flag", args: []string{"fetch", "--output=binary"}, wantErr: "unknown flag"},
 		{name: "test rejects output flag", args: []string{"test", "--output=binary"}, wantErr: "unknown flag"},
+		{name: "format rejects no-cache flag", args: []string{"format", "--no-cache"}, wantErr: "unknown flag"},
+		{name: "fetch rejects no-cache flag", args: []string{"fetch", "--no-cache"}, wantErr: "unknown flag"},
 	}
 
 	for _, tt := range tests {
@@ -286,6 +298,7 @@ func TestHelp(t *testing.T) {
 			want: []string{
 				"hard build [path...]",
 				"-j, --jobs",
+				"--no-cache",
 				"--no-color",
 				"-o, --output",
 				"-s, --silent",
@@ -300,7 +313,7 @@ func TestHelp(t *testing.T) {
 		{
 			name: "test",
 			args: []string{"test", "--help"},
-			want: []string{"hard test [path...]", "-j, --jobs", "--no-color", "-s, --silent", "-v, --verbose"},
+			want: []string{"hard test [path...]", "-j, --jobs", "--no-cache", "--no-color", "-s, --silent", "-v, --verbose"},
 		},
 	}
 
@@ -331,6 +344,9 @@ func TestHelp(t *testing.T) {
 			}
 			if tt.name != "build" && strings.Contains(help, "--output") {
 				t.Errorf("help contains build-only output flag:\n%s", help)
+			}
+			if tt.name != "build" && tt.name != "test" && strings.Contains(help, "--no-cache") {
+				t.Errorf("help contains build/test-only no-cache flag:\n%s", help)
 			}
 		})
 	}

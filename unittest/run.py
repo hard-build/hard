@@ -366,6 +366,7 @@ def run_build(
     command = [
         options.hard,
         "build",
+        "--no-cache",
         "-v",
         "--no-color",
         f"--jobs={options.jobs}",
@@ -482,6 +483,7 @@ def run_tests(
         options.hard,
         "test",
         "-v",
+        "--no-cache",
         "--no-color",
         f"--jobs={options.jobs}",
         *step["sources"],

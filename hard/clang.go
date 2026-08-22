@@ -18,6 +18,10 @@ import (
 	"unsafe"
 )
 
+func clangVersion() string {
+	return C.GoString(C.hard_clang_version())
+}
+
 const (
 	clangDiagnosticIgnored = iota
 	clangDiagnosticNote
@@ -69,6 +73,10 @@ type clangAnalysis struct {
 
 type clangAnalysisOptions struct {
 	skipFunctionBodies bool
+}
+
+type clangDependencySet struct {
+	managed []string
 }
 
 func analyzeClangFile(
@@ -169,32 +177,45 @@ func clangDependencyPaths(
 	source string,
 	workingDirectory string,
 ) ([]string, error) {
+	dependencies, err := clangDependencyPathSet(analysis, source, workingDirectory)
+	if err != nil {
+		return nil, err
+	}
+	return dependencies.managed, nil
+}
+
+func clangDependencyPathSet(
+	analysis clangAnalysis,
+	source string,
+	workingDirectory string,
+) (clangDependencySet, error) {
 	sourcePath, err := realAbsolutePath(source, workingDirectory)
 	if err != nil {
-		return nil, fmt.Errorf("resolve source %s: %w", source, err)
+		return clangDependencySet{}, fmt.Errorf("resolve source %s: %w", source, err)
 	}
 
-	seen := make(map[string]struct{})
-	paths := make([]string, 0, len(analysis.includes))
+	managedSeen := make(map[string]struct{})
+	managed := make([]string, 0, len(analysis.includes))
 	for _, include := range analysis.includes {
-		if include.system || include.target == "" {
+		if include.target == "" || include.system {
 			continue
 		}
 		realPath, err := realAbsolutePath(include.target, workingDirectory)
 		if err != nil {
-			return nil, fmt.Errorf("resolve dependency %s: %w", include.target, err)
+			return clangDependencySet{}, fmt.Errorf("resolve dependency %s: %w", include.target, err)
 		}
 		if realPath == sourcePath {
 			continue
 		}
-		if _, ok := seen[realPath]; ok {
+		realPath = filepath.Clean(realPath)
+		if _, ok := managedSeen[realPath]; ok {
 			continue
 		}
-		seen[realPath] = struct{}{}
-		paths = append(paths, filepath.Clean(realPath))
+		managedSeen[realPath] = struct{}{}
+		managed = append(managed, realPath)
 	}
-	sort.Strings(paths)
-	return paths, nil
+	sort.Strings(managed)
+	return clangDependencySet{managed: managed}, nil
 }
 
 func clangUnresolvedIncludes(analysis clangAnalysis) []string {
@@ -235,17 +256,32 @@ func sourceDependenciesWithClang(
 	source string,
 	workingDirectory string,
 ) (bool, []string, []byte, error) {
+	fatal, dependencies, diagnostics, err := sourceDependencySetWithClang(
+		githubResolver,
+		cflags,
+		source,
+		workingDirectory,
+	)
+	return fatal, dependencies.managed, diagnostics, err
+}
+
+func sourceDependencySetWithClang(
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	source string,
+	workingDirectory string,
+) (bool, clangDependencySet, []byte, error) {
 	attemptedRepositories := make(map[string]struct{})
 	for {
 		analysis, err := analyzeClangDependencies(source, workingDirectory, cflags)
 		if err != nil {
-			return true, nil, nil, err
+			return true, clangDependencySet{}, nil, err
 		}
 		unresolved := clangUnresolvedIncludes(analysis)
 		if len(unresolved) == 0 {
-			dependencies, err := clangDependencyPaths(analysis, source, workingDirectory)
+			dependencies, err := clangDependencyPathSet(analysis, source, workingDirectory)
 			if err != nil {
-				return true, nil, clangErrorDiagnostics(analysis), err
+				return true, clangDependencySet{}, clangErrorDiagnostics(analysis), err
 			}
 			return false, dependencies, nil, nil
 		}
@@ -276,7 +312,7 @@ func sourceDependenciesWithClang(
 			}
 		}
 		if err := errors.Join(downloadErrors...); err != nil {
-			return false, nil, clangErrorDiagnostics(analysis), err
+			return false, clangDependencySet{}, clangErrorDiagnostics(analysis), err
 		}
 		if newRepository {
 			continue
@@ -284,7 +320,7 @@ func sourceDependenciesWithClang(
 
 		diagnostics := clangErrorDiagnostics(analysis)
 		if managedInclude {
-			return false, nil, diagnostics, fmt.Errorf(
+			return false, clangDependencySet{}, diagnostics, fmt.Errorf(
 				"GitHub dependency remains unavailable for %s: %s",
 				source,
 				strings.Join(unresolved, ", "),
@@ -293,7 +329,7 @@ func sourceDependenciesWithClang(
 		if len(diagnostics) == 0 {
 			diagnostics = []byte(strings.Join(unresolved, "\n") + "\n")
 		}
-		return false, nil, diagnostics, fmt.Errorf(
+		return false, clangDependencySet{}, diagnostics, fmt.Errorf(
 			"dependencies %s: unresolved include: %s",
 			source,
 			strings.Join(unresolved, ", "),

@@ -109,6 +109,10 @@ Implemented:
 - forward-declaration generation for project and managed external headers;
 - object compilation, dependency-object resolution, ordinary executable
   linking, and atomic delivery;
+- content-addressed object, link, delivery, and successful-test result caching
+  with `--no-cache` rebuild and rerun support;
+- persistent semantic libclang result caching for build/test source and header
+  analysis, including `(CACHED)` preparation output and `--no-cache` refresh;
 - GoogleTest discovery, compilation, linking, parallel execution, output
   grouping, and failure aggregation;
 - the standalone `fetch` command;
@@ -118,12 +122,12 @@ Implemented:
 
 Not implemented:
 
-- incremental timestamp or content-based rebuild decisions;
-- cache validation or automatic refresh of external snapshots;
+- automatic refresh of external snapshots;
 - stale generated-artifact cleanup.
 
-Selected objects are rebuilt on every invocation. Existing external repository
-directories are treated as persistent cache entries and are not refreshed.
+Build and successful-test cache hits are validated by input and artifact
+content. Existing external repository directories remain persistent snapshot
+cache entries and are not refreshed automatically.
 
 ## Current file map
 
@@ -166,6 +170,8 @@ directories are treated as persistent cache entries and are not refreshed.
 | `hard/entry.go` | Configured global entry-function definition detection |
 | `hard/entry_test.go` | Definitions, declarations, namespaces, macros, ambiguity, and empty config |
 | `hard/build.go` | Dependency closure, support-header exclusion, compilation, link graph, and delivery |
+| `hard/cache.go` | Content fingerprints, atomic artifact and parse-result records, semantic-result integrity, and file comparison |
+| `hard/cache_test.go` | Artifact and parse cache keys, invalidation, no-cache, integrity, forward restoration, and successful-test reuse |
 | `hard/build_test.go` | Dependency, forwards, objects, entry binaries, output, and integrations |
 | `hard/fetch.go` | Dependency-only source closure and external snapshot fetching |
 | `hard/fetch_test.go` | Fetch progress, recursive repositories, caching, and absence of build artifacts |
@@ -261,9 +267,9 @@ the user's home or a system directory. There are intentionally no `clean` or
 The public command forms are:
 
     hard format [--format=<name>] [-s|--silent] [path...]
-    hard build  [-s|--silent] [-o <path>] [path...]
+    hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
     hard fetch  [-s|--silent] [path...]
-    hard test   [-s|--silent] [path...]
+    hard test   [--no-cache] [-s|--silent] [path...]
 
 Persistent flags accepted by every command:
 
@@ -282,6 +288,7 @@ Command-local flags:
 - `format`: `--format=<name>`, default `format.v1`;
 - every public command: `-s`, `--silent`;
 - `build`: `-o <path>`, `--output=<path>`;
+- `build` and `test`: `--no-cache`;
 - `fetch` and `test` do not accept `--format` or `--output`.
 
 Other CLI decisions:
@@ -297,9 +304,10 @@ Other CLI decisions:
 - root help exposes only `format`, `fetch`, `build`, and `test`.
 
 The parsed `arguments` value contains `command`, `paths`, `verbose`, `silent`,
-`noColor`, `jobs`, `format`, and `output`. Only `build` populates `output`. Its
-raw spelling preserves a trailing path separator because that separator
-declares directory intent.
+`noColor`, `noCache`, `jobs`, `format`, and `output`. Only `build` populates
+`output`; only `build` and `test` can set `noCache`. The raw output spelling
+preserves a trailing path separator because that separator declares directory
+intent.
 
 ## Configuration contract
 
@@ -330,6 +338,11 @@ characters.
 
 - unset or empty: `host`;
 - non-empty: retained exactly;
+- defines the immutable toolchain/cache boundary for compiler, libclang
+  resource headers, standard library, libc, sysroot, ABI, target, container,
+  and user-provided `-isystem` trees;
+- must change when that system state changes because system headers are not
+  content-hashed by parse or object caches;
 - artifact path construction rejects values escaping `HARD_ROOT/env`, such as
   `../outside`.
 
@@ -563,13 +576,66 @@ Inclusion records provide:
 - libclang's system-header classification.
 
 The active dependency graph therefore covers direct, transitive, conditional,
-macro-expanded, and force-included headers. The translation unit itself and
-resolved system headers are removed. Remaining dependency paths are resolved
-through symlinks, made absolute, deduplicated, and sorted per source.
+macro-expanded, and force-included headers. The translation unit itself is
+removed. One canonical, deduplicated, sorted list excludes resolved system
+headers and drives implementation discovery, forward generation, parse-result
+fingerprints, and compilation fingerprints. `HARD_ENV` represents immutable
+system and toolchain state instead of hashing each system header. Paths marked
+system by libclang, including user-provided `-isystem` directories, are absent
+from persistent dependency snapshots.
 
 Unresolved includes are preserved with diagnostics. Only actionable GitHub or
 well-known paths trigger a snapshot request. Other missing includes retain the
 original libclang error and never cause arbitrary network access.
+
+### Persistent parse-result cache
+
+Successful source and header analysis in `build` and `test` writes a
+versioned `<input>.hard-parse-cache.json` record below the mirrored
+`HARD_ROOT/env/HARD_ENV/build` path. Source records contain the managed
+dependency list, the complete active non-system dependency snapshot, and the
+detected entry point. Header records contain the complete active non-system
+dependency snapshot and the final rendered forward text after standalone
+candidate validation. A separate result digest protects these semantic fields
+from valid-JSON corruption.
+
+The action fingerprint contains the current `hard` executable digest,
+`clang_getClangVersion()` value, working directory, ordered compiler flags,
+configured entry names where relevant, and content digests for the input plus
+every non-system dependency recorded by the prior successful analysis. Paths
+are canonicalized, deduplicated, and sorted by the common action-key code.
+Missing, malformed, version-mismatched, changed, or result-digest-mismatched
+records are misses. A missing dependency is also a miss and the real parser
+remains authoritative. System state is intentionally represented only by the
+environment-specific artifact tree.
+
+On a source hit, dependency and entry analysis are both skipped and their
+stored semantic values continue graph discovery. The stored complete
+dependency list is passed directly to compilation caching, eliminating the
+former second dependency-only libclang parse immediately before every compile.
+On a header hit, raw-header extraction and candidate validation are skipped;
+the stored final forward content is written through the normal
+unchanged-preserving atomic writer, so a deleted output is restored.
+
+`--no-cache` bypasses reads, invalidates each old parse record before real
+analysis, and refreshes it after success. Failed analysis never writes a
+record. `fetch` deliberately receives no parse cache and therefore still
+creates no environment build tree.
+
+No record is stored when the literal token `__has_include` occurs in the
+input itself or the analysis argument vector. Dependencies containing the
+token remain content-hashed when they are non-system without disabling the
+input's cache, which keeps ordinary sources using standard-library headers
+cacheable. The accepted depfile-style limitation is that changing
+optional-header availability tested by `__has_include` inside a dependency, or
+creating a new higher-priority header which shadows an already resolved
+include, is invisible when the input and every previously known non-system
+dependency remain byte-identical; use `--no-cache` after such include-path
+topology changes.
+
+A successful hit updates preparation progress to
+`Parsing <display-path> (CACHED)`. No compiler or parser command detail is
+attached because no child parse process exists.
 
 ## External repositories
 
@@ -688,8 +754,14 @@ Example:
 
 Generation is parallel, canonical-header deduplicated, collision checked, and
 atomic through a temporary file plus rename. Parent directories are created.
-An existing output survives a parse failure. Each header reports `Parsing
-<header>` immediately before analysis.
+An existing output survives a parse failure. A byte-identical regular output is
+retained without replacement. Each header reports `Parsing <header>`
+immediately before analysis.
+A valid persistent header-parse hit instead reports
+`Parsing <header> (CACHED)` and restores the final validated output from its
+record without invoking libclang. Headers whose own input or analysis flags
+contain `__has_include` never receive such a record; the token in a dependency
+does not suppress the header's cache.
 
 The environment support header reached through
 `HARD_ROOT/env/HARD_ENV/hard.h` is the sole canonical path exception. It is not
@@ -767,7 +839,14 @@ collision between `file.c` and `file.cpp`:
     /home/user/project/src/file.cpp
       -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/file.cpp.o
 
-No timestamp or cache check exists; selected objects are rebuilt.
+Successful compilation writes `<object>.hard-cache.json` atomically. Its input
+fingerprint contains the `hard` executable digest, resolved compiler path and
+digest, working directory, compiler arguments, source, every active resolved
+non-system include, and generated forward headers. `HARD_ENV` represents the
+system headers and immutable toolchain state. Cache lookup verifies the sidecar
+and current regular object digest. Missing, malformed, changed, or non-regular
+records and artifacts are misses. `--no-cache` disables reads, invalidates the
+old record before compilation, and stores a fresh record only after success.
 
 ### Entry-point detection
 
@@ -831,6 +910,12 @@ binary. Link jobs use the resolved worker count. Compiler exit failures are
 aggregated; a start failure stops new scheduling. Verbose mode prints the exact
 shell-escaped link command immediately after the relevant `Linking` entry.
 
+Successful links use the same sidecar suffix beside the internal binary. Their
+fingerprint contains the `hard` and compiler fingerprints, working directory,
+link arguments, and every object digest. The binary digest is verified on hit.
+A failed or forced link cannot retain an eligible older record because the
+sidecar is invalidated before the compiler is started.
+
 ### Binary delivery and `-o`
 
 Successful internal binaries are copied atomically through a temporary file
@@ -854,6 +939,10 @@ Preserving directory structure fixed the former collision where root builds
 containing `001.helloworld/example.cpp` and `003.unittest/example.cpp` both
 mapped to one project-root `example` output.
 
+When cache reads are enabled, delivery compares internal and destination
+regular-file content and permissions and skips an already identical copy.
+`--no-cache` forces delivery. No delivery sidecar is needed.
+
 ### Build progress and output
 
 Search, source analysis, header analysis, and repository downloads share step
@@ -868,9 +957,17 @@ commands after linking, and no separate copy command. Silent mode hides
 successful progress and commands while preserving errors.
 
 Build no longer prints a preliminary list of discovered header files.
+Cache hits consume normal progress steps with `(CACHED)` after the label.
+Cached source and header analyses remain in preparation step one and append
+`(CACHED)` to their `Parsing` label.
+Cached compile and link entries have no verbose command because no child
+process was started; an identical delivery is `Copying <binary> (CACHED)`.
 
 ## `hard fetch`
 
+Fetch never reads or writes the environment-backed persistent parse-result
+cache; its parsing behavior and absence of `HARD_ROOT/env` artifacts remain
+unchanged.
 Fetch selects all supported translation units, including `*_test.*`, then uses
 the same `HARD_CFLAGS`, libclang analysis, recursive same-stem source closure,
 GitHub recovery, well-known mapping, cache, and worker limit as build.
@@ -973,6 +1070,21 @@ Output behavior:
   `--gtest_color=yes` so its output remains colored;
 - with `--no-color`, every test receives `--gtest_color=no`.
 
+Source and header analysis share the persistent semantic parse-result cache
+described above. Parse hits report `Parsing ... (CACHED)`.
+Compilation and linking share the build content cache. A successful test run
+writes `<internal-test-binary>.hard-test-cache.json`; its key contains the
+binary path and digest, test arguments, working directory, and `hard` digest.
+A valid hit skips process execution and reports `Testing <binary> (CACHED)`.
+The record is invalidated before every actual run and stored only after exit
+status zero, so failures are never cached. Runtime state outside the binary,
+arguments, and working directory is not inferred; use `hard test --no-cache`
+for undeclared files, services, network data, time, or similar inputs.
+
+`--no-cache` disables parse, compile, link, delivery, and test-result reads
+for the invocation, forces all those actions, and refreshes successful records.
+It does not clear or refresh the GitHub snapshot cache.
+
 The `-j` limit applies to test execution itself, not only compilation and
 linking. This was added after timing the multi-file
 `/home/taitov/projects/hard-build/library` suite showed no improvement with the
@@ -996,7 +1108,12 @@ The implemented layout is:
             └── build/
                 └── <absolute path without leading slash>/
                     ├── application
+                    ├── application.hard-cache.json
+                    ├── application.hard-test-cache.json
+                    ├── file.cpp.hard-parse-cache.json
+                    ├── file.h.hard-parse-cache.json
                     ├── file.cpp.o
+                    ├── file.cpp.o.hard-cache.json
                     ├── file_fwd.h
                     └── file_fwd.hpp
 
@@ -1032,13 +1149,17 @@ GoogleTest `TEST` declaration. Every scenario directory owns one readable
 `test.yaml` containing a description and an ordered `steps` list. Each step
 contains exactly one restricted action:
 
-- `build` runs verbose `hard build` for explicit source arguments and may
-  require exact source labels to compile once;
+- `build` runs verbose `hard build --no-cache` for explicit source arguments
+  and may require exact source labels to compile once;
 - `run` requires the latest build to have copied one regular executable,
   runs it, and compares the configured exit code and exact stdout/stderr;
-- `test` runs verbose `hard test`, may require exact source labels to
+- `test` runs verbose `hard test --no-cache`, may require exact source labels to
   compile once, and requires the configured GoogleTest binaries and passing
   counts.
+
+The runner deliberately disables cache reads for `build` and `test` actions so
+`compiled_once`, copied-binary, and executed-test checks describe the current
+scenario step rather than artifacts or successful results from an earlier run.
 
 `unittest/run.py` automatically discovers immediate subdirectories containing
 `test.yaml`, validates the complete YAML schema, and executes steps in file
@@ -1129,6 +1250,8 @@ to leave the library unchanged for now.
 - Build compilation progress is labeled `Compiling`; linking and copying use
   `Linking` and `Copying`, all under one counter.
 - Include discovery must honor `HARD_CFLAGS` and exclude system headers.
+- `HARD_ENV` is the immutability boundary for system headers and toolchain
+  state; parse and object caches hash only non-system dependencies.
 - The environment support header path changed from
   `HARD_ROOT/include/hard.h` to `HARD_ROOT/env/HARD_ENV/hard.h`.
 - Forward files mirror absolute paths and preserve original header extensions.
@@ -1168,7 +1291,19 @@ to leave the library unchanged for now.
 
 ## Known gaps and deliberately unchanged issues
 
-- No incremental rebuild or stale-output cleanup exists.
+- System-header and toolchain-state changes inside one `HARD_ENV` intentionally
+  do not invalidate parse or object caches. Select a new environment after
+  compiler, libclang resource, standard-library, libc, sysroot, ABI, target,
+  container, or `-isystem` tree changes; use `--no-cache` for a one-off forced
+  rebuild in the current environment.
+- Parse-result records use the previously observed include set. A newly created
+  higher-priority header can shadow an existing include without invalidating
+  that set. A dependency can also test the availability of an optional header
+  through `__has_include` without that unavailable header entering the known
+  set. Run build or test with `--no-cache` after such topology changes.
+- Unreferenced stale generated artifacts are not removed automatically.
+- Test-result keys cannot infer undeclared runtime files, services, network
+  responses, or time; callers use `hard test --no-cache` when these matter.
 - Cached external repositories are not automatically updated or validated.
 - Old support forward files are not removed even though new builds no longer
   generate or include them.
@@ -1178,8 +1313,8 @@ to leave the library unchanged for now.
 
 ## Test inventory
 
-- `hard/cli_test.go`: command defaults, paths, interspersed flags, silent
-  options, all job syntaxes, invalid input, help, and hidden commands.
+- `hard/cli_test.go`: command defaults, paths, interspersed and no-cache flags,
+  silent options, all job syntaxes, invalid input, help, and hidden commands.
 - `hard/config_test.go`: all defaults and overrides, environment choice, default
   source include and environment support include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
@@ -1196,7 +1331,8 @@ to leave the library unchanged for now.
   unified diff edge cases.
 - `hard/clang_test.go`: active direct/transitive/system includes, unresolved
   expanded spellings, flag-controlled conditionals, definitions, macro/inline
-  namespaces, templates, defaults, parameter packs, and symlink deduplication.
+  namespaces, templates, defaults, parameter packs, symlink deduplication, and
+  system-header cache exclusion.
 - `hard/github_test.go`: GitHub/well-known mapping, alias
   creation/reuse/conflicts, exact HTTP requests, safe extraction, PAX metadata,
   `.git` and traversal rejection, persistent cache, concurrency deduplication,
@@ -1204,7 +1340,8 @@ to leave the library unchanged for now.
 - `hard/forward_test.go`: physical-file extraction, namespace and template
   rendering, macro and inline namespaces, safe candidate filtering, exclusions,
   invalid syntax, mirrored paths, extension retention, environment escape,
-  isolation, duplicates, atomic preservation, activity, cleanup, and slice safety.
+  isolation, duplicates, atomic preservation, activity, cleanup,
+  unchanged-output retention, and slice safety.
 - `hard/entry_test.go`: configured global definitions, main/custom names,
   extern C, declarations, namespace and qualified definitions, methods,
   conditional and macro definitions, empty configuration, deduplication, and
@@ -1215,6 +1352,13 @@ to leave the library unchanged for now.
   display, entry exclusion, binary/output collisions, output destinations,
   progress, commands, quoting, errors, parallel links, copy behavior, and real
   executable integrations.
+- `hard/cache_test.go`: stable content keys, compiler/input/dependency/source
+  invalidation, semantic-result integrity, malformed records, source and header
+  parse hits, input/flag `__has_include` suppression, cacheable dependencies
+  containing `__has_include`, standard-library parse reuse, `HARD_ENV` handling
+  of `-isystem` header changes, forward restoration, no-cache refresh,
+  compile/link/delivery reuse, build/test `Parsing ... (CACHED)` output, and
+  successful-only test-result reuse.
 - `hard/fetch_test.go`: empty no-op, search/parse progress, recursive repository
   downloads, shared progress step, install order, cached reuse, absence of
   environment build artifacts and compiler arguments, and invalid job counts.
@@ -1222,7 +1366,8 @@ to leave the library unchanged for now.
   production objects, support-header exception, internal test binaries, common
   progress, shared-object compilation, global worker limits, grouped verbose
   output, successful-output suppression, failure output, silence, GoogleTest
-  color, continuation, aggregation, and command rendering.
+  color, continuation, aggregation, command rendering, and cache-aware helper
+  signatures.
 - `hard/main_test.go`: normal, verbose, and silent search progress for every
   command while retaining command-specific selection.
 - `unittest/`: ten declarative source-tree scenarios whose local `test.yaml`
@@ -1341,6 +1486,81 @@ Observed:
 - `004.circular_dependency` built and printed `[100, 200, 300]`;
 - `go test`, race tests, vet, build, module verification, gofmt, and diff checks
   passed at that snapshot.
+
+## Last known verification of content caching
+
+On 2026-08-22, the cache implementation was checked with the required Go
+commands from `hard/` and `git diff --check` from the repository root. Unit
+coverage included source, compiler, dependency, object, binary, sidecar, and
+`--no-cache` invalidation; malformed records; compile, link, and delivery
+reuse; successful test-result reuse; and the rule that failing tests are never
+cached.
+
+All ten declarative `unittest/` scenarios passed with a newly built backend and
+an isolated `HARD_ROOT`. A repeated real GoogleTest invocation reported cached
+compilation, linking, and execution, including:
+
+    Testing calculator_test (CACHED)
+
+No GoogleTest process output appeared on that cached run, confirming that the
+successful test binary was not executed again.
+
+## Last known verification of persistent parsing cache
+
+On 2026-08-22, the persistent parse-result implementation passed the complete
+required Go check set: clean gofmt diff, ordinary and race tests, vet, an
+out-of-tree backend build, module verification, and repository diff checking.
+The backend linked `libclang-18.so.18`; `clang-18 --version` reported
+18.1.3 and the configured LLVM 18 `Index.h` was present.
+
+Unit coverage confirmed source and header hits, source/known-dependency/compiler
+flag/entry-name invalidation, malformed and semantically corrupted records,
+`--no-cache` refresh, absence of records after failed parsing, suppression
+for `__has_include` in the direct input and flags, cache reuse when a
+transitive or standard-library dependency contains the token, restoration of
+a deleted forward output, and build/test `Parsing ... (CACHED)` progress.
+
+A separately built backend passed all ten declarative integration scenarios
+with an isolated `HARD_ROOT`, including the cyclic build and real GoogleTest
+cases. A minimal real build was then invoked in separate processes with an
+isolated root and explicit empty compiler/linker flag vectors. The second
+invocation reported:
+
+    Parsing main.cpp (CACHED)
+    Compiling main.cpp (CACHED)
+    Linking main (CACHED)
+    Copying main (CACHED)
+
+A following `build --no-cache` reported none of those hits and recreated
+`main.cpp.hard-parse-cache.json`, confirming forced analysis and refresh.
+
+Later on 2026-08-22, a full build of the main `example/` tree exposed that the
+initial guard also scanned every transitive and system dependency. Standard
+library headers contain `__has_include`, so no parse records were created in
+normal C++ projects. The guard was narrowed to the direct input and analysis
+arguments while dependency contents remain in the fingerprint. The complete
+required Go checks and all ten declarative integration scenarios passed again.
+Two separate full `example/` builds with a fresh isolated root created 23 parse
+records; the second build reported 23 cached analyses. The only repeated
+analysis was the direct nlohmann `json.hpp` input, which itself contains
+`__has_include` and therefore remains intentionally uncached.
+
+Later on 2026-08-22, `HARD_ENV` was accepted as the immutability boundary for
+the compiler toolchain and system include trees. Parse-cache format version 2
+therefore excludes libclang system-header targets, including headers reached
+through `-isystem`, from both parse-result and compilation fingerprints while
+retaining the complete active non-system dependency closure. A targeted
+`-isystem` test confirmed that changing such a header reuses both parsing and
+compilation in the same environment, while `--no-cache` forces both operations.
+
+The required Go checks and all ten declarative integration scenarios passed
+with a newly built backend. Two full `example/` builds with another isolated
+root produced 23 parse records containing no `/usr` paths. The
+`001.helloworld/example.cpp` record contained only the environment `hard.h` as
+its dependency. The second build reported 23 cached analyses; nlohmann
+`json.hpp` remained the sole direct input parsed again because it contains
+`__has_include`. The measured wall times were 30.60 seconds for the first build
+and 23.80 seconds for the second build.
 
 ## Workspace safety snapshot
 

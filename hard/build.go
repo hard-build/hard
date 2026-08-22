@@ -19,20 +19,22 @@ type buildJob struct {
 }
 
 type buildResult struct {
-	index        int
-	dependencies []string
-	entrypoint   string
-	diagnostics  []byte
-	fatal        bool
-	err          error
+	index             int
+	dependencies      []string
+	cacheDependencies []string
+	entrypoint        string
+	diagnostics       []byte
+	fatal             bool
+	err               error
 }
 
 type compileJob struct {
-	index    int
-	source   string
-	display  string
-	object   string
-	forwards []string
+	index             int
+	source            string
+	display           string
+	object            string
+	forwards          []string
+	cacheDependencies []string
 }
 
 type compileResult struct {
@@ -87,6 +89,7 @@ func buildSources(
 		silent,
 		progress,
 		stderr,
+		false,
 	)
 }
 
@@ -104,6 +107,7 @@ func buildSourcesWithProgress(
 	silent bool,
 	progress *progressBar,
 	stderr io.Writer,
+	noCache bool,
 ) error {
 	if len(sources) == 0 {
 		return progress.finish()
@@ -116,12 +120,22 @@ func buildSourcesWithProgress(
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
+	cache, err := newArtifactCache(!noCache)
+	if err != nil {
+		return errors.Join(err, progress.finish())
+	}
 	rootSourceCount := len(sources)
 	githubResolver := newGitHubSnapshotResolver(root, progress)
-	parsingActivity := func(path string) {
-		progress.updateStep("Parsing " + buildParsingDisplayPath(root, path, workingDirectory))
+	parsingActivity := func(path string, cached bool) {
+		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
+		if cached {
+			step += " (CACHED)"
+		}
+		progress.updateStep(step)
 	}
-	sources, dependenciesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithActivity(
+	sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithCache(
+		root,
+		environment,
 		githubResolver,
 		cflags,
 		configuredEntryPoints,
@@ -130,6 +144,7 @@ func buildSourcesWithProgress(
 		workingDirectory,
 		stderr,
 		parsingActivity,
+		cache,
 	)
 	if err != nil {
 		return errors.Join(err, progress.finish())
@@ -158,7 +173,7 @@ func buildSourcesWithProgress(
 		paths = append(paths, dependency)
 	}
 	sort.Strings(paths)
-	if err := generateForwardDeclarationsWithFlagsAndActivity(
+	if err := generateForwardDeclarationsWithFlagsAndCache(
 		root,
 		environment,
 		paths,
@@ -166,6 +181,7 @@ func buildSourcesWithProgress(
 		jobs,
 		workingDirectory,
 		parsingActivity,
+		cache,
 	); err != nil {
 		failures = append(failures, err)
 	}
@@ -180,16 +196,18 @@ func buildSourcesWithProgress(
 		cflags,
 		sources,
 		dependenciesBySource,
+		cacheDependenciesBySource,
 		jobs,
 		verbose,
 		silent,
 		workingDirectory,
 		progress,
 		stderr,
+		cache,
 	); err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	err = linkSources(
+	err = linkSourcesWithCache(
 		root,
 		environment,
 		compiler,
@@ -205,6 +223,7 @@ func buildSourcesWithProgress(
 		workingDirectory,
 		progress,
 		stderr,
+		cache,
 	)
 	return errors.Join(err, progress.finish())
 }
@@ -240,22 +259,60 @@ func discoverBuildSourceClosureWithActivity(
 	stderr io.Writer,
 	activity func(string),
 ) ([]string, [][]string, []string, []error, error) {
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	sources, dependencies, _, entryPoints, failures, err := discoverBuildSourceClosureWithCache(
+		"",
+		"",
+		githubResolver,
+		cflags,
+		configuredEntryPoints,
+		rootSources,
+		jobs,
+		workingDirectory,
+		stderr,
+		parsingActivity,
+		nil,
+	)
+	return sources, dependencies, entryPoints, failures, err
+}
+
+func discoverBuildSourceClosureWithCache(
+	root string,
+	environment string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	configuredEntryPoints []string,
+	rootSources []string,
+	jobs int,
+	workingDirectory string,
+	stderr io.Writer,
+	activity func(string, bool),
+	cache *artifactCache,
+) ([]string, [][]string, [][]string, []string, []error, error) {
 	sources := append([]string(nil), rootSources...)
 	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
 		canonicalSource, err := realAbsolutePath(source, workingDirectory)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("resolve build source %s: %w", source, err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("resolve build source %s: %w", source, err)
 		}
 		seen[canonicalSource] = struct{}{}
 	}
 
 	dependenciesBySource := make([][]string, 0, len(sources))
+	cacheDependenciesBySource := make([][]string, 0, len(sources))
 	entryPointsBySource := make([]string, 0, len(sources))
 	var failures []error
 	for first := 0; first < len(sources); {
 		last := len(sources)
-		results := inspectBuildSources(
+		results := inspectBuildSourcesWithCache(
+			root,
+			environment,
 			githubResolver,
 			cflags,
 			configuredEntryPoints,
@@ -263,16 +320,19 @@ func discoverBuildSourceClosureWithActivity(
 			jobs,
 			workingDirectory,
 			activity,
+			cache,
 		)
 		fatal := false
 		for _, result := range results {
 			var dependencies []string
+			var cacheDependencies []string
 			var entrypoint string
 			if result != nil {
 				if _, err := io.Copy(stderr, bytes.NewReader(result.diagnostics)); err != nil {
-					return nil, nil, nil, nil, fmt.Errorf("write build diagnostics: %w", err)
+					return nil, nil, nil, nil, nil, fmt.Errorf("write build diagnostics: %w", err)
 				}
 				dependencies = result.dependencies
+				cacheDependencies = result.cacheDependencies
 				entrypoint = result.entrypoint
 				fatal = fatal || result.fatal
 				if result.err != nil {
@@ -280,6 +340,7 @@ func discoverBuildSourceClosureWithActivity(
 				}
 			}
 			dependenciesBySource = append(dependenciesBySource, dependencies)
+			cacheDependenciesBySource = append(cacheDependenciesBySource, cacheDependencies)
 			entryPointsBySource = append(entryPointsBySource, entrypoint)
 		}
 		if fatal {
@@ -293,14 +354,14 @@ func discoverBuildSourceClosureWithActivity(
 				}
 				source, err := implementationSourceForHeader(dependency, workingDirectory)
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 				if source == "" {
 					continue
 				}
 				canonicalSource, err := realAbsolutePath(source, workingDirectory)
 				if err != nil {
-					return nil, nil, nil, nil, fmt.Errorf("resolve implementation source %s: %w", source, err)
+					return nil, nil, nil, nil, nil, fmt.Errorf("resolve implementation source %s: %w", source, err)
 				}
 				if _, ok := seen[canonicalSource]; ok {
 					continue
@@ -311,7 +372,7 @@ func discoverBuildSourceClosureWithActivity(
 		}
 		first = last
 	}
-	return sources, dependenciesBySource, entryPointsBySource, failures, nil
+	return sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, nil
 }
 
 func inspectBuildSources(
@@ -322,6 +383,38 @@ func inspectBuildSources(
 	jobs int,
 	workingDirectory string,
 	activity func(string),
+) []*buildResult {
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	return inspectBuildSourcesWithCache(
+		"",
+		"",
+		githubResolver,
+		cflags,
+		configuredEntryPoints,
+		sources,
+		jobs,
+		workingDirectory,
+		parsingActivity,
+		nil,
+	)
+}
+
+func inspectBuildSourcesWithCache(
+	root string,
+	environment string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	configuredEntryPoints []string,
+	sources []string,
+	jobs int,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
 ) []*buildResult {
 	workerCount := jobs
 	if workerCount > len(sources) {
@@ -357,40 +450,22 @@ func inspectBuildSources(
 					if !ok {
 						return
 					}
-
-					if activity != nil {
-						activity(job.source)
-					}
-					var diagnostics bytes.Buffer
-					fatal, dependencies, err := sourceDependencies(
+					result := inspectBuildSourceWithCache(
+						root,
+						environment,
 						githubResolver,
 						cflags,
-						job.source,
+						configuredEntryPoints,
+						job,
 						workingDirectory,
-						&diagnostics,
+						activity,
+						cache,
 					)
-					var entrypoint string
-					var entryError error
-					if err == nil {
-						entrypoint, entryError = sourceEntryPointWithFlags(
-							job.source,
-							workingDirectory,
-							cflags,
-							configuredEntryPoints,
-						)
-					}
-					if fatal {
+					if result.fatal {
 						stopWork()
 					}
-					results <- buildResult{
-						index:        job.index,
-						dependencies: dependencies,
-						entrypoint:   entrypoint,
-						diagnostics:  append([]byte(nil), diagnostics.Bytes()...),
-						fatal:        fatal,
-						err:          errors.Join(entryError, err),
-					}
-					if fatal {
+					results <- result
+					if result.fatal {
 						return
 					}
 				}
@@ -417,6 +492,97 @@ func inspectBuildSources(
 		ordered[result.index] = &result
 	}
 	return ordered
+}
+
+func inspectBuildSourceWithCache(
+	root string,
+	environment string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	configuredEntryPoints []string,
+	job buildJob,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+) buildResult {
+	result := buildResult{index: job.index}
+	arguments := parseCacheArguments(cflags, configuredEntryPoints)
+	var recordPath string
+	if cache != nil {
+		var err error
+		recordPath, err = parseCachePath(root, environment, job.source)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		record, cached, err := cache.parseHit(
+			recordPath,
+			"source-parse",
+			job.source,
+			arguments,
+			workingDirectory,
+		)
+		if err != nil {
+			result.err = fmt.Errorf("read parse cache for %s: %w", job.source, err)
+			return result
+		}
+		if cached {
+			if activity != nil {
+				activity(job.source, true)
+			}
+			result.dependencies = append([]string(nil), record.ManagedDependencies...)
+			result.cacheDependencies = append([]string(nil), record.Dependencies...)
+			result.entrypoint = record.EntryPoint
+			return result
+		}
+		if err := cache.invalidateParse(recordPath); err != nil {
+			result.err = fmt.Errorf("invalidate parse cache for %s: %w", job.source, err)
+			return result
+		}
+	}
+	if activity != nil {
+		activity(job.source, false)
+	}
+
+	fatal, dependencies, diagnostics, err := sourceDependencySetWithClang(
+		githubResolver,
+		cflags,
+		job.source,
+		workingDirectory,
+	)
+	result.dependencies = dependencies.managed
+	result.cacheDependencies = dependencies.managed
+	result.diagnostics = append([]byte(nil), diagnostics...)
+	result.fatal = fatal
+	var entryError error
+	if err == nil {
+		result.entrypoint, entryError = sourceEntryPointWithFlags(
+			job.source,
+			workingDirectory,
+			cflags,
+			configuredEntryPoints,
+		)
+	}
+	result.err = errors.Join(entryError, err)
+	if cache == nil || result.fatal || result.err != nil {
+		return result
+	}
+	_, cacheError := cache.storeParse(
+		recordPath,
+		parseCacheRecord{
+			Kind:                "source-parse",
+			Dependencies:        append([]string(nil), result.cacheDependencies...),
+			ManagedDependencies: append([]string(nil), result.dependencies...),
+			EntryPoint:          result.entrypoint,
+		},
+		job.source,
+		arguments,
+		workingDirectory,
+	)
+	if cacheError != nil {
+		result.err = fmt.Errorf("store parse cache for %s: %w", job.source, cacheError)
+	}
+	return result
 }
 
 func implementationSourceForHeader(header, workingDirectory string) (string, error) {
@@ -477,25 +643,29 @@ func compileSources(
 	cflags []string,
 	sources []string,
 	dependenciesBySource [][]string,
+	cacheDependenciesBySource [][]string,
 	jobs int,
 	verbose bool,
 	silent bool,
 	workingDirectory string,
 	progress *progressBar,
 	stderr io.Writer,
+	cache *artifactCache,
 ) error {
-	results, err := compileSourceBatch(
+	results, err := compileSourceBatchWithCacheDependencies(
 		root,
 		environment,
 		compiler,
 		cflags,
 		sources,
 		dependenciesBySource,
+		cacheDependenciesBySource,
 		jobs,
 		verbose,
 		silent,
 		workingDirectory,
 		progress,
+		cache,
 	)
 	if err != nil {
 		return err
@@ -518,9 +688,49 @@ func compileSourceBatch(
 	silent bool,
 	workingDirectory string,
 	progress *progressBar,
+	cache *artifactCache,
+) ([]*compileResult, error) {
+	return compileSourceBatchWithCacheDependencies(
+		root,
+		environment,
+		compiler,
+		cflags,
+		sources,
+		dependenciesBySource,
+		dependenciesBySource,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		cache,
+	)
+}
+
+func compileSourceBatchWithCacheDependencies(
+	root string,
+	environment string,
+	compiler string,
+	cflags []string,
+	sources []string,
+	dependenciesBySource [][]string,
+	cacheDependenciesBySource [][]string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	workingDirectory string,
+	progress *progressBar,
+	cache *artifactCache,
 ) ([]*compileResult, error) {
 	if jobs < 1 {
 		return nil, fmt.Errorf("jobs must be positive: %d", jobs)
+	}
+	if len(cacheDependenciesBySource) != len(sources) {
+		return nil, fmt.Errorf(
+			"cache dependency source count does not match sources: %d != %d",
+			len(cacheDependenciesBySource),
+			len(sources),
+		)
 	}
 	if len(dependenciesBySource) != len(sources) {
 		return nil, fmt.Errorf(
@@ -543,12 +753,14 @@ func compileSourceBatch(
 			}
 			forwards = append(forwards, forward)
 		}
+		cacheDependencies := cacheDependenciesBySource[index]
 		tasks = append(tasks, compileJob{
-			index:    index,
-			source:   source,
-			display:  compileSourceDisplayPath(root, source, workingDirectory),
-			object:   object,
-			forwards: forwards,
+			index:             index,
+			source:            source,
+			display:           compileSourceDisplayPath(root, source, workingDirectory),
+			object:            object,
+			forwards:          forwards,
+			cacheDependencies: cacheDependencies,
 		})
 	}
 
@@ -587,10 +799,12 @@ func compileSourceBatch(
 					}
 
 					var diagnostics bytes.Buffer
-					fatal, err := compileSource(
+					fatal, cached, err := compileSourceWithCache(
+						cache,
 						compiler,
 						cflags,
 						job.forwards,
+						job.cacheDependencies,
 						job.source,
 						job.object,
 						workingDirectory,
@@ -600,7 +814,7 @@ func compileSourceBatch(
 						stopWork()
 					}
 					var command []byte
-					if verbose && !silent {
+					if verbose && !silent && !cached {
 						command = renderCompileCommand(
 							compiler,
 							cflags,
@@ -609,7 +823,11 @@ func compileSourceBatch(
 							job.object,
 						)
 					}
-					progress.complete("Compiling "+job.display, command)
+					step := "Compiling " + job.display
+					if cached {
+						step += " (CACHED)"
+					}
+					progress.complete(step, command)
 					results <- compileResult{
 						index:       job.index,
 						diagnostics: append([]byte(nil), diagnostics.Bytes()...),
@@ -671,6 +889,65 @@ func compileResultsError(results []*compileResult) error {
 	return errors.Join(failures...)
 }
 
+func compileSourceWithCache(
+	cache *artifactCache,
+	compiler string,
+	cflags []string,
+	forwards []string,
+	cacheDependencies []string,
+	source string,
+	object string,
+	workingDirectory string,
+	stderr io.Writer,
+) (bool, bool, error) {
+	if cache == nil {
+		fatal, err := compileSource(
+			compiler,
+			cflags,
+			forwards,
+			source,
+			object,
+			workingDirectory,
+			stderr,
+		)
+		return fatal, false, err
+	}
+
+	arguments := compileArguments(cflags, forwards, source, object)
+	inputs := append([]string{source}, cacheDependencies...)
+	inputs = append(inputs, forwards...)
+	input, err := cache.actionFingerprint("compile", compiler, arguments, inputs, workingDirectory)
+	if err != nil {
+		return true, false, fmt.Errorf("fingerprint compile %s: %w", source, err)
+	}
+	cached, err := cache.hit(object, buildCacheSuffix, input)
+	if err != nil {
+		return true, false, fmt.Errorf("read compile cache %s: %w", source, err)
+	}
+	if cached {
+		return false, true, nil
+	}
+	if err := cache.invalidate(object, buildCacheSuffix); err != nil {
+		return true, false, fmt.Errorf("invalidate compile cache %s: %w", source, err)
+	}
+	fatal, err := compileSource(
+		compiler,
+		cflags,
+		forwards,
+		source,
+		object,
+		workingDirectory,
+		stderr,
+	)
+	if err != nil {
+		return fatal, false, err
+	}
+	if err := cache.store(object, buildCacheSuffix, input); err != nil {
+		return true, false, fmt.Errorf("store compile cache %s: %w", source, err)
+	}
+	return false, false, nil
+}
+
 func compileSource(
 	compiler string,
 	cflags []string,
@@ -714,7 +991,7 @@ func renderCompileCommand(compiler string, cflags, forwards []string, source, ob
 	return []byte(strings.Join(arguments, " ") + "\n")
 }
 
-func linkSources(
+func linkSourcesWithCache(
 	root string,
 	environment string,
 	compiler string,
@@ -730,6 +1007,7 @@ func linkSources(
 	workingDirectory string,
 	progress *progressBar,
 	stderr io.Writer,
+	cache *artifactCache,
 ) error {
 	if jobs < 1 {
 		return fmt.Errorf("jobs must be positive: %d", jobs)
@@ -786,7 +1064,8 @@ func linkSources(
 					}
 
 					var diagnostics bytes.Buffer
-					fatal, err := linkBinary(
+					fatal, cached, err := linkBinaryWithCache(
+						cache,
 						compiler,
 						ldflags,
 						job.objects,
@@ -799,13 +1078,28 @@ func linkSources(
 						stopWork()
 					}
 					var command []byte
-					if verbose && !silent {
+					if verbose && !silent && !cached {
 						command = renderLinkCommand(compiler, ldflags, job.objects, job.artifact)
 					}
-					progress.complete("Linking "+job.display, command)
+					linkStep := "Linking " + job.display
+					if cached {
+						linkStep += " (CACHED)"
+					}
+					progress.complete(linkStep, command)
 					if err == nil {
-						copyError := copyBinary(job.artifact, job.destination)
-						progress.complete("Copying "+job.display, nil)
+						copyCached := false
+						var copyError error
+						if cache != nil && cache.read {
+							copyCached, copyError = sameRegularFiles(job.artifact, job.destination)
+						}
+						if copyError == nil && !copyCached {
+							copyError = copyBinary(job.artifact, job.destination)
+						}
+						copyStep := "Copying " + job.display
+						if copyCached {
+							copyStep += " (CACHED)"
+						}
+						progress.complete(copyStep, nil)
 						if copyError != nil {
 							err = fmt.Errorf(
 								"copy binary %s to %s: %w",
@@ -1205,6 +1499,62 @@ func buildParsingDisplayPath(root, path, workingDirectory string) string {
 		return path
 	}
 	return filepath.Clean(relative)
+}
+
+func linkBinaryWithCache(
+	cache *artifactCache,
+	compiler string,
+	ldflags []string,
+	objects []string,
+	source string,
+	artifact string,
+	workingDirectory string,
+	stderr io.Writer,
+) (bool, bool, error) {
+	if cache == nil {
+		fatal, err := linkBinary(
+			compiler,
+			ldflags,
+			objects,
+			source,
+			artifact,
+			workingDirectory,
+			stderr,
+		)
+		return fatal, false, err
+	}
+
+	arguments := linkArguments(ldflags, objects, artifact)
+	input, err := cache.actionFingerprint("link", compiler, arguments, objects, workingDirectory)
+	if err != nil {
+		return true, false, fmt.Errorf("fingerprint link %s: %w", source, err)
+	}
+	cached, err := cache.hit(artifact, buildCacheSuffix, input)
+	if err != nil {
+		return true, false, fmt.Errorf("read link cache %s: %w", source, err)
+	}
+	if cached {
+		return false, true, nil
+	}
+	if err := cache.invalidate(artifact, buildCacheSuffix); err != nil {
+		return true, false, fmt.Errorf("invalidate link cache %s: %w", source, err)
+	}
+	fatal, err := linkBinary(
+		compiler,
+		ldflags,
+		objects,
+		source,
+		artifact,
+		workingDirectory,
+		stderr,
+	)
+	if err != nil {
+		return fatal, false, err
+	}
+	if err := cache.store(artifact, buildCacheSuffix, input); err != nil {
+		return true, false, fmt.Errorf("store link cache %s: %w", source, err)
+	}
+	return false, false, nil
 }
 
 func linkBinary(

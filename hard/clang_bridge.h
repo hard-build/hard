@@ -7,6 +7,8 @@ extern "C"
 {
 #endif
 
+	const char* hard_clang_version();
+
 	typedef struct hard_clang_analysis hard_clang_analysis;
 
 	hard_clang_analysis* hard_clang_analyze(

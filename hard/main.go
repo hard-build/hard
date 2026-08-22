@@ -45,6 +45,7 @@ func main() {
 			parsed.silent,
 			progress,
 			os.Stderr,
+			parsed.noCache,
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 			os.Exit(1)
@@ -99,6 +100,7 @@ func main() {
 		progress,
 		os.Stdout,
 		os.Stderr,
+		parsed.noCache,
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 		os.Exit(1)

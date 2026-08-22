@@ -93,12 +93,16 @@ Each list item must contain exactly one action. Actions execute from top to
 bottom. Unknown actions, unknown fields, duplicate YAML keys, incorrect value
 types, absolute paths, and paths containing `..` are configuration errors.
 
+The runner deliberately passes `--no-cache` to every `build` and `test` action.
+This keeps `compiled_once`, copied-binary, and executed-test assertions about
+the current scenario step independent of artifacts left by an earlier run.
+
 ### `build`
 
 The `build` action runs the equivalent of:
 
 ```text
-hard build -v --no-color --jobs=<JOBS> \
+hard build --no-cache -v --no-color --jobs=<JOBS> \
   -o <OUTPUT>/<scenario>/ <sources...>
 ```
 
@@ -144,7 +148,7 @@ build step, and must match all three expected process results.
 The `test` action runs the equivalent of:
 
 ```text
-hard test -v --no-color --jobs=<JOBS> <sources...>
+hard test --no-cache -v --no-color --jobs=<JOBS> <sources...>
 ```
 
 Fields:

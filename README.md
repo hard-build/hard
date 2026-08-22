@@ -8,8 +8,8 @@ formatting, dependency fetching, building, and testing.
 > [!IMPORTANT]
 > The current implementation is the Go module in `hard/`. Root-level files
 > provide user documentation, the default format, the environment support
-> header, and container assets. Incremental cache validation and stale artifact
-> cleanup remain future work.
+> header, and container assets. Unreferenced stale artifact cleanup remains
+> future work.
 
 ## Design goals
 
@@ -68,9 +68,9 @@ The public interface contains exactly these commands:
 
 ```text
 hard format [--format=<name>] [-s|--silent] [path...]
-hard build  [-s|--silent] [-o <path>] [path...]
+hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [-s|--silent] [path...]
-hard test   [-s|--silent] [path...]
+hard test   [--no-cache] [-s|--silent] [path...]
 ```
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
@@ -137,7 +137,7 @@ is required.
 ### `hard build`
 
 ```bash
-hard build [-s|--silent] [-o <path>] [path...]
+hard build [--no-cache] [-s|--silent] [-o <path>] [path...]
 ```
 
 The implemented build pipeline currently discovers dependencies, generates
@@ -152,10 +152,15 @@ direct, transitive, macro-expanded, conditional, and force-included headers.
 
 libclang classifies system headers, so only resolved non-system dependencies
 participate in implementation discovery, forward generation, and forced
-inclusion. Their canonical absolute paths are deduplicated and sorted per source. No
-preliminary header list is printed, although preparation progress identifies
+inclusion. Their canonical absolute paths are deduplicated and sorted per
+source. `HARD_ENV` is the immutability boundary for the compiler toolchain,
+standard library, libc, sysroot, Clang resource headers, and every path marked
+as system by libclang, including user-provided `-isystem` directories. System
+headers are therefore excluded from parse and compilation cache fingerprints.
+No preliminary header list is printed, although preparation progress identifies
 the source or header currently being parsed. The same analysis reports
-unresolved include spellings. A missing include whose expanded path begins with:
+unresolved include spellings. A missing include whose expanded path begins
+with:
 
 ```text
 github.com/<owner>/<repository>/
@@ -244,6 +249,37 @@ file.hpp -> file_fwd.hpp
 file.h++ -> file_fwd.h++
 ```
 
+When regenerated content is byte-for-byte unchanged, the existing regular
+forward header is retained instead of being replaced.
+
+A successful source or header analysis is also persisted as a versioned
+`.hard-parse-cache.json` record beside that input's mirrored build path. A
+source record stores its managed dependency list, complete active non-system
+dependency snapshot, and detected entry point. A header record stores its
+complete active non-system dependency snapshot and the final forward-header
+text after candidate validation. Records include a checksum of the stored
+semantic result.
+
+A parse-cache key includes the `hard` executable digest, libclang version,
+working directory, `HARD_CFLAGS`, configured entry-point names when relevant,
+and the content of the input plus every active non-system dependency known
+from the previous successful analysis, including non-system force-included
+headers. System headers are represented by the selected `HARD_ENV` rather than
+individual content hashes. Missing, malformed, changed, or internally
+inconsistent records are misses. A hit skips libclang analysis, restores a
+missing generated forward header when needed, and reports
+`Parsing <path> (CACHED)`.
+
+No parse record is written when `__has_include` occurs in the input itself or
+the analysis flags. Non-system dependencies containing the token remain
+content-hashed without disabling the input's cache, so ordinary sources that
+include the C++ standard library remain cacheable. Like compiler depfiles, the
+cache cannot notice a change in optional-header availability tested by
+`__has_include` inside a dependency, or a newly created higher-priority header
+that shadows an already resolved include, while the input and every previously
+known non-system dependency remain unchanged. Use `--no-cache` after such
+include-path topology changes.
+
 After dependency and forward generation succeed, every root source and
 automatically discovered implementation source is compiled in parallel. Its
 own direct, transitive, and force-included non-system dependencies are
@@ -280,6 +316,21 @@ as `file.c` and `file.cpp`:
 /home/user/project/src/file.cpp
   -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/file.cpp.o
 ```
+
+Each successful compilation stores an atomic cache record beside its object.
+The cache key includes the `hard` executable, compiler path and content,
+working directory, complete compiler argument vector, source content, every
+resolved active non-system include, and all generated forward headers. System
+headers and other toolchain state are represented by `HARD_ENV`. A hit is
+accepted only when the object is still a regular file with the recorded
+content digest. Missing, changed, malformed, or non-regular artifacts and
+records are cache misses.
+
+`--no-cache` disables build and test cache reads for this invocation. It
+forces source and header analysis, forward generation, compilation, linking,
+binary delivery, and, for `hard test`, test execution, then writes fresh
+successful records. It does not remove or refresh downloaded GitHub snapshots
+below `HARD_ROOT/source`.
 
 #### Entry points and linking
 
@@ -331,6 +382,10 @@ HARD_CC <entry-and-dependency-objects...> <HARD_LDFLAGS...> \
   -o <internal-binary>
 ```
 
+Successful links are cached from the compiler fingerprint, link argument
+vector, working directory, and the content of every linked object. The
+internal binary digest is verified before a hit is used.
+
 `hard` does not add `-nostartfiles`, `-e`, or another custom startup option for
 non-`main` names. A configured entry point such as `_start` must therefore be
 compatible with ordinary linking and the supplied `HARD_LDFLAGS`; otherwise
@@ -363,6 +418,10 @@ is replaced atomically; symlinks and other non-regular destinations are
 rejected. With no entry source, `-o` produces no file and is not an error. The
 internal artifact is retained after delivery.
 
+Delivery is skipped when cache reads are enabled and the existing regular
+destination already has the same content and permissions as the internal
+binary. `--no-cache` forces the copy as well.
+
 Output modes:
 
 Search, source analysis, header analysis, and repository downloads share the
@@ -380,6 +439,13 @@ unknown denominator:
 [3/4] Linking example
 [4/4] Copying example
 ```
+
+A cached preparation analysis is reported as
+`[1/?] Parsing <source-or-header> (CACHED)`.
+A cache hit still completes its progress step and appends `(CACHED)`, for
+example `[2/4] Compiling example.cpp (CACHED)`. Cached compile and link steps
+do not print a verbose command because no process was started. A skipped
+delivery step is reported as `Copying <binary> (CACHED)`.
 
 Each download update is emitted immediately before its HTTP request. Cached
 repositories omit `Downloading`, but search and parsing still occupy step one.
@@ -410,8 +476,8 @@ Root translation units without a configured entry point remain object files.
 Automatically discovered implementation sources are dependency-only even when
 they define a configured entry point.
 
-Incremental cache validation and stale artifact cleanup are not implemented;
-root and automatically discovered sources are rebuilt on every invocation.
+Cache records and artifacts that no longer belong to the selected dependency
+graph are not removed automatically.
 
 ### `hard fetch`
 
@@ -432,6 +498,9 @@ started by `fetch`. The persistent cache and archive-safety rules are the same
 as for `build` and `test`; existing repository directories are not refreshed
 automatically.
 
+`fetch` does not read or write persistent parse-result records, because it
+must remain independent of the environment build tree.
+
 This command does not generate forward headers, compile objects, link or copy
 binaries, run tests, or create an environment build tree. An empty selection
 is a successful no-op. `-j` limits concurrent libclang analyses.
@@ -448,7 +517,7 @@ omit `Downloading`, but search and parsing are still reported.
 ### `hard test`
 
 ```bash
-hard test [-s|--silent] [path...]
+hard test [--no-cache] [-s|--silent] [path...]
 ```
 
 Every selected test source is built and run as a separate executable. Before
@@ -507,6 +576,19 @@ The internal binary follows the same mirrored path rule as a build binary:
 
 Test binaries remain in the environment build tree and are not copied into
 the project. The `test` command does not accept `-o`.
+
+Source and header parse records are shared with the same persistent analysis
+cache. A hit is reported as `Parsing <source-or-header> (CACHED)`.
+Compilation and linking use the same content cache as `hard build`. After a
+test executable exits successfully, `hard` also stores a successful-result
+record beside it.
+An unchanged binary with the same test arguments and working directory is not
+run again; its progress entry is `Testing <binary> (CACHED)`.
+Failed tests are never cached, and a record is invalidated before an actual
+execution so an interrupted or failed forced run cannot leave an older success
+eligible for reuse. Runtime inputs outside the binary—such as undeclared files,
+environment-dependent services, network responses, or time—cannot be inferred;
+use `hard test --no-cache` when those inputs matter.
 
 The work is divided into invocation-wide phases:
 
@@ -615,9 +697,14 @@ rules. Unlike `HARD_ROOT`, `HARD_ENV`, and `HARD_CC`, an explicitly empty value
 does not select the default: it disables `hard build` binary linking while
 preserving object compilation. It has no effect on `hard test`.
 
-Use a distinct `HARD_ENV` for every incompatible compiler, standard library,
-ABI, target, or container. Artifact generation rejects environment names that
-escape `HARD_ROOT/env`.
+`HARD_ENV` is the cache boundary for immutable toolchain state. Use a distinct
+value whenever the compiler, libclang resource headers, standard library,
+libc, sysroot, ABI, target, container, or a user-provided `-isystem` tree
+changes. System headers are not content-hashed; keeping the same `HARD_ENV`
+asserts that they remain compatible and unchanged. `--no-cache` can force a
+one-off rebuild in the current environment, while a new `HARD_ENV` keeps old
+artifacts isolated. Artifact generation rejects environment names that escape
+`HARD_ROOT/env`.
 
 Example:
 
@@ -673,9 +760,15 @@ HARD_ROOT/
         ├── hard.h
         └── build/
             └── <absolute path without the leading slash>/
+                ├── file.cpp.hard-parse-cache.json
+                ├── file.h.hard-parse-cache.json
                 ├── file.cpp.o
+                ├── file.cpp.o.hard-cache.json
                 ├── file_fwd.h
-                └── file_fwd.hpp
+                ├── file_fwd.hpp
+                ├── application
+                ├── application.hard-cache.json
+                └── application.hard-test-cache.json
 ```
 
 An entry source or test source also creates an extensionless internal binary

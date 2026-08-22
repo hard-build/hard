@@ -205,6 +205,7 @@ func TestCompileSourceBatchIncludesGitHubForwardHeaders(t *testing.T) {
 		false,
 		project,
 		newProgressBar(&stdout, 1, true, false, true),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compileSourceBatch() error = %v", err)
@@ -318,6 +319,7 @@ func TestCompileSourceBatchDisplaysCanonicalGitHubPath(t *testing.T) {
 		false,
 		project,
 		newProgressBar(&stdout, 1, true, false, true),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compileSourceBatch() error = %v", err)
@@ -372,6 +374,7 @@ func TestCompileSourceBatchReturnsPerSourceResults(t *testing.T) {
 		true,
 		project,
 		newProgressBar(io.Discard, 2, false, true, true),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compileSourceBatch() error = %v", err)
@@ -673,6 +676,7 @@ func TestBuildSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 		false,
 		progress,
 		io.Discard,
+		false,
 	); err != nil {
 		t.Fatalf("buildSourcesWithProgress() error = %v", err)
 	}
@@ -1337,7 +1341,7 @@ func TestLinkSourcesOutputModes(t *testing.T) {
 
 			var stdout bytes.Buffer
 			progress := newProgressBar(&stdout, 2, tt.verbose, tt.silent, true)
-			if err := linkSources(
+			if err := linkSourcesWithCache(
 				root,
 				"host",
 				compiler,
@@ -1353,6 +1357,7 @@ func TestLinkSourcesOutputModes(t *testing.T) {
 				project,
 				progress,
 				io.Discard,
+				nil,
 			); err != nil {
 				t.Fatalf("linkSources() error = %v", err)
 			}
@@ -1400,7 +1405,7 @@ func TestLinkSourcesBuildsMultipleBinaries(t *testing.T) {
 	withWorkingDirectory(t, project)
 
 	progress := newProgressBar(io.Discard, 4, false, true, true)
-	err := linkSources(
+	err := linkSourcesWithCache(
 		root,
 		"host",
 		installBuildCompiler(t),
@@ -1416,6 +1421,7 @@ func TestLinkSourcesBuildsMultipleBinaries(t *testing.T) {
 		project,
 		progress,
 		io.Discard,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("linkSources() error = %v", err)
@@ -1444,7 +1450,7 @@ func TestLinkSourcesWritesCompilerErrorsInSilentMode(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	progress := newProgressBar(&stdout, 2, true, true, false)
-	err := linkSources(
+	err := linkSourcesWithCache(
 		root,
 		"host",
 		compiler,
@@ -1460,6 +1466,7 @@ func TestLinkSourcesWritesCompilerErrorsInSilentMode(t *testing.T) {
 		project,
 		progress,
 		&stderr,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("linkSources() error = nil")
