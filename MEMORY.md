@@ -70,15 +70,16 @@ work:
 ## Project identity
 
 `hard` is a convention-based build tool for C and C++ source trees. The goal is
-to derive formatting, dependencies, compilation, linking, and tests from the
-selected sources and their include graph rather than from a hand-written
-project build file.
+to derive formatting, dependencies, compilation, linking, execution, and
+tests from the selected sources and their include graph rather than from a
+hand-written project build file.
 
 The public operations are deliberately limited to:
 
     hard format
     hard fetch
     hard build
+    hard run
     hard test
 
 The repository contains one current generation. Root-level files provide
@@ -108,16 +109,18 @@ Implemented:
 - the well-known `hard/` repository mapping;
 - one source-context forward-declaration file per compiled translation unit;
 - object compilation, dependency-object resolution, ordinary executable
-  linking, and atomic delivery;
+  linking, atomic build delivery, and direct execution of internal binaries;
 - content-addressed object, link, delivery, and successful-test result caching
   with `--no-cache` rebuild and rerun support;
-- persistent semantic libclang result caching for build/test source
+- persistent semantic libclang result caching for build/run/test source
   analysis, including `(CACHED)` preparation output and `--no-cache` refresh;
 - hard-owned GoogleTest listing and repeated exact or `*`/`?` selector
   syntax with validation and internal GoogleTest-filter conversion;
 - GoogleTest compilation, linking, parallel execution, output grouping, and
   failure aggregation;
 - the standalone `fetch` command;
+- a `run` command that builds exactly one root entry target without delivery,
+  forwards program arguments and live streams, and propagates its exit status;
 - a POSIX command wrapper and Make-based user-local build and installation;
 - exclusion of environment support `hard.h` declarations from source forwards
   while retaining its configured force include.
@@ -152,7 +155,7 @@ cache entries and are not refreshed automatically.
 | `hard/go.mod`, `hard/go.sum` | Module identity, Go version, dependencies, and checksums |
 | `hard/main.go` | Process entry, dispatch, configuration loading, and shared search progress |
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
-| `hard/cli.go` | Cobra command tree, flags, positional paths, test selectors, and job normalization |
+| `hard/cli.go` | Cobra command tree, flags, positional paths, run arguments, test selectors, and job normalization |
 | `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, test selection, and job forms |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
@@ -175,6 +178,8 @@ cache entries and are not refreshed automatically.
 | `hard/cache.go` | Content fingerprints, atomic artifact and parse-result records, semantic-result integrity, and file comparison |
 | `hard/cache_test.go` | Artifact and parse cache keys, invalidation, no-cache, integrity, forward restoration, selector separation, and successful-test reuse |
 | `hard/build_test.go` | Dependency, forwards, objects, entry binaries, output, and integrations |
+| `hard/run.go` | Build-compatible preparation, single-entry internal linking, live program execution, and exit propagation |
+| `hard/run_test.go` | Run streams, arguments, exit status, internal-only artifacts, cache behavior, and entry validation |
 | `hard/fetch.go` | Dependency-only source closure and external snapshot fetching |
 | `hard/fetch_test.go` | Fetch progress, recursive repositories, caching, and absence of build artifacts |
 | `hard/test.go` | GoogleTest listing, selector validation, plans, shared compilation, linking, caching, and execution |
@@ -218,10 +223,11 @@ libclang 18 shared library.
 Runtime tools by command:
 
 - `clang-format` for `format`;
-- libclang 18 for dependency analysis in `fetch`, `build`, and `test`, forward
-  extraction in `build` and `test`, and entry detection in `build`;
-- `HARD_CC` for object compilation and compiler-driver linking in `build` and
-  `test`;
+- libclang 18 for dependency analysis in `fetch`, `build`, `run`, and `test`,
+  forward extraction in `build`, `run`, and `test`, and entry detection in
+  `build` and `run`;
+- `HARD_CC` for object compilation and compiler-driver linking in `build`,
+  `run`, and `test`;
 - `pkg-config` and `gtest_main` for `test`;
 - HTTPS access to GitHub when a required repository is not cached.
 
@@ -271,6 +277,8 @@ The public command forms are:
     hard format [--format=<name>] [-s|--silent] [path...]
     hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
     hard fetch  [-s|--silent] [path...]
+    hard run    [--no-cache] [-s|--silent] [path...]
+                [-- program-argument...]
     hard test   [--list-tests] [--test=<selector>]...
                 [--no-cache] [-s|--silent] [path...]
 
@@ -291,27 +299,30 @@ Command-local flags:
 - `format`: `--format=<name>`, default `format.v1`;
 - every public command: `-s`, `--silent`;
 - `build`: `-o <path>`, `--output=<path>`;
-- `build` and `test`: `--no-cache`;
+- `build`, `run`, and `test`: `--no-cache`;
 - `test`: `--list-tests` or repeatable `--test=<selector>`, which are
   mutually exclusive;
-- `fetch` and `test` do not accept `--format` or `--output`.
+- `fetch`, `run`, and `test` do not accept `--format` or `--output`.
 
 Other CLI decisions:
 
 - each command accepts zero or more paths;
 - no path becomes `.`;
+- for `run` only, `--` ends hard arguments; later values populate the program
+  argument vector unchanged, and no preceding path still defaults to `.`;
 - invoking no command is an error: `a command is required`;
 - unknown commands and flags are errors;
 - Cobra completion is disabled;
 - the normal `help` command is not public; `help` and `_help` are rejected;
 - root and command `--help` succeed without configuration loading or source
   discovery;
-- root help exposes only `format`, `fetch`, `build`, and `test`.
+- root help exposes only `format`, `fetch`, `build`, `run`, and `test`.
 
-The parsed `arguments` value contains `command`, `paths`, `verbose`, `silent`,
-`noColor`, `noCache`, `listTests`, `testSelectors`, `jobs`, `format`,
-and `output`. Only `build` populates `output`; only `build` and `test` can
-set `noCache`; only `test` populates listing or selectors. The raw output
+The parsed `arguments` value contains `command`, `paths`, `programArguments`,
+`verbose`, `silent`, `noColor`, `noCache`, `listTests`, `testSelectors`,
+`jobs`, `format`, and `output`. Only `build` populates `output`; only `run`
+populates `programArguments`; only `build`, `run`, and `test` can set
+`noCache`; only `test` populates listing or selectors. The raw output
 spelling preserves a trailing path separator because that separator declares
 directory intent.
 
@@ -385,8 +396,8 @@ The same vector is used by libclang dependency, source-forward, and entry
 analyses and by `HARD_CC` object compilation. Dependency and entry analysis add
 the working directory and default to C++ mode unless `-x` is already present.
 
-Build and test canonicalize `HARD_ROOT/env/HARD_ENV/hard.h` through symlinks
-after dependency closure discovery and exclude declarations physically owned
+Build, run, and test canonicalize `HARD_ROOT/env/HARD_ENV/hard.h` through
+symlinks after dependency closure discovery and exclude declarations physically owned
 by that canonical target from source forwards. The original
 `HARD_CFLAGS -include` remains.
 Consequences:
@@ -418,7 +429,8 @@ object paths in every compiler-driver link command.
 
 - unset: `main _start`;
 - present but empty: no entry names, disabling build linking while retaining
-  source preparation and object compilation;
+  source preparation and object compilation and making run fail with no entry
+  source;
 - non-empty: parsed with the same shell-word and disabled-expansion rules;
 - only matching global function definitions make an entry source;
 - `test` ignores this variable because `gtest_main` supplies its entry point.
@@ -430,13 +442,14 @@ Recognized files:
 | Command | Files |
 | --- | --- |
 | `build` | `.c`, `.cc`, `.cpp`, `.c++`, excluding test sources |
+| `run` | Same as `build` |
 | `fetch` | `.c`, `.cc`, `.cpp`, `.c++`, including test sources |
 | `format` | build extensions plus `.h`, `.hh`, `.hpp`, `.h++` |
 | `test` | test sources using `.c`, `.cc`, `.cpp`, or `.c++` |
 
 Extensions are case-insensitive. A test source has a stem ending in `_test`,
 also case-insensitive. `source_TeSt.CPP` is therefore a test, excluded by
-`build` and included by `fetch`, `format`, and `test`.
+`build` and `run` and included by `fetch`, `format`, and `test`.
 
 Not recognized unless a future requirement changes the set:
 
@@ -447,11 +460,12 @@ Path rules:
 - with no path, recursively scan `.`;
 - with paths, root selection includes only explicit eligible files and
   eligible files recursively found under explicit directories;
-- build, fetch, and test may subsequently add same-stem production sources
-  required by dependencies; fetch only analyzes them;
+- build, fetch, run, and test may subsequently add same-stem production
+  sources required by dependencies; fetch only analyzes them;
 - unsupported explicit files are silently skipped;
 - missing or inaccessible inputs are errors;
-- no matches is a successful no-op;
+- no matches is a successful no-op except for `run`, which requires exactly
+  one root entry source;
 - displayed selected paths retain the first lexical spelling and are relative
   to the process working directory;
 - input roots keep argument order, directory entries use `os.ReadDir` lexical
@@ -491,6 +505,9 @@ without advancing the counter. A negative total is displayed as `?`.
 - `build`: search, all source parsing, and all repository downloads
   reuse preparation step one; total becomes `1 + sources + 2 * root entry
   binaries`; compilation begins at `[2/M]`.
+- `run`: search, parsing, and downloads reuse preparation step one; total
+  becomes `1 + sources + 1 link`; execution begins only after the progress
+  stream is finished and is not a progress or cache step;
 - `fetch`: search, parsing, and downloads form its single preparation step;
   live output stays `[1/?]` and final total is one.
 - `test`: search, parsing, and downloads reuse preparation step one. Ordinary
@@ -503,6 +520,8 @@ Progress labels:
 - format: the selected file;
 - build: `Searching source files`, `Parsing ...`, `Downloading ...`,
   `Compiling ...`, `Linking ...`, `Copying ...`;
+- run: `Searching source files`, `Parsing ...`, `Downloading ...`,
+  `Compiling ...`, `Linking ...`; there is no `Copying` label;
 - fetch: `Searching source files`, `Parsing ...`, `Downloading ...`;
 - test: `Searching source files`, `Parsing ...`, `Downloading ...`,
   `Compiling ...`, `Linking ...`, `Listing ...`, `Testing ...`, with listing
@@ -519,7 +538,9 @@ Errors and diagnostics use stderr. Top-level errors are rendered as:
 
     hard: <error>
 
-and cause status 1.
+and cause status 1. A normally started program that exits nonzero under
+`hard run` instead propagates its exit status without adding a top-level
+`hard:` diagnostic.
 
 ## `hard format`
 
@@ -569,8 +590,9 @@ implementation uses the Go library.
 Dependency discovery, forward-declaration extraction, and entry-point
 detection use one libclang 18 bridge rather than the former parser or several
 unrelated textual scanners. The user explicitly selected this unified design
-after considering using libclang only for forward declarations. Build and test
-reuse the final dependency-analysis AST for source-context forward extraction.
+after considering using libclang only for forward declarations. Build, run,
+and test reuse the final dependency-analysis AST for source-context forward
+extraction.
 
 Dependency translation units use detailed preprocessing records, keep-going,
 and skipped function bodies. They receive the source absolute path,
@@ -599,7 +621,7 @@ original libclang error and never cause arbitrary network access.
 
 ### Persistent parse-result cache
 
-Successful source analysis in `build` and `test` writes a versioned
+Successful source analysis in `build`, `run`, and `test` writes a versioned
 `<source>.hard-parse-cache.json` record below the mirrored
 `HARD_ROOT/env/HARD_ENV/build` path. Each record contains the managed dependency
 list, complete active non-system dependency snapshot, detected entry point, and
@@ -686,7 +708,7 @@ Snapshot installation:
   regular file.
 
 One synchronized resolver is shared by all analysis workers in one build,
-fetch, or test invocation. Concurrent demand for one repository produces one
+fetch, run, or test invocation. Concurrent demand for one repository produces one
 HTTP request. Each source remembers repositories it already attempted so an
 invalid include inside an installed repository cannot cause an infinite retry.
 After a snapshot becomes available, libclang analysis repeats; newly exposed
@@ -958,6 +980,49 @@ Cache hits consume normal progress steps with `(CACHED)` after the label.
 Cached source analyses append `(CACHED)` to their `Parsing` label.
 Cached compile and link entries have no verbose command because no child
 process was started; an identical delivery is `Copying <binary> (CACHED)`.
+
+## `hard run`
+
+Run root selection is identical to build and excludes `*_test.*`. It reuses
+the build analyzer, recursive same-stem source closure, source forwards, object
+compilation, dependency-object traversal, content fingerprints, and ordinary
+compiler-driver linking.
+
+Exactly one originally selected root must define a configured entry function.
+Zero is an error. Multiple roots are an error that lists their lexical source
+paths. The check is performed after preparation but before object compilation.
+Automatically discovered sources remain dependency-only. The linked output is
+the ordinary internal binary below `HARD_ROOT/env/HARD_ENV/build`; run never
+copies it beside the source and has no `-o` flag.
+
+The syntax boundary is:
+
+    hard run [hard flags] [path...] -- [program arguments...]
+
+Cobra's `ArgsLenAtDash` divides the positional vector. Bare `--` with no path
+retains the ordinary `.` default. Job-argument normalization stops at `--`, so
+program values such as `-j` and `--no-cache` are not rewritten or consumed.
+
+The program is started after a successful link with:
+
+- the invocation's current working directory;
+- stdin, stdout, and stderr inherited from the hard process;
+- every post-`--` argument unchanged.
+
+Program output is live rather than captured. Verbose mode prints the
+shell-escaped run command after build progress finishes. Silent mode hides only
+hard progress and commands; it does not suppress child streams.
+`--no-color` has no effect on the child.
+
+Parse, compile, and link caches behave exactly as in build. `--no-cache` forces
+those stages and refreshes their successful records. Program execution has no
+result cache and always occurs after a successful cached or uncached build.
+The progress total is `1 + compiled sources + 1 link`, with no delivery step.
+
+A normal child exit code is propagated by the top-level process without a
+duplicate diagnostic. A signal-style negative `exec.ExitError` code maps to
+status 1. Process-start failures and all build failures use the ordinary
+`hard: <error>` path and status 1.
 
 ## `hard fetch`
 
@@ -1272,7 +1337,8 @@ to leave the library unchanged for now.
   remained at the root. The user later deleted the old version and renamed
   `v1.0` to `hard`; the repository now contains only the Go generation.
 - MIT was selected, with the current copyright identity.
-- README is English and exposes only `format`, `fetch`, `build`, and `test`.
+- README is English and exposes only `format`, `fetch`, `build`, `run`, and
+  `test`.
 - Go 1.23 is required.
 - Cobra was selected rather than a handwritten parser.
 - `HARD_ROOT`, `HARD_ENV`, `HARD_CC`, `HARD_CFLAGS`, `HARD_LDFLAGS`, and
@@ -1282,8 +1348,8 @@ to leave the library unchanged for now.
   progress paths use canonical `github.com/...` spelling.
 - Directory symlinks are recursively traversed as ordinary directories, with
   canonical visited-directory cycle prevention.
-- Build excludes case-insensitive `_test`; test selects it; format includes
-  headers; fetch includes ordinary and test translation units.
+- Build and run exclude case-insensitive `_test`; test selects it; format
+  includes headers; fetch includes ordinary and test translation units.
 - Format has no preliminary source list, uses `[N/M]` rather than a bar,
   supports silent and verbose output, and uses internal Go unified diffs.
 - Verbose format prints each diff immediately after that file completes.
@@ -1306,6 +1372,9 @@ to leave the library unchanged for now.
 - Linking is always ordinary compiler-driver linking.
 - Build binaries are internally retained and delivered beside sources or via
   `-o`; directory outputs preserve source paths to prevent basename collisions.
+- Run requires exactly one root entry source, links only the internal binary,
+  never delivers it, forwards live streams and post-`--` arguments, never caches
+  execution, and propagates the program exit status.
 - Test uses GoogleTest, has one invocation-wide progress total, hides successful
   output in normal mode, preserves failure output, supports silent mode, and
   parallelizes actual test processes.
@@ -1321,8 +1390,8 @@ to leave the library unchanged for now.
   headers.
 - libclang was selected as the unified mechanism for header discovery,
   dependency graphs, declaration extraction, and entry detection.
-- Every command reports searching; build, fetch, and test report parsing before
-  potentially long analysis.
+- Every command reports searching; build, fetch, run, and test report parsing
+  before potentially long analysis.
 - Multiple repositories downloaded in one invocation share one progress step,
   and each Downloading message is displayed before its request starts.
 - Declarations owned by the canonical environment support `hard.h` are excluded
@@ -1346,7 +1415,7 @@ to leave the library unchanged for now.
   higher-priority header can shadow an existing include without invalidating
   that set. A dependency can also test the availability of an optional header
   through `__has_include` without that unavailable header entering the known
-  set. Run build or test with `--no-cache` after such topology changes.
+  set. Run build, run, or test with `--no-cache` after such topology changes.
 - Unreferenced stale generated artifacts are not removed automatically.
 - Test-result keys cannot infer undeclared runtime files, services, network
   responses, or time; callers use `hard test --no-cache` when these matter.
@@ -1397,13 +1466,17 @@ to leave the library unchanged for now.
   display, entry exclusion, binary/output collisions, output destinations,
   progress, commands, quoting, errors, parallel links, copy behavior, and real
   executable integrations.
+- `hard/run_test.go`: live streams and working directory, argument quoting,
+  child exit propagation, single-entry validation before compilation,
+  internal-only real C++ artifacts, cached rebuild reuse, unconditional child
+  execution, no delivery progress, and forced no-cache rebuilds.
 - `hard/cache_test.go`: stable content keys, compiler/input/dependency/source
   invalidation, semantic-result integrity, malformed records, source parse hits,
   input/flag `__has_include` suppression, cacheable dependencies containing the
   token, standard-library parse reuse, `HARD_ENV` handling of `-isystem` header
   changes, source-forward restoration, no-cache refresh,
-  compile/link/delivery reuse, build/test `Parsing ... (CACHED)` output, and
-  successful-only test-result reuse with selector-separated keys and uncached
+  compile/link/delivery reuse, build/run/test `Parsing ... (CACHED)` output,
+  and successful-only test-result reuse with selector-separated keys and uncached
   listing.
 - `hard/fetch_test.go`: empty no-op, search/parse progress, recursive repository
   downloads, shared progress step, install order, cached reuse, absence of
@@ -1451,7 +1524,7 @@ From the repository root:
     git diff --check
 
 For documentation work, reread `README.md`, `AGENTS.md`, and `MEMORY.md`
-completely; verify English language, four-command public scope, local links,
+completely; verify English language, five-command public scope, local links,
 versions, flags, paths, defaults, implemented/target distinctions, and known
 gaps.
 
@@ -1660,6 +1733,33 @@ include for every compiled C, CC, CPP, or C++ translation unit. The real
 GoogleTest scenarios compiled, linked, and passed all configured tests. A
 separate real passing/failing pair executed both binaries and returned status 1
 after reporting the expected failed test.
+
+## Last known verification of `hard run`
+
+On 2026-08-23, the new run command passed clean gofmt, ordinary and race tests,
+vet, an out-of-tree backend build, module verification, and repository diff
+checking. Unit coverage exercised `--` separation, unchanged `-j` and
+`--no-cache` child arguments, run-specific flag rejection and help, build-style
+source selection, live stdin/stdout/stderr, working directory, exit-code
+extraction, zero/multiple entry validation, real C++ linking, internal-only
+artifacts, verbose command quoting, cached rebuild reuse, unconditional program
+execution, absence of `Copying`, and forced no-cache rebuilds.
+
+The separately built backend
+`/tmp/hard-check-run-command-20260823` was exercised with a real C++20 program,
+an isolated `HARD_ROOT`, and a separate `HARD_ENV`. The first verbose invocation
+compiled and linked an ELF binary only below the environment build tree,
+forwarded a spaced argument and stdin, preserved child stderr, and created no
+binary beside `app.cpp`. The second invocation reported:
+
+    Parsing app.cpp (CACHED)
+    Compiling app.cpp (CACHED)
+    Linking app (CACHED)
+
+and still ran the child with new arguments and input. A following
+`run --no-cache` reported no cached stages. A silent invocation emitted only
+the child's stdout/stderr and propagated its exit status 7 without a
+`hard:` diagnostic.
 
 ## Workspace safety snapshot
 

@@ -80,6 +80,48 @@ func TestParseArguments(t *testing.T) {
 			want: arguments{command: "build", paths: []string{"src"}, noCache: true},
 		},
 		{
+			name: "run defaults to current directory",
+			args: []string{"run"},
+			want: arguments{command: "run", paths: []string{"."}},
+		},
+		{
+			name: "run accepts build flags and path",
+			args: []string{"-v", "run", "--no-cache", "-s", "src/app.cpp"},
+			want: arguments{
+				command: "run",
+				paths:   []string{"src/app.cpp"},
+				verbose: true,
+				silent:  true,
+				noCache: true,
+			},
+		},
+		{
+			name: "run passes arguments after separator unchanged",
+			args: []string{
+				"run",
+				"src/app.cpp",
+				"--",
+				"--mode",
+				"two words",
+				"-j",
+				"--no-cache",
+			},
+			want: arguments{
+				command:          "run",
+				paths:            []string{"src/app.cpp"},
+				programArguments: []string{"--mode", "two words", "-j", "--no-cache"},
+			},
+		},
+		{
+			name: "run separator defaults path to current directory",
+			args: []string{"run", "--", "input.txt"},
+			want: arguments{
+				command:          "run",
+				paths:            []string{"."},
+				programArguments: []string{"input.txt"},
+			},
+		},
+		{
 			name: "fetch defaults to current directory",
 			args: []string{"fetch"},
 			want: arguments{command: "fetch", paths: []string{"."}},
@@ -292,6 +334,10 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 			args:    []string{"test", "--test=Suite.*-Suite.Slow"},
 			wantErr: "test selector must not contain '-'",
 		},
+		{name: "run rejects format flag", args: []string{"run", "--format=custom.v1"}, wantErr: "unknown flag"},
+		{name: "run rejects output flag", args: []string{"run", "--output=binary"}, wantErr: "unknown flag"},
+		{name: "run rejects list-tests flag", args: []string{"run", "--list-tests"}, wantErr: "unknown flag"},
+		{name: "run rejects test selector", args: []string{"run", "--test=Suite.Case"}, wantErr: "unknown flag"},
 		{name: "build rejects list-tests flag", args: []string{"build", "--list-tests"}, wantErr: "unknown flag"},
 		{name: "build rejects test selector", args: []string{"build", "--test=Suite.Case"}, wantErr: "unknown flag"},
 	}
@@ -323,6 +369,7 @@ func TestHelp(t *testing.T) {
 				"build       Build C++ sources",
 				"fetch       Download C++ dependencies",
 				"format      Format C++ sources",
+				"run         Build and run a C++ program",
 				"test        Build and run C++ tests",
 				"-j, --jobs",
 				"(default 1)",
@@ -360,6 +407,18 @@ func TestHelp(t *testing.T) {
 			name: "fetch",
 			args: []string{"fetch", "--help"},
 			want: []string{"hard fetch [path...]", "-j, --jobs", "--no-color", "-s, --silent", "-v, --verbose"},
+		},
+		{
+			name: "run",
+			args: []string{"run", "--help"},
+			want: []string{
+				"hard run [path...] [-- program-argument...]",
+				"-j, --jobs",
+				"--no-cache",
+				"--no-color",
+				"-s, --silent",
+				"-v, --verbose",
+			},
 		},
 		{
 			name: "test",
@@ -405,8 +464,8 @@ func TestHelp(t *testing.T) {
 			if tt.name != "build" && strings.Contains(help, "--output") {
 				t.Errorf("help contains build-only output flag:\n%s", help)
 			}
-			if tt.name != "build" && tt.name != "test" && strings.Contains(help, "--no-cache") {
-				t.Errorf("help contains build/test-only no-cache flag:\n%s", help)
+			if tt.name != "build" && tt.name != "run" && tt.name != "test" && strings.Contains(help, "--no-cache") {
+				t.Errorf("help contains build/run/test-only no-cache flag:\n%s", help)
 			}
 			if tt.name != "test" && (strings.Contains(help, "--list-tests") || strings.Contains(help, "--test")) {
 				t.Errorf("help contains test-only selection flag:\n%s", help)

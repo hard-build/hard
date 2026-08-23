@@ -25,6 +25,9 @@ func TestMatchesSource(t *testing.T) {
 		{name: "build excludes uppercase test", command: "build", path: "source_TEST.CPP"},
 		{name: "build excludes header", command: "build", path: "source.hpp"},
 		{name: "build excludes cxx", command: "build", path: "source.cxx"},
+		{name: "run source", command: "run", path: "source.cpp", want: true},
+		{name: "run excludes test", command: "run", path: "source_test.cpp"},
+		{name: "run excludes header", command: "run", path: "source.hpp"},
 		{name: "fetch source", command: "fetch", path: "source.cpp", want: true},
 		{name: "fetch test source", command: "fetch", path: "source_TEST.CPP", want: true},
 		{name: "fetch excludes header", command: "fetch", path: "source.hpp"},
@@ -86,6 +89,12 @@ func TestDiscoverSourcesRecursively(t *testing.T) {
 	}{
 		{
 			command: "build",
+			want: []string{
+				"01.c", "02.cc", "03.cpp", "04.c++", "nested/13.cpp",
+			},
+		},
+		{
+			command: "run",
 			want: []string{
 				"01.c", "02.cc", "03.cpp", "04.c++", "nested/13.cpp",
 			},

@@ -165,7 +165,7 @@ func matchesSource(command, path string) (bool, error) {
 	isTest := strings.HasSuffix(stem, "_test")
 
 	switch command {
-	case "build":
+	case "build", "run":
 		return isTranslationUnit(extension) && !isTest, nil
 	case "fetch":
 		return isTranslationUnit(extension), nil

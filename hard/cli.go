@@ -14,17 +14,18 @@ const defaultFormat = "format.v1"
 const defaultJobs = 1
 
 type arguments struct {
-	command       string
-	paths         []string
-	verbose       bool
-	silent        bool
-	noColor       bool
-	noCache       bool
-	listTests     bool
-	testSelectors []string
-	jobs          int
-	format        string
-	output        string
+	command          string
+	paths            []string
+	programArguments []string
+	verbose          bool
+	silent           bool
+	noColor          bool
+	noCache          bool
+	listTests        bool
+	testSelectors    []string
+	jobs             int
+	format           string
+	output           string
 }
 
 func parseArguments(args []string, stdout, stderr io.Writer) (arguments, error) {
@@ -132,6 +133,16 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		parsed,
 	)
 	fetchCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
+	runCommand := newRunCommand(
+		&verbose,
+		&noColor,
+		&jobs,
+		&silent,
+		&noCache,
+		parsed,
+	)
+	runCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
+	runCommand.Flags().BoolVar(&noCache, "no-cache", false, "rebuild without using cached results")
 	testCommand := newPathCommand(
 		"test",
 		"Build and run C++ tests",
@@ -155,6 +166,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		formatCommand,
 		buildCommand,
 		fetchCommand,
+		runCommand,
 		testCommand,
 	)
 
@@ -224,6 +236,47 @@ func newPathCommand(
 	}
 }
 
+func newRunCommand(
+	verbose *bool,
+	noColor *bool,
+	jobs *int,
+	silent *bool,
+	noCache *bool,
+	parsed *arguments,
+) *cobra.Command {
+	return &cobra.Command{
+		Use:   "run [path...] [-- program-argument...]",
+		Short: "Build and run a C++ program",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(command *cobra.Command, values []string) error {
+			jobCount, err := resolveJobCount(*jobs)
+			if err != nil {
+				return err
+			}
+			paths := values
+			var programArguments []string
+			if separator := command.ArgsLenAtDash(); separator >= 0 {
+				paths = values[:separator]
+				programArguments = append([]string(nil), values[separator:]...)
+			}
+			if len(paths) == 0 {
+				paths = []string{"."}
+			}
+			*parsed = arguments{
+				command:          "run",
+				paths:            paths,
+				programArguments: programArguments,
+				verbose:          *verbose,
+				silent:           *silent,
+				noColor:          *noColor,
+				noCache:          *noCache,
+				jobs:             jobCount,
+			}
+			return nil
+		},
+	}
+}
+
 func validateTestSelection(listTests bool, selectors []string) error {
 	if listTests && len(selectors) != 0 {
 		return errors.New("--list-tests and --test cannot be used together")
@@ -245,6 +298,9 @@ func validateTestSelection(listTests bool, selectors []string) error {
 func normalizeJobArguments(args []string) []string {
 	normalized := append([]string(nil), args...)
 	for index, argument := range normalized {
+		if argument == "--" {
+			break
+		}
 		if argument == "-j" || argument == "--jobs" {
 			normalized[index] = "--jobs=0"
 		}

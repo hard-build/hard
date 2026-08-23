@@ -3,7 +3,7 @@
 `hard` is a convention-based build tool for C and C++ projects. It derives its
 work from the source tree instead of requiring project-specific build files,
 keeps generated artifacts outside the project, and provides one interface for
-formatting, dependency fetching, building, and testing.
+formatting, dependency fetching, building, running, and testing.
 
 > [!IMPORTANT]
 > The current implementation is the Go module in `hard/`. Root-level files
@@ -21,8 +21,8 @@ formatting, dependency fetching, building, and testing.
   build environments.
 - Run independent formatting, dependency analysis, compilation, linking, and
   test-execution work in parallel while keeping readable output.
-- Expose only formatting, dependency fetching, building, and testing as public
-  operations.
+- Expose only formatting, dependency fetching, building, running, and testing
+  as public operations.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ Building the Go module in `hard/` requires:
 Depending on the command, using `hard` also requires:
 
 - a C/C++ compiler supporting the configured flags (`c++` by default) for
-  `build` and `test`;
+  `build`, `run`, and `test`;
 - `clang-format` for source formatting;
 - `pkg-config` and GoogleTest's `gtest_main` package for test compilation and
   linking;
@@ -54,15 +54,17 @@ hard [-v|--verbose] [--no-color] [-jN|--jobs=N] <command> [path...]
 The default job count is one. `-jN` or `--jobs=N` selects `N` workers. Bare
 `-j`, bare `--jobs`, `-j0`, and `--jobs=0` use all logical CPUs. Negative job
 counts are rejected. A command never creates a nested `N × N` pool. In
-`hard fetch`, the selected count is used for dependency analysis. In `hard test`,
-the selected count is the invocation-wide maximum for source preparation,
-compilation, linking, and test-execution phases.
+`hard fetch`, the selected count is used for dependency analysis. In `hard run`,
+it limits source preparation and compilation; exactly one binary is linked and
+executed. In `hard test`, the selected count is the invocation-wide maximum for
+source preparation, compilation, linking, and test-execution phases.
 
 `-v` writes permanent progress entries and command-specific details.
 `--no-color` disables ANSI colors. Every command accepts `-s` or `--silent`,
 which suppresses normal output while preserving errors.
 
-Flags may appear before the command, after it, or between positional paths.
+Persistent flags may appear before or after the command. Command-local flags,
+including `-s`, appear after the command and may be interspersed with paths.
 
 The public interface contains exactly these commands:
 
@@ -70,6 +72,8 @@ The public interface contains exactly these commands:
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [-s|--silent] [path...]
+hard run    [--no-cache] [-s|--silent] [path...]
+            [-- program-argument...]
 hard test   [--list-tests] [--test=<selector>]...
             [--no-cache] [-s|--silent] [path...]
 ```
@@ -77,20 +81,22 @@ hard test   [--list-tests] [--test=<selector>]...
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
 below explicitly named directories are selected as roots. During `build`,
-`fetch`, and `test`, implementation sources associated with project headers
-may additionally be discovered as dependencies of those roots. `build` and
-`test` compile those implementations; `fetch` only inspects them.
+`fetch`, `run`, and `test`, implementation sources associated with project
+headers may additionally be discovered as dependencies of those roots. `build`,
+`run`, and `test` compile those implementations; `fetch` only inspects them.
 
 | Command | Selected files |
 | --- | --- |
 | `build` | `*.c`, `*.cc`, `*.cpp`, `*.c++`, excluding `*_test.*` |
+| `run` | Same as `build` |
 | `fetch` | `*.c`, `*.cc`, `*.cpp`, `*.c++`, including `*_test.*` |
 | `format` | Build extensions plus `*.h`, `*.hh`, `*.hpp`, `*.h++` |
 | `test` | `*_test.c`, `*_test.cc`, `*_test.cpp`, `*_test.c++` |
 
 Extensions and the `_test` suffix are matched without regard to case.
 Unsupported explicitly named files are ignored. Missing or inaccessible paths
-are errors; finding no matching files is a successful no-op.
+are errors. Finding no matching files is a successful no-op except for `run`,
+which requires exactly one root entry source.
 
 Directory symlinks are followed recursively and treated like ordinary
 directories. Resolved directories are visited only once, preventing symlink
@@ -213,10 +219,11 @@ updated automatically. Remove:
 HARD_ROOT/source/github.com/<owner>/<repository>
 ```
 
-to request a fresh snapshot on the next build, fetch, or test. The resolver is
-shared by `build`, `fetch`, and `test`. Immediately before each actual request,
-it reports `Downloading github.com/<owner>/<repository>` as the command's first
-progress step. A missing non-GitHub header retains the original libclang
+to request a fresh snapshot on the next build, fetch, run, or test. The
+resolver is shared by `build`, `fetch`, `run`, and `test`. Immediately before
+each actual request, it reports
+`Downloading github.com/<owner>/<repository>` as the command's first progress
+step. A missing non-GitHub header retains the original libclang
 diagnostic and does not cause a network request.
 
 Each root or automatically discovered translation unit produces one
@@ -320,10 +327,12 @@ accepted only when the object is still a regular file with the recorded
 content digest. Missing, changed, malformed, or non-regular artifacts and
 records are cache misses.
 
-`--no-cache` disables build and test cache reads for this invocation. It
-forces source analysis, source-forward generation, compilation, linking,
-binary delivery, and, for `hard test`, test execution, then writes fresh
-successful records. It does not remove or refresh downloaded GitHub snapshots
+`--no-cache` disables build, run, and test cache reads for this invocation. It
+forces source analysis, source-forward generation, compilation, and linking;
+`hard build` also forces binary delivery, while `hard test` reruns its tests.
+Program execution by `hard run` is never cached and therefore happens on every
+successful invocation with or without this flag. Fresh successful build records
+are written. The flag does not remove or refresh downloaded GitHub snapshots
 below `HARD_ROOT/source`.
 
 #### Entry points and linking
@@ -473,6 +482,56 @@ they define a configured entry point.
 Cache records and artifacts that no longer belong to the selected dependency
 graph are not removed automatically.
 
+### `hard run`
+
+```bash
+hard run [--no-cache] [-s|--silent] [path...] [-- program-argument...]
+```
+
+`run` selects ordinary non-test translation units by the same rules as
+`build`, prepares their complete managed dependency closure, compiles the
+required objects, links one internal binary, and executes it. It never performs
+the `build` delivery step: the binary remains only at its mirrored path below
+`HARD_ROOT/env/HARD_ENV/build`, and no extensionless copy is created beside the
+entry source.
+
+Exactly one originally selected root source must define a configured entry
+function. Finding zero entry sources is an error. Finding more than one is also
+an error and lists the candidate source paths. This check happens after source
+analysis and before object compilation. Automatically discovered implementation
+sources remain dependency-only and cannot become the selected program.
+
+Positional values before `--` are source files or directories. Values after
+`--` are passed to the program unchanged and are never interpreted as `hard`
+flags or paths:
+
+```bash
+hard run src/application.cpp -- --mode=check "input file.txt"
+```
+
+With no path before `--`, source selection defaults to `.`. The program runs
+with the current invocation directory as its working directory and inherits
+`hard`'s stdin, stdout, and stderr. `--no-color` affects only `hard` progress,
+not program output.
+
+Parsing, compilation, and linking use the same content caches and invalidation
+rules as `build`. `--no-cache` forces all three build stages. Execution itself
+is never cached: an unchanged invocation may report cached parsing, compilation,
+and linking, but still starts the program every time.
+
+Search, source analysis, and downloads share preparation step one. After
+preparation, the total is one plus the number of compiled sources plus one link
+step. There is no `Copying` step. The progress stream is finished before the
+program starts so child output remains live and does not overwrite progress.
+Verbose mode prints the exact shell-escaped compile, link, and run commands.
+Silent mode hides `hard` progress and commands while leaving the program's
+stdout and stderr untouched.
+
+A successful program makes `hard run` return zero. A normal nonzero program
+exit is propagated as the `hard` process exit status without an additional
+`hard:` diagnostic. Build, link, or process-start failures use the ordinary
+`hard` error path and status 1.
+
 ### `hard fetch`
 
 ```bash
@@ -489,8 +548,8 @@ headers, and recursively discovers same-stem implementation sources. It then
 downloads the complete transitive closure of expanded
 `github.com/<owner>/<repository>/...` and well-known includes. `HARD_CC` is not
 started by `fetch`. The persistent cache and archive-safety rules are the same
-as for `build` and `test`; existing repository directories are not refreshed
-automatically.
+as for `build`, `run`, and `test`; existing repository directories are not
+refreshed automatically.
 
 `fetch` does not read or write persistent parse-result records, because it
 must remain independent of the environment build tree.
@@ -764,7 +823,8 @@ reachable.
 `HARD_ENTRYPOINTS` follows the same shell-style parsing and disabled expansion
 rules. Unlike `HARD_ROOT`, `HARD_ENV`, and `HARD_CC`, an explicitly empty value
 does not select the default: it disables `hard build` binary linking while
-preserving object compilation. It has no effect on `hard test`.
+preserving object compilation, makes `hard run` fail because it has no entry
+target, and has no effect on `hard test`.
 
 `HARD_ENV` is the cache boundary for immutable toolchain state. Use a distinct
 value whenever the compiler, libclang resource headers, standard library,
@@ -787,6 +847,7 @@ export HARD_ENTRYPOINTS='main _start'
 
 hard build -j src
 hard fetch tests
+hard run src/application.cpp -- --mode=check
 hard test tests
 ```
 
@@ -841,7 +902,7 @@ HARD_ROOT/
 An entry source or test source also creates an extensionless internal binary
 beside its object, such as `application` beside `application.cpp.o`. Build
 binaries are delivered according to `-o` or beside their lexical entry sources
-by default; test binaries are not copied out of the build tree.
+by default. Run and test binaries are not copied out of the build tree.
 
 `make install` supplies the root `hard.h` as `env/host/hard.h`. The `hard`
 command does not generate environment support headers. Other environments must
@@ -858,8 +919,9 @@ Commands return zero when all requested work succeeds. Invalid paths, invalid
 configuration, missing tools or support files, parsing errors, formatter
 failures, compiler failures, linker failures, and failed test executables
 produce a nonzero status. GitHub request, archive-validation, extraction, and
-installation failures during build, fetch, or test also produce a nonzero
-status.
+installation failures during build, fetch, run, or test also produce a nonzero
+status. `hard run` propagates a normally started program's nonzero exit status;
+other command failures return status 1.
 
 Where independent work can continue safely, `hard` processes it and returns an
 aggregate failure when the phase completes. Failures to start a required tool

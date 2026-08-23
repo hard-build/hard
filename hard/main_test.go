@@ -19,6 +19,7 @@ func TestDiscoverSourcesReportsSearchActivity(t *testing.T) {
 	}{
 		{name: "build", sources: []string{"source.cpp"}},
 		{name: "fetch", sources: []string{"source.cpp", "source_test.cpp"}},
+		{name: "run", sources: []string{"source.cpp"}},
 		{name: "format", sources: []string{"header.h", "source.cpp", "source_test.cpp"}},
 		{name: "test", sources: []string{"source_test.cpp"}},
 	}

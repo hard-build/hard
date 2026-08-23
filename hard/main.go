@@ -53,6 +53,35 @@ func main() {
 		return
 	}
 
+	if parsed.command == "run" {
+		err := runSourcesWithProgress(
+			configuration.root,
+			configuration.env,
+			configuration.cc,
+			configuration.cflags,
+			configuration.ldflags,
+			configuration.entrypoints,
+			sources,
+			parsed.programArguments,
+			parsed.jobs,
+			parsed.verbose,
+			parsed.silent,
+			progress,
+			os.Stdin,
+			os.Stdout,
+			os.Stderr,
+			parsed.noCache,
+		)
+		if err != nil {
+			if code, ok := runProgramExitCode(err); ok {
+				os.Exit(code)
+			}
+			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if parsed.command == "format" {
 		progress.setTotal(1 + len(sources))
 		if err := formatSourcesWithProgress(
