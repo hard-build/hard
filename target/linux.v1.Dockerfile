@@ -45,6 +45,8 @@ RUN apt-get update \
     && echo "deb [signed-by=/usr/share/keyrings/apt.llvm.org.asc] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" > /etc/apt/sources.list.d/apt.llvm.org.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
         build-essential \
         clang-format-18 \
         cmake \
@@ -53,6 +55,10 @@ RUN apt-get update \
         libclang1-18 \
         libgmock-dev \
         libgtest-dev \
+        libtool \
+        libtool-bin \
+        meson \
+        ninja-build \
         pkg-config \
     && ln -s /usr/bin/clang-format-18 /usr/local/bin/clang-format \
     && rm -rf /var/lib/apt/lists/*

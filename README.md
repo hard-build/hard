@@ -115,8 +115,9 @@ than the Ubuntu 22.04 ABI.
 The backend and formatter use LLVM 18.1.8 packages from the signed, versioned
 [LLVM Jammy repository](https://apt.llvm.org/jammy/dists/llvm-toolchain-jammy-18/)
 because Ubuntu 22.04 supplies LLVM 14 by default. The runtime also contains
-GoogleTest 1.11 and CMake 3.22. Distribution package revisions are resolved
-when the image is built. The retained LLVM 18 repository is outside
+GoogleTest 1.11, CMake 3.22, GNU Make, Meson with Ninja, pkg-config, and the
+Autoconf, Automake, and Libtool toolchain. Distribution package revisions are
+resolved when the image is built. The retained LLVM 18 repository is outside
 apt.llvm.org's actively maintained last-two-release set, so future image
 rebuilds depend on that archive remaining available. Ubuntu 22.04 standard
 security maintenance ends in May 2027.

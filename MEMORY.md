@@ -235,8 +235,9 @@ against `libclang-18-dev`. Jammy's distribution default is LLVM 14, so the
 image configures the signed, versioned `llvm-toolchain-jammy-18` repository
 from apt.llvm.org in both stages. The runtime installs libclang 18 with its
 resource headers from `libclang-common-18-dev`, exposes `clang-format-18` as
-the unversioned `clang-format` command, and includes GoogleTest, CMake,
-pkg-config, and the image-local runtime bundle.
+the unversioned `clang-format` command, and includes GoogleTest, GNU Make,
+CMake, Meson, Ninja, pkg-config, Autoconf, Automake, Libtool, and the
+image-local runtime bundle.
 
 The selected Jammy toolchain is GCC 11 with glibc 2.35. libgcc and libstdc++
 are linked statically into generated programs by the fixed linker flags, but
@@ -1488,6 +1489,10 @@ to leave the library unchanged for now.
   provisional Ubuntu 24.04 image to Ubuntu 22.04. The finalized target keeps
   GCC 11 and glibc 2.35 from Jammy while preserving libclang and clang-format
   major 18 through the signed `llvm-toolchain-jammy-18` repository.
+- `linux.v1` includes GNU Make, CMake, Meson with Ninja, pkg-config, and the
+  Autoconf, Automake, and Libtool toolchain for building compiled third-party
+  libraries inside the target environment. `make install` for `hard` remains
+  host-only.
 - Integration scenarios use a strict, ordered `test.yaml` step list interpreted
   by one Python runner. Scenario files may use only `build`, `run`, and
   `test`; they cannot contain arbitrary commands. Immediate directories are
@@ -1939,6 +1944,21 @@ Ubuntu 22.04 container with the image backend and GCC 11. The complete required
 Go check set, wrapper syntax, workflow YAML parsing, and repository diff check
 also passed. No image was pushed or published, and no package visibility was
 changed.
+
+Later on 2026-08-23, the runtime tool set was extended for compiled third-party
+libraries. The unique local image
+`hard-build/hard:linux.v1-build-tools-check-20260823` built successfully for
+amd64. Runtime commands reported GNU Make 4.3, CMake 3.22.1, Meson 0.61.2,
+Ninja 1.10.1, pkg-config 0.29.2, Autoconf 2.71, Automake 1.16.5, and both
+`libtool` and `libtoolize` 2.4.6.
+
+The image retained the backend entrypoint, fixed `HARD_*` environment, runtime
+bundle, and dynamic libclang 18 and libLLVM 18 resolution. A real wrapper smoke
+test used deliberately invalid host `HARD_*` values and an isolated temporary
+root. The first run compiled, linked, and executed `001.hello_world` with the
+image flags; the second reused cached parsing, compilation, and linking. The
+pre-existing local GHCR wrapper tag was restored to its original image ID. The
+complete required Go check set also passed. No image was pushed or published.
 
 ## Workspace safety snapshot
 
