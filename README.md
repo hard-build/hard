@@ -7,7 +7,7 @@ formatting, dependency fetching, building, running, and testing.
 
 > [!IMPORTANT]
 > The current implementation is the Go module in `hard/`. Root-level files
-> provide user documentation, the default format, the environment support
+> provide user documentation, the default format, the runtime support
 > header, and container assets. Unreferenced stale artifact cleanup remains
 > future work.
 
@@ -45,10 +45,15 @@ Depending on the command, using `hard` also requires:
   or well-known repository snapshot is not already cached below
   `HARD_ROOT/source`.
 
+Using a container target requires Docker. The target image contains its own
+backend and C/C++ toolchain, so the host does not need the native build
+requirements listed above for target-mode execution.
+
 ## Command-line interface
 
 ```text
-hard [-v|--verbose] [--no-color] [-jN|--jobs=N] <command> [path...]
+hard [--target=<name>] [-v|--verbose] [--no-color]
+     [-jN|--jobs=N] <command> [path...]
 ```
 
 The default job count is one. `-jN` or `--jobs=N` selects `N` workers. Bare
@@ -77,6 +82,85 @@ hard run    [--no-cache] [-s|--silent] [path...]
 hard test   [--list-tests] [--test=<selector>]...
             [--no-cache] [-s|--silent] [path...]
 ```
+
+### Container targets
+
+The installed POSIX wrapper accepts `--target=<name>` and
+`--target <name>` anywhere before `--`. Without this option it directly
+executes the host backend at `~/.local/libexec/hard/hard`. The only supported
+container target is currently `linux.v1`:
+
+```bash
+hard --target=linux.v1 build src
+hard test --target linux.v1 tests
+hard run --target=linux.v1 src/application.cpp -- --mode=check
+```
+
+A target-looking value after the `run` separator belongs to the program and
+is not interpreted by the wrapper. Empty, repeated, and unknown targets are
+errors.
+
+For `linux.v1`, the wrapper only executes `docker run`; it never builds an
+image. Docker pulls the missing image from:
+
+```text
+ghcr.io/hard-build/hard:linux.v1
+```
+
+Both image stages use Ubuntu 22.04. The runtime C++ toolchain is GCC 11 with
+glibc 2.35. `-static-libgcc` and `-static-libstdc++` do not make glibc static,
+so `linux.v1` does not promise that generated programs run on systems older
+than the Ubuntu 22.04 ABI.
+
+The backend and formatter use LLVM 18.1.8 packages from the signed, versioned
+[LLVM Jammy repository](https://apt.llvm.org/jammy/dists/llvm-toolchain-jammy-18/)
+because Ubuntu 22.04 supplies LLVM 14 by default. The runtime also contains
+GoogleTest 1.11 and CMake 3.22. Distribution package revisions are resolved
+when the image is built. The retained LLVM 18 repository is outside
+apt.llvm.org's actively maintained last-two-release set, so future image
+rebuilds depend on that archive remaining available. Ubuntu 22.04 standard
+security maintenance ends in May 2027.
+
+The wrapper bind-mounts the host `${HARD_ROOT:-$HOME/.local/share/hard}` at
+`/hard` and the current working directory at the same absolute path inside the
+container. The image uses `/hard/source` and `/hard/env/linux.v1/build`, so
+host and container access the same downloaded source snapshots while target
+artifacts persist across disposable containers and remain separate from
+`env/host`. The container runs with the current numeric UID and GID, preventing
+root-owned build outputs, and forwards stdin without allocating a TTY.
+
+Only the working directory and `HARD_ROOT` are mounted. Explicit inputs or
+resolved symlinks outside both trees are therefore unavailable in the
+container. A non-empty host `HARD_ROOT` selects the bind-mount source but is
+not copied into the container environment. Other host `HARD_*` values are not
+forwarded: the image fixes its complete target configuration as follows:
+
+```text
+HARD_ROOT=/hard
+HARD_ENV=linux.v1
+HARD_CC=c++
+HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto
+            -Wall -Wextra -I/hard/source
+            -include /usr/local/libexec/hard/hard.h
+HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
+             -static-libgcc -static-libstdc++
+HARD_ENTRYPOINTS=main _start
+```
+
+`linux.v1` is a `linux/amd64` image. Programs built by it require an
+x86-64-v3 processor; Docker does not emulate missing CPU instructions. The
+published tags are:
+
+- `linux.v1`: the stable target selected by the wrapper;
+- `vX.Y.Z-linux.v1`: an immutable project release;
+- `sha-<short-commit>-linux.v1`: a commit build;
+- `edge-linux.v1`: the latest build from `main`.
+
+No `latest` tag is published. A toolchain, ABI, base-system, or minimum-CPU
+change requires a new target version rather than silently changing the
+`linux.v1` contract. The GitHub workflow publishes these tags to GHCR. After
+the first publication, a maintainer must make the GitHub package public once;
+public images can then be pulled without authentication.
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
@@ -113,13 +197,17 @@ Formatting is implemented. Every selected source or header is formatted in
 place by a separate process:
 
 ```text
-clang-format --style=file:<HARD_ROOT/format/<name>> -i <file>
+clang-format --style=file:<runtime-root>/format/<name> -i <file>
 ```
 
 `--format` defaults to `format.v1`. Its value is resolved relative to
-`HARD_ROOT/format`. Empty values, absolute paths, lexical escapes through `..`,
-non-regular files, and symlinks resolving outside the real format directory
-are rejected. An internal symlink to a regular style file is allowed.
+the `format` directory installed beside the running backend. The runtime root
+is derived from the physical backend executable path, including through a
+symlink; it is normally `~/.local/libexec/hard` on the host and
+`/usr/local/libexec/hard` in `linux.v1`. Empty values, absolute paths, lexical
+escapes through `..`, non-regular files, and symlinks resolving outside the
+real format directory are rejected. An internal symlink to a regular style
+file is allowed.
 
 Formatting uses the selected job count. A formatter exit failure is reported
 after independent files have been attempted. Failure to start `clang-format`
@@ -301,10 +389,10 @@ The generated `-include` pair appears after `HARD_CFLAGS` and before `-c`.
 Even when no eligible declarations exist, the source forward is present and
 contains `#pragma once`, which keeps the compiler command shape uniform.
 
-The canonical target of `HARD_ROOT/env/HARD_ENV/hard.h` is the one managed
-header exception. It remains force-included through `HARD_CFLAGS`, but its
-declarations are excluded from the generated source forward. Other project or
-external headers named `hard.h` are treated normally.
+The canonical target of `<runtime-root>/hard.h` is the one managed header
+exception. It remains force-included through `HARD_CFLAGS`, but its declarations
+are excluded from the generated source forward. Other project or external
+headers named `hard.h` are treated normally.
 
 The object path mirrors the absolute source path. The original source
 extension is preserved before `.o`, avoiding collisions between sources such
@@ -654,7 +742,7 @@ then compiles them with the combined compiler flags. Dependency closures for
 different test roots are prepared concurrently. An object output shared by
 several test plans is compiled only once, and every source forward belongs only
 to its translation unit. The shared object is then reused by every test that
-reaches it. The canonical environment support header remains force-included,
+reaches it. The canonical runtime support header remains force-included,
 but its declarations do not enter generated source forwards, as in `build`.
 `HARD_ENTRYPOINTS` is ignored for this command because `gtest_main` supplies
 the test executable entry function.
@@ -778,7 +866,7 @@ its ANSI colors in verbose output and when a failed test's output is reported.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `HARD_ROOT` | Installation and artifact root | `~/.local/share/hard` |
+| `HARD_ROOT` | Persistent source and artifact root | `~/.local/share/hard` |
 | `HARD_ENV` | Isolated build-environment name | `host` |
 | `HARD_CC` | Compiler executable | `c++` |
 | `HARD_CFLAGS` | libclang analysis and object compiler flags | See below |
@@ -797,8 +885,13 @@ Default compiler flags:
 -Wextra
 -I<HARD_ROOT>/source
 -include
-<HARD_ROOT>/env/<HARD_ENV>/hard.h
+<runtime-root>/hard.h
 ```
+
+The runtime root is not configured by an environment variable. `hard` derives
+it from the physical path of its running backend executable. This keeps the
+host runtime bundle and each container image self-contained while allowing
+them to share one persistent `HARD_ROOT`.
 
 Default linker flags:
 
@@ -818,7 +911,8 @@ honored, but environment expansion and command substitution are disabled. An
 explicitly empty value means no flags in that category.
 Consequently, an explicit `HARD_CFLAGS` must include
 `-I<HARD_ROOT>/source` if downloaded GitHub or well-known headers should remain
-reachable.
+reachable, and must include `<runtime-root>/hard.h` if the installed support
+header should remain force-included.
 
 `HARD_ENTRYPOINTS` follows the same shell-style parsing and disabled expansion
 rules. Unlike `HARD_ROOT`, `HARD_ENV`, and `HARD_CC`, an explicitly empty value
@@ -834,6 +928,11 @@ asserts that they remain compatible and unchanged. `--no-cache` can force a
 one-off rebuild in the current environment, while a new `HARD_ENV` keeps old
 artifacts isolated. Artifact generation rejects environment names that escape
 `HARD_ROOT/env`.
+
+These variables describe host-mode execution. Target mode does not forward
+their host values into the container; `linux.v1` uses the fixed values listed
+under [Container targets](#container-targets). The host-side `HARD_ROOT` value
+is still used to select the directory mounted at `/hard`.
 
 Example:
 
@@ -859,27 +958,40 @@ From the repository root, `make` builds the Go backend as `build/hard`.
 ```text
 ~/.local/
 ├── bin/hard
-├── libexec/hard/hard
+├── libexec/hard/
+│   ├── hard
+│   ├── hard.h
+│   └── format/
+│       └── format.v1
 └── share/hard/
-    ├── env/host/hard.h
-    └── format/format.v1
 ```
 
-The public `bin/hard` command is a POSIX shell wrapper. It replaces itself with
-the backend in `libexec/hard/hard` and forwards every argument unchanged.
+The public `bin/hard` command is a POSIX shell wrapper. Without `--target`, it
+replaces itself with `$HOME/.local/libexec/hard/hard` and forwards every
+argument unchanged. With `--target=linux.v1`, it replaces itself with the
+documented `docker run` invocation. It never builds an image.
 
 `PREFIX` defaults to `$HOME/.local`, `BUILD_DIR` defaults to `build`, and
-`DESTDIR` can stage an installation without changing its logical prefix. When
-installing under a different `PREFIX`, set `HARD_ROOT` to
-`<PREFIX>/share/hard` at runtime because the wrapper does not modify the
-environment.
+`DESTDIR` can stage an installation without changing its logical prefix. The
+installed wrapper intentionally uses the user-local `$HOME/.local` backend
+path; changing `PREFIX` does not rewrite it. `make install` is host-only: it
+does not invoke Docker and does not install target images or container assets.
 
-The environment support header and generated artifacts use this layout:
+The backend, support header, and format files form an immutable runtime bundle:
+
+```text
+<runtime-root>/
+├── hard
+├── hard.h
+└── format/
+    └── format.v1
+```
+
+Generated artifacts and downloaded source snapshots use the separate
+persistent layout:
 
 ```text
 HARD_ROOT/
-├── format/
-│   └── format.v1
 ├── source/
 │   ├── hard -> github.com/hard-build/library
 │   └── github.com/
@@ -887,7 +999,6 @@ HARD_ROOT/
 │           └── <repository>/
 └── env/
     └── HARD_ENV/
-        ├── hard.h
         └── build/
             └── <absolute path without the leading slash>/
                 ├── file.cpp.hard-parse-cache.json
@@ -904,11 +1015,11 @@ beside its object, such as `application` beside `application.cpp.o`. Build
 binaries are delivered according to `-o` or beside their lexical entry sources
 by default. Run and test binaries are not copied out of the build tree.
 
-`make install` supplies the root `hard.h` as `env/host/hard.h`. The `hard`
-command does not generate environment support headers. Other environments must
-supply `env/<HARD_ENV>/hard.h` when the default `HARD_CFLAGS` are used. The
-build tree can therefore hold artifacts for multiple projects without placing
-intermediate files in those projects.
+`make install` supplies `hard.h` and `format.v1` beside the host backend. The
+container image supplies its own copies beside its own backend. `HARD_ENV`
+therefore isolates generated artifacts and toolchain state but no longer owns
+runtime assets. The build tree can hold artifacts for multiple projects
+without placing intermediate files in those projects.
 
 Downloaded repository snapshots are shared by all `HARD_ENV` values below one
 `HARD_ROOT` and remain in place until removed explicitly.

@@ -115,6 +115,7 @@ func TestRunSourcesBuildsOnlyInternalArtifactAndForwardsIO(t *testing.T) {
 	progress := newProgressBar(&stdout, -1, false, true, true)
 	err = runSourcesWithProgress(
 		root,
+		t.TempDir(),
 		"integration",
 		compiler,
 		[]string{"-std=c++20"},
@@ -192,6 +193,7 @@ func TestRunSourcesUsesBuildCacheButAlwaysRunsProgram(t *testing.T) {
 		progress := newProgressBar(&stdout, -1, true, false, true)
 		err := runSourcesWithProgress(
 			root,
+			t.TempDir(),
 			"host",
 			compiler,
 			nil,
@@ -276,6 +278,7 @@ func TestRunSourcesRejectsMultipleEntrySourcesBeforeCompilation(t *testing.T) {
 	progress := newProgressBar(io.Discard, -1, false, true, true)
 	err := runSourcesWithProgress(
 		root,
+		t.TempDir(),
 		"host",
 		filepath.Join(project, "compiler-must-not-run"),
 		nil,

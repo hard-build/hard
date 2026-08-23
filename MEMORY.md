@@ -10,7 +10,7 @@ original conversation.
 
 The repository root is `/home/taitov/projects/hard-build/hard`. The Go module
 and implementation live in its `hard/` directory. Root-level documentation,
-formatting assets, the environment support header, and container assets belong
+formatting assets, the runtime support header, and container assets belong
 to the same current project. The former implementation was deleted; there is
 no legacy generation in this repository to extend or preserve.
 
@@ -122,8 +122,15 @@ Implemented:
 - a `run` command that builds exactly one root entry target without delivery,
   forwards program arguments and live streams, and propagates its exit status;
 - a POSIX command wrapper and Make-based user-local build and installation;
-- exclusion of environment support `hard.h` declarations from source forwards
-  while retaining its configured force include.
+- an optional wrapper-owned `linux.v1` Docker target whose image is pulled from
+  GHCR and whose persistent source/cache root is bind-mounted from the host;
+- separate executable-relative runtime bundles for the host and container,
+  with shared source snapshots and environment-specific caches below
+  `HARD_ROOT`;
+- exclusion of runtime support `hard.h` declarations from source forwards
+  while retaining its configured force include;
+- a GitHub Actions workflow for `linux/amd64` image publication with stable,
+  release, commit, and edge tags.
 
 Not implemented:
 
@@ -142,11 +149,12 @@ cache entries and are not refreshed automatically.
 | `MEMORY.md` | This self-contained project-memory snapshot |
 | `README.md` | English user-facing description of the current system |
 | `LICENSE` | MIT license |
-| `Makefile` | Builds the Go backend and installs the wrapper, backend, support header, and default format |
-| `hard.sh` | Installed public-command wrapper; replaces itself with the relative backend and forwards arguments unchanged |
-| `hard.h` | Source environment support header; installations place or link it at `HARD_ROOT/env/HARD_ENV/hard.h` |
+| `Makefile` | Builds the Go backend and installs the host wrapper and runtime bundle |
+| `hard.sh` | Installed public-command wrapper; directly executes the host backend or `docker run` for `--target=linux.v1` |
+| `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
-| `environment/ubuntu2204.v1.dockerfile` | Ubuntu 22.04 environment image definition |
+| `target/linux.v1.Dockerfile` | Self-contained Ubuntu 22.04 `linux/amd64` target image definition |
+| `.github/workflows/container.yml` | GHCR publication workflow and target tag policy |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
 | `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios |
 | `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
@@ -159,6 +167,7 @@ cache entries and are not refreshed automatically.
 | `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, test selection, and job forms |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
+| `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
 | `hard/source.go` | File classification, recursive discovery, symlink traversal, and deduplication |
 | `hard/source_test.go` | Extensions, ordering, explicit paths, symlinks, cycles, and failures |
 | `hard/progress.go` | Thread-safe normal, verbose, silent, color, and live-step output |
@@ -220,6 +229,20 @@ Building `hard` requires Go 1.23, CGO, a C++20 host toolchain, and the LLVM 18
 development headers and library. Running the resulting binary needs the
 libclang 18 shared library.
 
+The `linux.v1` image build uses Ubuntu 22.04 for both stages, downloads and
+checksum-verifies Go 1.23.12 for `linux/amd64`, and builds the CGO backend
+against `libclang-18-dev`. Jammy's distribution default is LLVM 14, so the
+image configures the signed, versioned `llvm-toolchain-jammy-18` repository
+from apt.llvm.org in both stages. The runtime installs libclang 18 with its
+resource headers from `libclang-common-18-dev`, exposes `clang-format-18` as
+the unversioned `clang-format` command, and includes GoogleTest, CMake,
+pkg-config, and the image-local runtime bundle.
+
+The selected Jammy toolchain is GCC 11 with glibc 2.35. libgcc and libstdc++
+are linked statically into generated programs by the fixed linker flags, but
+glibc remains dynamic. The verified LLVM patch release is 18.1.8, GoogleTest
+is 1.11.0, and CMake is 3.22.1.
+
 Runtime tools by command:
 
 - `clang-format` for `format`;
@@ -252,23 +275,69 @@ The default logical installation is:
 ```text
 $HOME/.local/
 ├── bin/hard                         mode 0755, installed from hard.sh
-├── libexec/hard/hard                mode 0755, Go backend
-└── share/hard/
-    ├── env/host/hard.h              mode 0644
-    └── format/format.v1             mode 0644
+├── libexec/hard/
+│   ├── hard                         mode 0755, Go backend
+│   ├── hard.h                       mode 0644
+│   └── format/format.v1             mode 0644
+└── share/hard/                      persistent state root
 ```
 
-`hard.sh` is a POSIX `sh` wrapper. It resolves the backend relative to its own
-installed location, uses `exec`, and passes the original argument vector with
-`"$@"`. It does not set or rewrite `HARD_ROOT` or any other environment
-variable. Consequently, the default `PREFIX` agrees with the backend's default
-`HARD_ROOT=$HOME/.local/share/hard`; a custom `PREFIX` requires the caller to
-set `HARD_ROOT=<PREFIX>/share/hard`.
+`hard.sh` is a POSIX `sh` wrapper. Without `--target`, it uses `exec` on
+`$HOME/.local/libexec/hard/hard` and passes the original argument vector with
+`"$@"`. With `--target=linux.v1` or `--target linux.v1` before `--`, it removes
+that wrapper option and uses `exec docker run`. Empty, duplicate, and unknown
+targets are errors. Values after `--` remain untouched.
+
+The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
+source of a bind mount targeting `/hard`. The physical current working
+directory is mounted at the same absolute container path and becomes the
+container workdir. Docker uses `--rm`, stdin forwarding, `--pull=missing`, and
+the current numeric UID:GID. No host `HARD_*` value is forwarded into the
+container. A relative host `HARD_ROOT` is made absolute below the current
+working directory. Only the working directory and persistent root are mounted.
+
+The default user-local prefix is the supported wrapper layout. Changing
+`PREFIX` does not rewrite the wrapper's explicit `$HOME/.local` backend path.
+`make install` remains host-only and neither invokes Docker nor installs image
+assets.
 
 `DESTDIR` prepends a staging root to every installed path but does not become
 part of the logical prefix. This permits packaging tests without writing into
 the user's home or a system directory. There are intentionally no `clean` or
 `uninstall` targets in the current scope.
+
+### Container image and publication
+
+The wrapper maps `linux.v1` to:
+
+    ghcr.io/hard-build/hard:linux.v1
+
+The image runtime bundle is:
+
+    /usr/local/libexec/hard/hard
+    /usr/local/libexec/hard/hard.h
+    /usr/local/libexec/hard/format/format.v1
+
+Its fixed target environment is:
+
+    HARD_ROOT=/hard
+    HARD_ENV=linux.v1
+    HARD_CC=c++
+    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra -I/hard/source -include /usr/local/libexec/hard/hard.h
+    HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++
+    HARD_ENTRYPOINTS=main _start
+
+`linux.v1` is intentionally `linux/amd64` only, and generated programs require
+an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
+system, or minimum-CPU changes require a new target version.
+
+The GHCR workflow publishes `edge-linux.v1` on `main` and a
+`sha-<short-commit>-linux.v1` tag for each triggered build. A semantic Git tag
+`vX.Y.Z` also publishes `vX.Y.Z-linux.v1` and advances `linux.v1`. Metadata
+generation explicitly disables the implicit `latest` flavor. The first
+externally published GitHub package defaults private and must be made public
+once by a maintainer before anonymous pulls work. This repository change
+defines the workflow but does not itself push or publish an image.
 
 ## Exact public CLI
 
@@ -281,6 +350,12 @@ The public command forms are:
                 [-- program-argument...]
     hard test   [--list-tests] [--test=<selector>]...
                 [--no-cache] [-s|--silent] [path...]
+
+The installed wrapper additionally accepts `--target=linux.v1` or
+`--target linux.v1` anywhere before `--`. This selects how one of the same five
+public commands is executed; it does not add another public command. The Go
+help template documents the wrapper option, while the wrapper owns its parsing
+and Docker behavior.
 
 Persistent flags accepted by every command:
 
@@ -330,7 +405,10 @@ directory intent.
 
 Configuration is loaded after successful CLI parsing and before source
 discovery. It is held in an unexported configuration value rather than mutable
-package globals.
+package globals. Before configuration loading, the Go backend resolves its own
+physical executable path through symlinks; the directory containing that
+executable is the runtime root. This is an internal path, not another
+environment variable.
 
 Environment variable names are ASCII:
 
@@ -381,7 +459,7 @@ The default vector is:
     -Wextra
     -I<HARD_ROOT>/source
     -include
-    <HARD_ROOT>/env/<HARD_ENV>/hard.h
+    <runtime-root>/hard.h
 
 If `HARD_CFLAGS` is present but empty, no compiler flags are supplied. A
 non-empty value is parsed with `go-shellwords`. Quoting works, but environment
@@ -396,18 +474,18 @@ The same vector is used by libclang dependency, source-forward, and entry
 analyses and by `HARD_CC` object compilation. Dependency and entry analysis add
 the working directory and default to C++ mode unless `-x` is already present.
 
-Build, run, and test canonicalize `HARD_ROOT/env/HARD_ENV/hard.h` through
-symlinks after dependency closure discovery and exclude declarations physically owned
-by that canonical target from source forwards. The original
-`HARD_CFLAGS -include` remains.
+Build, run, and test canonicalize `<runtime-root>/hard.h` through symlinks after
+dependency closure discovery and exclude declarations physically owned by that
+canonical target from source forwards. The original `HARD_CFLAGS -include`
+remains.
 Consequences:
 
-- libclang and the compiler still see the environment support header;
+- libclang and the compiler still see the runtime support header;
 - it receives no standalone `Parsing` step or per-header forward output;
 - each source still receives its own generated forward include;
 - unrelated project or external headers also named `hard.h` remain managed;
 - old header-specific forward artifacts are not deleted automatically;
-- failure to resolve the environment support path adds no new filter-specific
+- failure to resolve the runtime support path adds no new filter-specific
   error; the normal parser/compiler handling of the flags remains authoritative.
 
 ### `HARD_LDFLAGS`
@@ -549,7 +627,7 @@ not print a preliminary source list and performs no libclang `Parsing` stage.
 
 `--format` defaults to `format.v1`. The value is relative to:
 
-    HARD_ROOT/format
+    <runtime-root>/format
 
 Validation rules:
 
@@ -786,10 +864,10 @@ The source analysis cache stores the final validated text. A hit restores a
 missing `source.cpp.fwd.h`, reports `Parsing <source> (CACHED)`, and performs no
 libclang source analysis.
 
-The environment support header reached through
-`HARD_ROOT/env/HARD_ENV/hard.h` remains force-included, but declarations
-physically owned by its canonical target are excluded from every source
-forward. Other project or external headers named `hard.h` are treated normally.
+The runtime support header reached through `<runtime-root>/hard.h` remains
+force-included, but declarations physically owned by its canonical target are
+excluded from every source forward. Other project or external headers named
+`hard.h` are treated normally.
 
 ## `hard build`
 
@@ -799,7 +877,7 @@ implemented pipeline is:
 1. discover dependencies and configured entry definitions;
 2. recursively add same-stem production sources for managed headers;
 3. generate one source-context forward for each translation unit while
-   filtering declarations from the canonical environment support header;
+   filtering declarations from the canonical runtime support header;
 4. compile all root and automatically discovered sources;
 5. resolve reachable dependency object sets for root entry sources;
 6. link root entry binaries;
@@ -839,7 +917,7 @@ The command shape is:
 
 The generated forward `-include` pair follows all `HARD_CFLAGS` and precedes
 `-c`. A source with no eligible declarations still gets an output containing
-`#pragma once`. The original environment support-header include remains inside
+`#pragma once`. The original runtime support-header include remains inside
 `HARD_CFLAGS`.
 
 Compilation uses up to the resolved job count and creates parent directories.
@@ -1117,7 +1195,7 @@ For each selected test root:
 2. exclude other `*_test.*` sources from automatic implementation discovery;
 3. use one shared GitHub resolver across every test plan;
 4. generate one source-context forward per translation unit while excluding
-   declarations from the canonical environment support header;
+   declarations from the canonical runtime support header;
 5. globally deduplicate object jobs by output path and require identical
    dependency lists for a shared object;
 6. compile each unique source once;
@@ -1204,9 +1282,13 @@ earlier implementation.
 
 The implemented layout is:
 
+    <runtime-root>/
+    ├── hard
+    ├── hard.h
+    └── format/
+        └── format.v1
+
     HARD_ROOT/
-    ├── format/
-    │   └── format.v1
     ├── source/
     │   ├── hard -> github.com/hard-build/library
     │   └── github.com/
@@ -1214,7 +1296,6 @@ The implemented layout is:
     │           └── <repository>/
     └── env/
         └── HARD_ENV/
-            ├── hard.h
             └── build/
                 └── <absolute path without leading slash>/
                     ├── application
@@ -1228,13 +1309,12 @@ The implemented layout is:
 External repository snapshots are shared by all environments below one
 `HARD_ROOT`. Environment build artifacts are isolated by `HARD_ENV`.
 
-`hard.h` is an installation/environment input, not generated by the Go
-program. Its repository source is
-`/home/taitov/projects/hard-build/hard/hard.h`.
-`make install` copies it to `PREFIX/share/hard/env/host/hard.h`. The working
-tree itself does not contain an installed environment tree. Other environment
-configurations must supply their own `env/<HARD_ENV>/hard.h`, copy or link the
-support header, or use explicit compiler flags that omit the support include.
+`hard.h` and format styles are runtime inputs, not generated by the Go program.
+Their repository sources are `/home/taitov/projects/hard-build/hard/hard.h`
+and `/home/taitov/projects/hard-build/hard/format/`. `make install` copies the
+host backend, header, and format into `PREFIX/libexec/hard/`. The container
+image carries its independent runtime bundle below `/usr/local/libexec/hard/`.
+Neither installation stores runtime files below `HARD_ROOT`.
 
 Forward, object, and binary paths use lexical absolute source paths. They all
 reject an environment name that escapes `HARD_ROOT/env`.
@@ -1248,7 +1328,7 @@ a minimal application, multiple entries sharing an object, transitive
 implementation discovery, cyclic headers and implementation graphs, a
 header-only template, ordinary GoogleTest production dependencies, an object
 shared by two test plans, all supported source extensions, equal binary
-basenames in different directories, and the force-included environment support
+basenames in different directories, and the force-included runtime support
 header.
 
 The self-contained unit is one numbered scenario, not each individual
@@ -1360,8 +1440,9 @@ to leave the library unchanged for now.
 - Include discovery must honor `HARD_CFLAGS` and exclude system headers.
 - `HARD_ENV` is the immutability boundary for system headers and toolchain
   state; parse and object caches hash only non-system dependencies.
-- The environment support header path changed from
-  `HARD_ROOT/include/hard.h` to `HARD_ROOT/env/HARD_ENV/hard.h`.
+- The environment support header path first changed from
+  `HARD_ROOT/include/hard.h` to `HARD_ROOT/env/HARD_ENV/hard.h`. It later moved
+  out of persistent data entirely: each backend now loads `<runtime-root>/hard.h`.
 - Forward files mirror lexical absolute source paths and append `.fwd.h` to the
   complete source name, such as `first.cpp.fwd.h` and `second.cpp.fwd.h`.
 - Every compiled translation unit receives exactly one source-context forward.
@@ -1394,10 +1475,19 @@ to leave the library unchanged for now.
   before potentially long analysis.
 - Multiple repositories downloaded in one invocation share one progress step,
   and each Downloading message is displayed before its request starts.
-- Declarations owned by the canonical environment support `hard.h` are excluded
+- Declarations owned by the canonical runtime support `hard.h` are excluded
   from source forwards, while the original configured force include remains.
 - The public installed command is `PREFIX/bin/hard`, a shell wrapper around
-  `PREFIX/libexec/hard/hard`; data files are installed in `PREFIX/share/hard`.
+  `PREFIX/libexec/hard/hard`; `hard.h` and formats are installed beside that
+  backend, while persistent source and caches remain in `PREFIX/share/hard` for
+  the default user-local prefix.
+- The wrapper supports `--target=linux.v1` by running the published GHCR image,
+  with fixed container configuration and a bind-mounted persistent root. It
+  does not build images and `make install` remains host-only.
+- Before its first external publication, `linux.v1` was rebaselined from the
+  provisional Ubuntu 24.04 image to Ubuntu 22.04. The finalized target keeps
+  GCC 11 and glibc 2.35 from Jammy while preserving libclang and clang-format
+  major 18 through the signed `llvm-toolchain-jammy-18` repository.
 - Integration scenarios use a strict, ordered `test.yaml` step list interpreted
   by one Python runner. Scenario files may use only `build`, `run`, and
   `test`; they cannot contain arbitrary commands. Immediate directories are
@@ -1423,6 +1513,16 @@ to leave the library unchanged for now.
 - Old per-header forward files and header parse records are not removed even
   though new builds no longer generate or include them.
 - There is no private GitHub authentication configuration.
+- The retained `llvm-toolchain-jammy-18` repository is outside apt.llvm.org's
+  actively maintained last-two-release set. Future image builds depend on the
+  old archive remaining available and do not receive new LLVM 18 maintenance.
+- Ubuntu 22.04 standard security maintenance ends in May 2027. Continued use
+  after that date needs an explicit target-version or security-support decision.
+- A local `env/linux.v1` created by the provisional Ubuntu 24.04 image must not
+  be reused with the finalized Ubuntu 22.04 target. Keep it separate or remove
+  it explicitly before relying on the finalized target cache.
+- The GHCR workflow and image tags are defined, but this repository change does
+  not externally publish the first image or change the package visibility.
 - The hard-build library incomplete-type warning remains intentionally
   unresolved in the external repository.
 
@@ -1431,8 +1531,11 @@ to leave the library unchanged for now.
 - `hard/cli_test.go`: command defaults, paths, interspersed and no-cache flags,
   silent options, all job syntaxes, invalid input, help, and hidden commands.
 - `hard/config_test.go`: all defaults and overrides, environment choice, default
-  source include and environment support include, present-empty flags, safe
+  source include and runtime support include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
+- `hard/wrapper_test.go`: host passthrough, both target spellings and positions,
+  exact Docker arguments and mounts, default persistent root, argument
+  preservation, no host `HARD_*` forwarding, and invalid target diagnostics.
 - `hard/source_test.go`: accepted and rejected extensions, case-insensitive test
   suffix, recursion/order, explicit paths, relative display, canonical
   deduplication, file and directory symlinks, cycles, missing paths, and empty
@@ -1516,8 +1619,24 @@ For wrapper or installation changes, also run:
     make BUILD_DIR=<unused /tmp path> PREFIX=<logical prefix> DESTDIR=<unused /tmp staging root> install
 
 Inspect the staged paths, file modes, and file types, and invoke the staged
-public wrapper. Do not install into the real home or system tree during routine
-verification.
+public wrapper. Verify that the backend, `hard.h`, and format file work after
+staging or relocating the complete runtime bundle. Do not install into the real
+home or system tree during routine verification.
+
+For container-target changes, build the image locally for `linux/amd64`, inspect
+its architecture, entrypoint, fixed `HARD_*` values, runtime bundle, and dynamic
+libraries, and run the real wrapper against a temporary C++ project at least
+twice to exercise persistent cache reuse:
+
+    docker build --platform linux/amd64 \
+      --file target/linux.v1.Dockerfile \
+      --tag hard-build/hard:linux.v1 .
+
+The wrapper smoke test must use a temporary host `HARD_ROOT`, confirm container
+artifacts below `env/linux.v1`, and confirm host `HARD_*` variables do not
+replace the image configuration. Validate the workflow syntax and tag rules.
+Do not push, publish, change package visibility, or remove a pre-existing local
+image as part of routine verification.
 
 From the repository root:
 
@@ -1528,9 +1647,10 @@ completely; verify English language, five-command public scope, local links,
 versions, flags, paths, defaults, implemented/target distinctions, and known
 gaps.
 
-For build behavior, use an isolated temporary `HARD_ROOT`, a real
-`env/<environment>/hard.h`, and the system compiler. Keep outputs under `/tmp`.
-Inspect artifact names with `find`, types with `file`, and run the binary.
+For build behavior, use an isolated temporary `HARD_ROOT`, a complete temporary
+runtime bundle containing the backend and its adjacent `hard.h`, and the system
+compiler. Keep outputs under `/tmp`. Inspect artifact names with `find`, types
+with `file`, and run the binary.
 
 For libclang dependency, forward, or entry changes, verify Clang major 18,
 `/usr/lib/llvm-18/include/clang-c/Index.h`, and `libclang-18`, then build and run
@@ -1566,9 +1686,10 @@ verify the documented Python and PyYAML versions. Load every committed
 keys, unknown actions and fields, invalid value types, escaping paths, and
 `run` before `build` using temporary YAML below `/tmp`.
 
-Build the current backend to an unused `/tmp` path and create an isolated
-`HARD_ROOT` containing the current `env/<environment>/hard.h` and format
-file. Run every numbered scenario independently by passing its name to:
+Build the current backend into an unused `/tmp` runtime directory, place the
+current `hard.h` and `format/format.v1` beside it, and create an isolated
+`HARD_ROOT` for source and cache state. Run every numbered scenario
+independently by passing its name to:
 
     python3 unittest/run.py \
       --hard <temporary-backend> \
@@ -1594,8 +1715,9 @@ support header. That source header now resides at:
 
     /home/taitov/projects/hard-build/hard/hard.h
 
-Future integration checks should link or copy this current root file into the
-temporary `HARD_ROOT/env/<environment>/hard.h`.
+That snapshot predates the runtime-root split. Current integration checks copy
+this root file beside the temporary backend as `<runtime-root>/hard.h`; they do
+not place it below `HARD_ROOT`.
 
 Observed:
 
@@ -1760,6 +1882,63 @@ and still ran the child with new arguments and input. A following
 `run --no-cache` reported no cached stages. A silent invocation emitted only
 the child's stdout/stderr and propagated its exit status 7 without a
 `hard:` diagnostic.
+
+## Last known verification of the container target
+
+On 2026-08-23, the wrapper, runtime-root split, host installation, and
+`linux.v1` image passed the complete required Go check set, wrapper shell
+syntax checking, a staged `make build` and `make install`, workflow YAML
+parsing, release-tag validation, and repository diff checking.
+
+The staged host layout had modes 0755 for the wrapper and backend and 0644 for
+`hard.h` and `format.v1`. The staged wrapper formatted, built, and ran a real
+C++20 program. Copying the complete `libexec/hard` bundle to another temporary
+directory and rebuilding with verbose output showed the relocated `hard.h` in
+the compiler `-include`, while source and build artifacts remained below the
+separate temporary `HARD_ROOT`.
+
+A local `linux/amd64` image was built twice while completing verification. The
+first real source-analysis smoke test exposed missing Clang resource headers
+in the runtime layer. Adding `libclang-common-18-dev` supplied `stddef.h` and
+`stdarg.h`; the rebuilt image then reported an amd64 architecture, the expected
+backend entrypoint and fixed `HARD_*` environment, clang-format 18.1.3, GCC
+13.3.0, GoogleTest 1.14.0, and a backend dynamically linked to libclang 18.
+
+The real wrapper ran a temporary C++ program twice with deliberately invalid
+host `HARD_CC`, `HARD_CFLAGS`, `HARD_LDFLAGS`, `HARD_ENV`, and
+`HARD_ENTRYPOINTS`. The first invocation compiled with
+`-march=x86-64-v3 -mtune=generic`; the second reported cached parsing,
+compilation, and linking, and both executed successfully. The mounted host
+root contained artifacts only below `env/linux.v1`. A real GoogleTest also
+compiled, linked, and passed through the container target. The image was tagged
+locally for wrapper verification, but no registry push, package publication,
+or visibility change was performed.
+
+On the same date, before external publication, the image was rebaselined to
+Ubuntu 22.04 in both stages and built twice under the unique local verification
+tag `hard-build/hard:linux.v1-jammy-check-20260823`. The second build reused
+all Docker layers. The final image was amd64 with the unchanged backend
+entrypoint and fixed `HARD_*` environment. It reported GCC 11.4.0, glibc 2.35,
+LLVM and clang-format 18.1.8, GoogleTest 1.11.0, and CMake 3.22.1. The backend
+resolved libclang 18 and libLLVM 18 dynamically, and the LLVM 18 `stddef.h`
+and `stdarg.h` resource headers were present.
+
+A real wrapper smoke test used a fresh temporary `HARD_ROOT` and temporarily
+retagged only the expected local GHCR name; the prior Ubuntu 24.04 image ID was
+restored afterward. Deliberately invalid host `HARD_CC`, `HARD_CFLAGS`,
+`HARD_LDFLAGS`, `HARD_ENV`, and `HARD_ENTRYPOINTS` did not replace the
+image settings. The first run used `-march=x86-64-v3 -mtune=generic`; the
+second reported cached parsing, compilation, and linking. Formatting used
+clang-format 18.1.8, and a real GoogleTest executable passed five cases. The
+temporary persistent root contained only the `env/linux.v1` artifact tree.
+The generated smoke binary was dynamically linked and its highest requested
+glibc symbol version was `GLIBC_2.34`.
+
+All ten declarative integration scenarios then passed inside a disposable
+Ubuntu 22.04 container with the image backend and GCC 11. The complete required
+Go check set, wrapper syntax, workflow YAML parsing, and repository diff check
+also passed. No image was pushed or published, and no package visibility was
+changed.
 
 ## Workspace safety snapshot
 

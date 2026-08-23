@@ -278,6 +278,7 @@ func TestBuildSourcesWithProgressCachesCompileLinkAndCopy(t *testing.T) {
 		progress := newProgressBar(&stdout, -1, true, false, true)
 		err := buildSourcesWithProgress(
 			root,
+			t.TempDir(),
 			"host",
 			compiler,
 			nil,
@@ -357,6 +358,7 @@ func TestBuildCacheTreatsSystemHeadersAsHardEnvironment(t *testing.T) {
 		progress := newProgressBar(&stdout, -1, true, false, true)
 		err := buildSourcesWithProgress(
 			root,
+			t.TempDir(),
 			"host",
 			compiler,
 			[]string{"-isystem", system},
@@ -940,6 +942,7 @@ func TestTestSourcesReportsCachedParsing(t *testing.T) {
 		progress := newProgressBar(&stdout, -1, true, false, true)
 		err := testSourcesWithProgress(
 			root,
+			t.TempDir(),
 			"host",
 			compiler,
 			nil,
@@ -993,6 +996,7 @@ func inspectCachedBuildSource(
 	results := inspectBuildSourcesWithCache(
 		root,
 		"host",
+		"",
 		nil,
 		cflags,
 		entryPoints,

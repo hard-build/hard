@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 func main() {
@@ -16,7 +17,12 @@ func main() {
 		return
 	}
 
-	configuration, err := loadConfiguration()
+	runtimeRoot, err := executableRuntimeRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
+		os.Exit(1)
+	}
+	configuration, err := loadConfiguration(runtimeRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 		os.Exit(1)
@@ -33,6 +39,7 @@ func main() {
 	if parsed.command == "build" {
 		if err := buildSourcesWithProgress(
 			configuration.root,
+			configuration.runtimeRoot,
 			configuration.env,
 			configuration.cc,
 			configuration.cflags,
@@ -56,6 +63,7 @@ func main() {
 	if parsed.command == "run" {
 		err := runSourcesWithProgress(
 			configuration.root,
+			configuration.runtimeRoot,
 			configuration.env,
 			configuration.cc,
 			configuration.cflags,
@@ -85,7 +93,7 @@ func main() {
 	if parsed.command == "format" {
 		progress.setTotal(1 + len(sources))
 		if err := formatSourcesWithProgress(
-			configuration.root,
+			configuration.runtimeRoot,
 			parsed.format,
 			sources,
 			parsed.jobs,
@@ -117,6 +125,7 @@ func main() {
 	}
 	if err := testSourcesWithProgressSelection(
 		configuration.root,
+		configuration.runtimeRoot,
 		configuration.env,
 		configuration.cc,
 		configuration.cflags,
@@ -136,6 +145,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func executableRuntimeRoot() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("determine executable path: %w", err)
+	}
+	return resolveRuntimeRoot(executable)
+}
+
+func resolveRuntimeRoot(executable string) (string, error) {
+	realExecutable, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path %s: %w", executable, err)
+	}
+	realExecutable, err = filepath.Abs(realExecutable)
+	if err != nil {
+		return "", fmt.Errorf("make executable path absolute %s: %w", realExecutable, err)
+	}
+	return filepath.Dir(realExecutable), nil
 }
 
 func discoverSourcesWithProgress(command string, paths []string, progress *progressBar) ([]string, error) {

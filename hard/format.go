@@ -27,7 +27,7 @@ type formatResult struct {
 }
 
 func formatSources(
-	root string,
+	runtimeRoot string,
 	format string,
 	sources []string,
 	jobs int,
@@ -39,7 +39,7 @@ func formatSources(
 ) error {
 	progress := newProgressBar(stdout, len(sources), verbose, silent, noColor)
 	return formatSourcesWithProgress(
-		root,
+		runtimeRoot,
 		format,
 		sources,
 		jobs,
@@ -53,7 +53,7 @@ func formatSources(
 }
 
 func formatSourcesWithProgress(
-	root string,
+	runtimeRoot string,
 	format string,
 	sources []string,
 	jobs int,
@@ -71,7 +71,7 @@ func formatSourcesWithProgress(
 		return errors.Join(fmt.Errorf("jobs must be positive: %d", jobs), progress.finish())
 	}
 
-	formatPath, err := resolveFormatPath(root, format)
+	formatPath, err := resolveFormatPath(runtimeRoot, format)
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}
@@ -284,8 +284,8 @@ func colorizeDiff(diff string) []byte {
 	return []byte(output.String())
 }
 
-func resolveFormatPath(root, format string) (string, error) {
-	formatDirectory := filepath.Join(root, "format")
+func resolveFormatPath(runtimeRoot, format string) (string, error) {
+	formatDirectory := filepath.Join(runtimeRoot, "format")
 	if format == "" {
 		return "", fmt.Errorf("format file is empty")
 	}

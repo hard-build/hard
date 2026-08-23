@@ -21,6 +21,7 @@ func (err *runExitError) Error() string {
 
 func runSourcesWithProgress(
 	root string,
+	runtimeRoot string,
 	environment string,
 	compiler string,
 	cflags []string,
@@ -54,6 +55,7 @@ func runSourcesWithProgress(
 	}
 	rootSourceCount := len(sources)
 	githubResolver := newGitHubSnapshotResolver(root, progress)
+	supportHeader := runtimeSupportHeader(runtimeRoot, workingDirectory)
 	parsingActivity := func(path string, cached bool) {
 		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
 		if cached {
@@ -64,6 +66,7 @@ func runSourcesWithProgress(
 	sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithCache(
 		root,
 		environment,
+		supportHeader,
 		githubResolver,
 		cflags,
 		configuredEntryPoints,
@@ -77,7 +80,6 @@ func runSourcesWithProgress(
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	supportHeader := environmentSupportHeader(root, environment, workingDirectory)
 	for index := range dependenciesBySource {
 		dependenciesBySource[index] = removeDependencyPath(
 			dependenciesBySource[index],

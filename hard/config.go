@@ -22,6 +22,7 @@ const (
 
 type configuration struct {
 	root        string
+	runtimeRoot string
 	env         string
 	cc          string
 	cflags      []string
@@ -29,11 +30,12 @@ type configuration struct {
 	entrypoints []string
 }
 
-func loadConfiguration() (configuration, error) {
-	return loadConfigurationFrom(os.LookupEnv, os.UserHomeDir)
+func loadConfiguration(runtimeRoot string) (configuration, error) {
+	return loadConfigurationFrom(runtimeRoot, os.LookupEnv, os.UserHomeDir)
 }
 
 func loadConfigurationFrom(
+	runtimeRoot string,
 	lookupEnv func(string) (string, bool),
 	userHomeDir func() (string, error),
 ) (configuration, error) {
@@ -59,7 +61,7 @@ func loadConfigurationFrom(
 	cflags, err := flagsFromEnvironment(
 		lookupEnv,
 		hardCFlagsEnvironment,
-		defaultCFlags(root, environment),
+		defaultCFlags(root, runtimeRoot),
 	)
 	if err != nil {
 		return configuration{}, err
@@ -80,6 +82,7 @@ func loadConfigurationFrom(
 
 	return configuration{
 		root:        root,
+		runtimeRoot: runtimeRoot,
 		env:         environment,
 		cc:          cc,
 		cflags:      cflags,
@@ -136,7 +139,7 @@ func flagsFromEnvironment(
 	return flags, nil
 }
 
-func defaultCFlags(root, environment string) []string {
+func defaultCFlags(root, runtimeRoot string) []string {
 	return []string{
 		"-std=c++20",
 		"-O3",
@@ -145,7 +148,7 @@ func defaultCFlags(root, environment string) []string {
 		"-Wextra",
 		"-I" + filepath.Join(root, "source"),
 		"-include",
-		filepath.Join(root, "env", environment, "hard.h"),
+		filepath.Join(runtimeRoot, "hard.h"),
 	}
 }
 

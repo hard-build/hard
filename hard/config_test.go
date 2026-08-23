@@ -11,17 +11,19 @@ import (
 func TestLoadConfigurationDefaults(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "home", "user")
 	root := filepath.Join(home, ".local", "share", "hard")
+	runtimeRoot := filepath.Join(home, ".local", "libexec", "hard")
 
-	got, err := loadConfigurationFrom(environment(nil), homeDirectory(home))
+	got, err := loadConfigurationFrom(runtimeRoot, environment(nil), homeDirectory(home))
 	if err != nil {
 		t.Fatalf("loadConfigurationFrom() error = %v", err)
 	}
 
 	want := configuration{
 		root:        root,
+		runtimeRoot: runtimeRoot,
 		env:         defaultHardEnv,
 		cc:          "c++",
-		cflags:      defaultCFlags(root, defaultHardEnv),
+		cflags:      defaultCFlags(root, runtimeRoot),
 		ldflags:     defaultLDFlags(),
 		entrypoints: []string{"main", "_start"},
 	}
@@ -31,6 +33,7 @@ func TestLoadConfigurationDefaults(t *testing.T) {
 }
 
 func TestLoadConfigurationOverrides(t *testing.T) {
+	runtimeRoot := "/runtime/hard"
 	values := map[string]string{
 		hardRootEnvironment:        "/opt/hard",
 		hardEnvEnvironment:         "custom",
@@ -40,13 +43,14 @@ func TestLoadConfigurationOverrides(t *testing.T) {
 		hardEntryPointsEnvironment: `main service_start`,
 	}
 
-	got, err := loadConfigurationFrom(environment(values), homeDirectory("unused"))
+	got, err := loadConfigurationFrom(runtimeRoot, environment(values), homeDirectory("unused"))
 	if err != nil {
 		t.Fatalf("loadConfigurationFrom() error = %v", err)
 	}
 
 	want := configuration{
 		root:        "/opt/hard",
+		runtimeRoot: runtimeRoot,
 		env:         "custom",
 		cc:          "clang++",
 		cflags:      []string{"-std=c++23", "-DNAME=hello world"},
@@ -61,6 +65,7 @@ func TestLoadConfigurationOverrides(t *testing.T) {
 func TestLoadConfigurationEmptyValues(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "home", "user")
 	root := filepath.Join(home, ".local", "share", "hard")
+	runtimeRoot := filepath.Join(home, ".local", "libexec", "hard")
 	values := map[string]string{
 		hardRootEnvironment:        "",
 		hardEnvEnvironment:         "",
@@ -70,13 +75,14 @@ func TestLoadConfigurationEmptyValues(t *testing.T) {
 		hardEntryPointsEnvironment: "",
 	}
 
-	got, err := loadConfigurationFrom(environment(values), homeDirectory(home))
+	got, err := loadConfigurationFrom(runtimeRoot, environment(values), homeDirectory(home))
 	if err != nil {
 		t.Fatalf("loadConfigurationFrom() error = %v", err)
 	}
 
 	want := configuration{
 		root:        root,
+		runtimeRoot: runtimeRoot,
 		env:         defaultHardEnv,
 		cc:          "c++",
 		cflags:      []string{},
@@ -88,33 +94,39 @@ func TestLoadConfigurationEmptyValues(t *testing.T) {
 	}
 }
 
-func TestDefaultCFlagsUseConfiguredRootAndEnvironment(t *testing.T) {
+func TestDefaultCFlagsUseConfiguredRoots(t *testing.T) {
+	runtimeRoot := "/opt/libexec/hard"
 	values := map[string]string{
 		hardRootEnvironment: "/srv/hard",
 		hardEnvEnvironment:  "target",
 	}
 
-	got, err := loadConfigurationFrom(environment(values), homeDirectory("unused"))
+	got, err := loadConfigurationFrom(runtimeRoot, environment(values), homeDirectory("unused"))
 	if err != nil {
 		t.Fatalf("loadConfigurationFrom() error = %v", err)
 	}
 
-	want := defaultCFlags("/srv/hard", "target")
+	want := defaultCFlags("/srv/hard", runtimeRoot)
 	if !reflect.DeepEqual(got.cflags, want) {
 		t.Fatalf("cflags = %#v, want %#v", got.cflags, want)
 	}
 }
 
-func TestDefaultCFlagsUseSourceDirectory(t *testing.T) {
+func TestDefaultCFlagsUseSourceAndRuntimeDirectories(t *testing.T) {
 	root := filepath.Join(string(filepath.Separator), "srv", "hard")
-	flags := defaultCFlags(root, "host")
-	want := "-I" + filepath.Join(root, "source")
+	runtimeRoot := filepath.Join(string(filepath.Separator), "opt", "libexec", "hard")
+	flags := defaultCFlags(root, runtimeRoot)
+	wantSource := "-I" + filepath.Join(root, "source")
+	wantHeader := filepath.Join(runtimeRoot, "hard.h")
 
-	if len(flags) < 6 {
+	if len(flags) < 8 {
 		t.Fatalf("defaultCFlags() = %#v", flags)
 	}
-	if flags[5] != want {
-		t.Fatalf("defaultCFlags()[5] = %q, want %q", flags[5], want)
+	if flags[5] != wantSource {
+		t.Fatalf("defaultCFlags()[5] = %q, want %q", flags[5], wantSource)
+	}
+	if flags[6] != "-include" || flags[7] != wantHeader {
+		t.Fatalf("defaultCFlags() support header = %#v, want -include %q", flags[6:], wantHeader)
 	}
 }
 
@@ -123,7 +135,7 @@ func TestFlagsDoNotExpandShellExpressions(t *testing.T) {
 		hardCFlagsEnvironment: `-DHOME=$HOME -DUSER=` + "`whoami`",
 	}
 
-	got, err := loadConfigurationFrom(environment(values), homeDirectory("/home/user"))
+	got, err := loadConfigurationFrom("/runtime/hard", environment(values), homeDirectory("/home/user"))
 	if err != nil {
 		t.Fatalf("loadConfigurationFrom() error = %v", err)
 	}
@@ -139,7 +151,7 @@ func TestEntryPointsDoNotExpandShellExpressions(t *testing.T) {
 		hardEntryPointsEnvironment: `$ENTRY ` + "`whoami`",
 	}
 
-	got, err := loadConfigurationFrom(environment(values), homeDirectory("/home/user"))
+	got, err := loadConfigurationFrom("/runtime/hard", environment(values), homeDirectory("/home/user"))
 	if err != nil {
 		t.Fatalf("loadConfigurationFrom() error = %v", err)
 	}
@@ -157,7 +169,7 @@ func TestLoadConfigurationRejectsInvalidShellWords(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			values := map[string]string{name: `"unterminated`}
 
-			_, err := loadConfigurationFrom(environment(values), homeDirectory("/home/user"))
+			_, err := loadConfigurationFrom("/runtime/hard", environment(values), homeDirectory("/home/user"))
 			if err == nil {
 				t.Fatal("loadConfigurationFrom() error = nil")
 			}
@@ -170,7 +182,7 @@ func TestLoadConfigurationRejectsInvalidShellWords(t *testing.T) {
 
 func TestLoadConfigurationReportsHomeDirectoryError(t *testing.T) {
 	wantErr := errors.New("home directory unavailable")
-	_, err := loadConfigurationFrom(environment(nil), func() (string, error) {
+	_, err := loadConfigurationFrom("/runtime/hard", environment(nil), func() (string, error) {
 		return "", wantErr
 	})
 	if !errors.Is(err, wantErr) {

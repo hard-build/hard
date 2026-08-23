@@ -20,9 +20,9 @@ build:
 install: build
 	$(INSTALL) -d "$(DESTDIR)$(BINDIR)"
 	$(INSTALL) -d "$(DESTDIR)$(LIBEXECDIR)"
-	$(INSTALL) -d "$(DESTDIR)$(HARD_ROOT)/env/host"
-	$(INSTALL) -d "$(DESTDIR)$(HARD_ROOT)/format"
+	$(INSTALL) -d "$(DESTDIR)$(LIBEXECDIR)/format"
+	$(INSTALL) -d "$(DESTDIR)$(HARD_ROOT)"
 	$(INSTALL) -m 0755 hard.sh "$(DESTDIR)$(BINDIR)/hard"
 	$(INSTALL) -m 0755 "$(HARD_BINARY)" "$(DESTDIR)$(LIBEXECDIR)/hard"
-	$(INSTALL) -m 0644 hard.h "$(DESTDIR)$(HARD_ROOT)/env/host/hard.h"
-	$(INSTALL) -m 0644 format/format.v1 "$(DESTDIR)$(HARD_ROOT)/format/format.v1"
+	$(INSTALL) -m 0644 hard.h "$(DESTDIR)$(LIBEXECDIR)/hard.h"
+	$(INSTALL) -m 0644 format/format.v1 "$(DESTDIR)$(LIBEXECDIR)/format/format.v1"

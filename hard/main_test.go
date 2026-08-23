@@ -2,9 +2,44 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestResolveRuntimeRootFollowsExecutableSymlink(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	executable := filepath.Join(runtimeRoot, "hard")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write executable: %v", err)
+	}
+	binDirectory := t.TempDir()
+	link := filepath.Join(binDirectory, "hard")
+	if err := os.Symlink(executable, link); err != nil {
+		t.Skipf("cannot create executable symlink: %v", err)
+	}
+
+	got, err := resolveRuntimeRoot(link)
+	if err != nil {
+		t.Fatalf("resolveRuntimeRoot() error = %v", err)
+	}
+	if got != runtimeRoot {
+		t.Fatalf("resolveRuntimeRoot() = %q, want %q", got, runtimeRoot)
+	}
+}
+
+func TestResolveRuntimeRootRejectsMissingExecutable(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "missing-hard")
+	_, err := resolveRuntimeRoot(executable)
+	if err == nil {
+		t.Fatal("resolveRuntimeRoot() error = nil")
+	}
+	if !strings.Contains(err.Error(), executable) {
+		t.Fatalf("resolveRuntimeRoot() error = %q, want executable path", err)
+	}
+}
 
 func TestDiscoverSourcesReportsSearchActivity(t *testing.T) {
 	project := t.TempDir()

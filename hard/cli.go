@@ -63,6 +63,10 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 			DisableDefaultCmd: true,
 		},
 	}
+	root.SetHelpTemplate(root.HelpTemplate() + `
+Wrapper options:
+      --target string   run with a container target (supported: linux.v1)
+`)
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "print debug information")
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output")
@@ -98,7 +102,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 		&format,
 		"format",
 		defaultFormat,
-		"format style file under HARD_ROOT/format",
+		"format style file installed with hard",
 	)
 	formatCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
 	buildCommand := newPathCommand(

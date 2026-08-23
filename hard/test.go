@@ -62,6 +62,7 @@ type testRunResult struct {
 
 func testSources(
 	root string,
+	runtimeRoot string,
 	environment string,
 	compiler string,
 	cflags []string,
@@ -80,6 +81,7 @@ func testSources(
 	progress := newProgressBar(stdout, -1, verbose, silent, noColor)
 	return testSourcesWithProgress(
 		root,
+		runtimeRoot,
 		environment,
 		compiler,
 		cflags,
@@ -98,6 +100,7 @@ func testSources(
 
 func testSourcesWithProgress(
 	root string,
+	runtimeRoot string,
 	environment string,
 	compiler string,
 	cflags []string,
@@ -114,6 +117,7 @@ func testSourcesWithProgress(
 ) error {
 	return testSourcesWithProgressSelection(
 		root,
+		runtimeRoot,
 		environment,
 		compiler,
 		cflags,
@@ -134,6 +138,7 @@ func testSourcesWithProgress(
 
 func testSourcesWithProgressSelection(
 	root string,
+	runtimeRoot string,
 	environment string,
 	compiler string,
 	cflags []string,
@@ -191,6 +196,7 @@ func testSourcesWithProgressSelection(
 	testLDFlags := append(append([]string(nil), ldflags...), googleLDFlags...)
 
 	githubResolver := newGitHubSnapshotResolver(root, progress)
+	supportHeader := runtimeSupportHeader(runtimeRoot, workingDirectory)
 	activity := func(path string, cached bool) {
 		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
 		if cached {
@@ -201,6 +207,7 @@ func testSourcesWithProgressSelection(
 	preparationResults := prepareTestsWithCache(
 		root,
 		environment,
+		supportHeader,
 		githubResolver,
 		testCFlags,
 		sources,
@@ -209,7 +216,6 @@ func testSourcesWithProgressSelection(
 		activity,
 		cache,
 	)
-	supportHeader := environmentSupportHeader(root, environment, workingDirectory)
 	plans := make([]testPlan, 0, len(sources))
 	var failures []error
 	for _, result := range preparationResults {
@@ -468,6 +474,7 @@ func prepareTestWithActivity(
 	return prepareTestWithCache(
 		"",
 		"",
+		"",
 		githubResolver,
 		cflags,
 		testSource,
@@ -480,6 +487,7 @@ func prepareTestWithActivity(
 func prepareTestWithCache(
 	root string,
 	environment string,
+	supportHeader string,
 	githubResolver *githubSnapshotResolver,
 	cflags []string,
 	testSource string,
@@ -491,6 +499,7 @@ func prepareTestWithCache(
 	sources, dependenciesBySource, cacheDependenciesBySource, _, failures, err := discoverBuildSourceClosureWithCache(
 		root,
 		environment,
+		supportHeader,
 		githubResolver,
 		cflags,
 		nil,
@@ -553,6 +562,7 @@ func prepareTestsWithActivity(
 	return prepareTestsWithCache(
 		"",
 		"",
+		"",
 		githubResolver,
 		cflags,
 		sources,
@@ -566,6 +576,7 @@ func prepareTestsWithActivity(
 func prepareTestsWithCache(
 	root string,
 	environment string,
+	supportHeader string,
 	githubResolver *githubSnapshotResolver,
 	cflags []string,
 	sources []string,
@@ -593,6 +604,7 @@ func prepareTestsWithCache(
 				plan, diagnostics, err := prepareTestWithCache(
 					root,
 					environment,
+					supportHeader,
 					githubResolver,
 					cflags,
 					job.source,

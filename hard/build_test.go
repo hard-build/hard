@@ -485,6 +485,7 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 			var stdout bytes.Buffer
 			if err := buildSources(
 				root,
+				t.TempDir(),
 				"host",
 				compiler,
 				cflags,
@@ -556,25 +557,24 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 func TestBuildSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
+	runtimeRoot := t.TempDir()
 	supportDirectory := t.TempDir()
 	supportHeader := filepath.Join(supportDirectory, "hard.h")
 	writeBuildFile(t, supportDirectory, "hard.h", "#pragma once\nstruct hard_support {};\n")
-	environmentHeader := filepath.Join(root, "env", "host", "hard.h")
-	if err := os.MkdirAll(filepath.Dir(environmentHeader), 0o755); err != nil {
-		t.Fatalf("create environment directory: %v", err)
-	}
-	if err := os.Symlink(supportHeader, environmentHeader); err != nil {
-		t.Fatalf("create environment support-header symlink: %v", err)
+	runtimeHeader := filepath.Join(runtimeRoot, "hard.h")
+	if err := os.Symlink(supportHeader, runtimeHeader); err != nil {
+		t.Fatalf("create runtime support-header symlink: %v", err)
 	}
 	writeBuildFile(t, project, "hard.h", "#pragma once\nstruct project_type {};\n")
 	writeBuildFile(t, project, "source.cpp", "#include \"hard.h\"\n")
 	compiler := installBuildCompiler(t)
 	withWorkingDirectory(t, project)
 
-	cflags := []string{"-include", environmentHeader}
+	cflags := []string{"-include", runtimeHeader}
 	var stdout bytes.Buffer
 	if err := buildSources(
 		root,
+		runtimeRoot,
 		"host",
 		compiler,
 		cflags,
@@ -641,6 +641,7 @@ func TestBuildSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 	progress.updateStep("Searching source files")
 	if err := buildSourcesWithProgress(
 		root,
+		t.TempDir(),
 		"host",
 		installBuildCompiler(t),
 		nil,
@@ -695,6 +696,7 @@ func TestBuildSourcesWritesCompilerErrorsInSilentMode(t *testing.T) {
 	var stderr bytes.Buffer
 	err := buildSources(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -729,6 +731,7 @@ func TestBuildSourcesStopsWhenCompilerIsMissing(t *testing.T) {
 	var stdout bytes.Buffer
 	err := buildSources(
 		root,
+		t.TempDir(),
 		"host",
 		"missing-c++",
 		nil,
@@ -1504,6 +1507,7 @@ func TestBuildSourcesDiscoversDependencyObjectAndRunsBinary(t *testing.T) {
 	output := filepath.Join(project, "dist", "application")
 	if err := buildSources(
 		root,
+		t.TempDir(),
 		"integration",
 		compiler,
 		[]string{"-std=c++20"},
@@ -1562,6 +1566,7 @@ func TestBuildSourcesDiscoversCircularDependencyObjects(t *testing.T) {
 	output := filepath.Join(project, "application")
 	if err := buildSources(
 		root,
+		t.TempDir(),
 		"integration",
 		compiler,
 		[]string{"-std=c++20"},

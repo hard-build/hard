@@ -14,6 +14,7 @@ func TestTestSourcesEmptySelectionDoesNotRequirePkgConfig(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if err := testSources(
 		t.TempDir(),
+		t.TempDir(),
 		"host",
 		"missing-c++",
 		nil,
@@ -91,6 +92,7 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	var stderr bytes.Buffer
 	err := testSources(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		[]string{"-DHARD=1"},
@@ -215,6 +217,7 @@ func TestTestSourcesRejectsSelectorsWithoutTestSources(t *testing.T) {
 	progress := newProgressBar(&stdout, -1, false, false, true)
 	err := testSourcesWithProgressSelection(
 		t.TempDir(),
+		t.TempDir(),
 		"host",
 		"unused-compiler",
 		nil,
@@ -245,7 +248,7 @@ func TestTestSourcesRejectsSelectorsWithoutTestSources(t *testing.T) {
 
 	listProgress := newProgressBar(io.Discard, -1, false, true, true)
 	if err := testSourcesWithProgressSelection(
-		t.TempDir(), "host", "unused-compiler", nil, nil, nil, 1,
+		t.TempDir(), t.TempDir(), "host", "unused-compiler", nil, nil, nil, 1,
 		false, true, true, listProgress, io.Discard, io.Discard, false, true, nil,
 	); err != nil {
 		t.Fatalf("empty --list-tests error = %v", err)
@@ -265,6 +268,7 @@ func TestTestSourcesListsTestsEveryTime(t *testing.T) {
 		progress := newProgressBar(&stdout, -1, false, true, true)
 		if err := testSourcesWithProgressSelection(
 			root,
+			t.TempDir(),
 			"host",
 			compiler,
 			nil,
@@ -314,6 +318,7 @@ func TestTestSourcesRunsMatchingSelectors(t *testing.T) {
 	selectors := []string{"Random.Returns*", "Parser.Test?"}
 	if err := testSourcesWithProgressSelection(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -366,6 +371,7 @@ func TestTestSourcesRejectsUnmatchedSelector(t *testing.T) {
 	progress := newProgressBar(&stdout, -1, true, false, true)
 	err := testSourcesWithProgressSelection(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -403,25 +409,24 @@ func TestTestSourcesRejectsUnmatchedSelector(t *testing.T) {
 func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
+	runtimeRoot := t.TempDir()
 	supportDirectory := t.TempDir()
 	supportHeader := filepath.Join(supportDirectory, "hard.h")
 	writeBuildFile(t, supportDirectory, "hard.h", "#pragma once\nstruct hard_support {};\n")
-	environmentHeader := filepath.Join(root, "env", "host", "hard.h")
-	if err := os.MkdirAll(filepath.Dir(environmentHeader), 0o755); err != nil {
-		t.Fatalf("create environment directory: %v", err)
-	}
-	if err := os.Symlink(supportHeader, environmentHeader); err != nil {
-		t.Fatalf("create environment support-header symlink: %v", err)
+	runtimeHeader := filepath.Join(runtimeRoot, "hard.h")
+	if err := os.Symlink(supportHeader, runtimeHeader); err != nil {
+		t.Fatalf("create runtime support-header symlink: %v", err)
 	}
 	writeBuildFile(t, project, "hard.h", "#pragma once\nstruct project_type {};\n")
 	writeBuildFile(t, project, "pass_test.cpp", "#include \"hard.h\"\n")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
-	cflags := []string{"-include", environmentHeader}
+	cflags := []string{"-include", runtimeHeader}
 	var stdout bytes.Buffer
 	if err := testSources(
 		root,
+		runtimeRoot,
 		"host",
 		compiler,
 		cflags,
@@ -456,7 +461,7 @@ func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 	output := stdout.String()
 	wantCommand := string(renderCompileCommand(
 		compiler,
-		[]string{"-include", environmentHeader, "-DGTEST=1"},
+		[]string{"-include", runtimeHeader, "-DGTEST=1"},
 		[]string{sourceForward},
 		"pass_test.cpp",
 		object,
@@ -490,6 +495,7 @@ func TestTestSourcesContinuesAfterCompileFailure(t *testing.T) {
 	var stderr bytes.Buffer
 	err := testSources(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -536,6 +542,7 @@ func TestTestSourcesNormalOutputHidesSuccessAndReportsFailure(t *testing.T) {
 	var stderr bytes.Buffer
 	err := testSources(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -580,6 +587,7 @@ func TestTestSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 	progress.updateStep("Searching source files")
 	if err := testSourcesWithProgress(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -632,6 +640,7 @@ func TestTestSourcesSilentOutputOnlyReportsFailures(t *testing.T) {
 	var stderr bytes.Buffer
 	err := testSources(
 		root,
+		t.TempDir(),
 		"host",
 		compiler,
 		nil,
@@ -683,6 +692,7 @@ func TestTestSourcesUsesJobsAcrossTestFiles(t *testing.T) {
 
 			if err := testSources(
 				root,
+				t.TempDir(),
 				"host",
 				compiler,
 				nil,

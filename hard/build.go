@@ -60,6 +60,7 @@ type linkResult struct {
 
 func buildSources(
 	root string,
+	runtimeRoot string,
 	environment string,
 	compiler string,
 	cflags []string,
@@ -77,6 +78,7 @@ func buildSources(
 	progress := newProgressBar(stdout, -1, verbose, silent, noColor)
 	return buildSourcesWithProgress(
 		root,
+		runtimeRoot,
 		environment,
 		compiler,
 		cflags,
@@ -95,6 +97,7 @@ func buildSources(
 
 func buildSourcesWithProgress(
 	root string,
+	runtimeRoot string,
 	environment string,
 	compiler string,
 	cflags []string,
@@ -126,6 +129,7 @@ func buildSourcesWithProgress(
 	}
 	rootSourceCount := len(sources)
 	githubResolver := newGitHubSnapshotResolver(root, progress)
+	supportHeader := runtimeSupportHeader(runtimeRoot, workingDirectory)
 	parsingActivity := func(path string, cached bool) {
 		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
 		if cached {
@@ -136,6 +140,7 @@ func buildSourcesWithProgress(
 	sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithCache(
 		root,
 		environment,
+		supportHeader,
 		githubResolver,
 		cflags,
 		configuredEntryPoints,
@@ -149,7 +154,6 @@ func buildSourcesWithProgress(
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	supportHeader := environmentSupportHeader(root, environment, workingDirectory)
 	for index := range dependenciesBySource {
 		dependenciesBySource[index] = removeDependencyPath(
 			dependenciesBySource[index],
@@ -245,6 +249,7 @@ func discoverBuildSourceClosureWithActivity(
 	sources, dependencies, _, entryPoints, failures, err := discoverBuildSourceClosureWithCache(
 		"",
 		"",
+		"",
 		githubResolver,
 		cflags,
 		configuredEntryPoints,
@@ -261,6 +266,7 @@ func discoverBuildSourceClosureWithActivity(
 func discoverBuildSourceClosureWithCache(
 	root string,
 	environment string,
+	supportHeader string,
 	githubResolver *githubSnapshotResolver,
 	cflags []string,
 	configuredEntryPoints []string,
@@ -290,6 +296,7 @@ func discoverBuildSourceClosureWithCache(
 		results := inspectBuildSourcesWithCache(
 			root,
 			environment,
+			supportHeader,
 			githubResolver,
 			cflags,
 			configuredEntryPoints,
@@ -370,6 +377,7 @@ func inspectBuildSources(
 	return inspectBuildSourcesWithCache(
 		"",
 		"",
+		"",
 		githubResolver,
 		cflags,
 		configuredEntryPoints,
@@ -384,6 +392,7 @@ func inspectBuildSources(
 func inspectBuildSourcesWithCache(
 	root string,
 	environment string,
+	supportHeader string,
 	githubResolver *githubSnapshotResolver,
 	cflags []string,
 	configuredEntryPoints []string,
@@ -430,6 +439,7 @@ func inspectBuildSourcesWithCache(
 					result := inspectBuildSourceWithCache(
 						root,
 						environment,
+						supportHeader,
 						githubResolver,
 						cflags,
 						configuredEntryPoints,
@@ -474,6 +484,7 @@ func inspectBuildSourcesWithCache(
 func inspectBuildSourceWithCache(
 	root string,
 	environment string,
+	supportHeader string,
 	githubResolver *githubSnapshotResolver,
 	cflags []string,
 	configuredEntryPoints []string,
@@ -558,7 +569,7 @@ func inspectBuildSourceWithCache(
 		} else {
 			forwardDependencies := removeDependencyPath(
 				result.dependencies,
-				environmentSupportHeader(root, environment, workingDirectory),
+				supportHeader,
 			)
 			contents, contentError := sourceForwardContents(
 				forward,
@@ -1422,9 +1433,9 @@ func isBuildHeader(path string) bool {
 	}
 }
 
-func environmentSupportHeader(root, environment, workingDirectory string) string {
+func runtimeSupportHeader(runtimeRoot, workingDirectory string) string {
 	header, err := realAbsolutePath(
-		filepath.Join(root, "env", environment, "hard.h"),
+		filepath.Join(runtimeRoot, "hard.h"),
 		workingDirectory,
 	)
 	if err != nil {

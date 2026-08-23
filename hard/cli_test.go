@@ -374,6 +374,7 @@ func TestHelp(t *testing.T) {
 				"-j, --jobs",
 				"(default 1)",
 				"--no-color",
+				"--target string",
 				"-v, --verbose",
 			},
 		},
@@ -383,6 +384,7 @@ func TestHelp(t *testing.T) {
 			want: []string{
 				"hard format [path...]",
 				"--format string",
+				"format style file installed with hard",
 				"(default \"format.v1\")",
 				"-j, --jobs",
 				"--no-color",
