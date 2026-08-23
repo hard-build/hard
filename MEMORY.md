@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-23.
+Last updated: 2026-08-24.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -131,8 +131,9 @@ Implemented:
   `HARD_ROOT`;
 - exclusion of runtime support `hard.h` declarations from source forwards
   while retaining its backend-managed force include;
-- a GitHub Actions workflow for `linux/amd64` image publication with stable,
-  release, commit, and edge tags.
+- a GitHub Actions workflow that publishes only the stable `linux.v1` image
+  for semantic release tags or manual runs, without rebuilding on branch
+  pushes.
 
 Not implemented:
 
@@ -339,13 +340,13 @@ Its fixed target environment is:
 an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
 system, or minimum-CPU changes require a new target version.
 
-The GHCR workflow publishes `edge-linux.v1` on `main` and a
-`sha-<short-commit>-linux.v1` tag for each triggered build. A semantic Git tag
-`vX.Y.Z` also publishes `vX.Y.Z-linux.v1` and advances `linux.v1`. Metadata
-generation explicitly disables the implicit `latest` flavor. The first
-externally published GitHub package defaults private and must be made public
-once by a maintainer before anonymous pulls work. This repository change
-defines the workflow but does not itself push or publish an image.
+The GHCR workflow does not run for branch pushes. A semantic Git tag `vX.Y.Z`
+or a manual workflow dispatch builds the image and publishes only `linux.v1`.
+Release-specific, commit, edge, and implicit `latest` tags are not published.
+The first externally published GitHub package defaults private and must be
+made public once by a maintainer before anonymous pulls work. Package
+visibility remains an external GitHub organization setting and is not managed
+by the workflow.
 
 ## Exact public CLI
 
@@ -1561,8 +1562,11 @@ to leave the library unchanged for now.
 - A local `env/linux.v1` created by the provisional Ubuntu 24.04 image must not
   be reused with the finalized Ubuntu 22.04 target. Keep it separate or remove
   it explicitly before relying on the finalized target cache.
-- The GHCR workflow and image tags are defined, but this repository change does
-  not externally publish the first image or change the package visibility.
+- The GHCR package exists, but an anonymous manifest request returned
+  `unauthorized` on 2026-08-23. Package visibility is not managed by the
+  workflow. Previously published commit and edge tags may remain in GHCR until
+  a maintainer explicitly removes them; the current workflow neither updates
+  nor deletes them.
 - The hard-build library incomplete-type warning remains intentionally
   unresolved in the external repository.
 
@@ -2099,6 +2103,23 @@ and toolchain-only `HARD_CFLAGS`. A fresh-root TinyXML2 build configured, built,
 and installed the package, linked its static archive, and produced `answer=42`.
 The second build reported cached package, parsing, compilation, and linking. No
 image was pushed or published.
+
+## GHCR publication policy decision
+
+On 2026-08-23, pushing commit `16ad23b` to GitHub triggered the initial
+workflow policy and published `sha-16ad23b-linux.v1` and `edge-linux.v1`. The
+user rejected commit and edge image tags and confirmed that the wrapper's
+stable `ghcr.io/hard-build/hard:linux.v1` reference is the only tag the
+workflow should publish. Ordinary branch pushes must not build or rebuild the
+image.
+
+The accepted workflow runs only for a semantic Git tag matching `vX.Y.Z` or a
+manual dispatch. Each run publishes only `linux.v1`; it does not publish
+release-specific, commit, edge, or `latest` tags. Existing remote tags are not
+deleted by this repository change because registry deletion is a separate
+external action. At the time of the decision, an anonymous manifest request
+for the published commit tag returned `unauthorized`, so public package
+visibility still required a maintainer action in GitHub.
 
 ## Workspace safety snapshot
 

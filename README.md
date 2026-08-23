@@ -154,16 +154,15 @@ include mechanics rather than part of the image `HARD_CFLAGS` value.
 
 `linux.v1` is a `linux/amd64` image. Programs built by it require an
 x86-64-v3 processor; Docker does not emulate missing CPU instructions. The
-published tags are:
+only published tag is:
 
-- `linux.v1`: the stable target selected by the wrapper;
-- `vX.Y.Z-linux.v1`: an immutable project release;
-- `sha-<short-commit>-linux.v1`: a commit build;
-- `edge-linux.v1`: the latest build from `main`.
+- `linux.v1`: the stable target selected by the wrapper.
 
-No `latest` tag is published. A toolchain, ABI, base-system, or minimum-CPU
-change requires a new target version rather than silently changing the
-`linux.v1` contract. The GitHub workflow publishes these tags to GHCR. After
+No `latest`, release-specific, commit, or edge tag is published. The GitHub
+workflow rebuilds and advances `linux.v1` only for a semantic Git tag of the
+form `vX.Y.Z` or a manual workflow run; ordinary branch pushes do not build the
+image. A toolchain, ABI, base-system, or minimum-CPU change requires a new
+target version rather than silently changing the `linux.v1` contract. After
 the first publication, a maintainer must make the GitHub package public once;
 public images can then be pulled without authentication.
 
