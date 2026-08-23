@@ -52,6 +52,7 @@ type parseCacheRecord struct {
 	Result              string   `json:"result"`
 	Dependencies        []string `json:"dependencies"`
 	ManagedDependencies []string `json:"managed_dependencies,omitempty"`
+	LibraryHeaders      []string `json:"library_headers,omitempty"`
 	EntryPoint          string   `json:"entry_point,omitempty"`
 	Forward             string   `json:"forward,omitempty"`
 }
@@ -384,12 +385,14 @@ func parseResultFingerprint(record parseCacheRecord) (string, error) {
 		Kind                string   `json:"kind"`
 		Dependencies        []string `json:"dependencies"`
 		ManagedDependencies []string `json:"managed_dependencies,omitempty"`
+		LibraryHeaders      []string `json:"library_headers,omitempty"`
 		EntryPoint          string   `json:"entry_point,omitempty"`
 		Forward             string   `json:"forward,omitempty"`
 	}{
 		Kind:                record.Kind,
 		Dependencies:        record.Dependencies,
 		ManagedDependencies: record.ManagedDependencies,
+		LibraryHeaders:      record.LibraryHeaders,
 		EntryPoint:          record.EntryPoint,
 		Forward:             record.Forward,
 	}

@@ -286,19 +286,50 @@ func sourceAnalysisWithClang(
 	source string,
 	workingDirectory string,
 ) (bool, clangDependencySet, clangAnalysis, []byte, error) {
+	fatal, dependencies, analysis, _, _, _, diagnostics, err := sourceAnalysisWithLibraries(
+		githubResolver,
+		nil,
+		cflags,
+		source,
+		workingDirectory,
+	)
+	return fatal, dependencies, analysis, diagnostics, err
+}
+
+func sourceAnalysisWithLibraries(
+	githubResolver *githubSnapshotResolver,
+	libraryManager *libraryManager,
+	baseCFlags []string,
+	source string,
+	workingDirectory string,
+) (bool, clangDependencySet, clangAnalysis, []string, []libraryArtifact, []string, []byte, error) {
 	attemptedRepositories := make(map[string]struct{})
+	cflags := append([]string(nil), baseCFlags...)
 	for {
 		analysis, err := analyzeClangDependencies(source, workingDirectory, cflags)
 		if err != nil {
-			return true, clangDependencySet{}, clangAnalysis{}, nil, err
+			return true, clangDependencySet{}, clangAnalysis{}, cflags, nil, nil, nil, err
+		}
+		dependencies, err := clangDependencyPathSet(analysis, source, workingDirectory)
+		if err != nil {
+			return true, clangDependencySet{}, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
+		}
+		var artifacts []libraryArtifact
+		var libraryHeaders []string
+		if libraryManager != nil {
+			artifacts, libraryHeaders, err = libraryManager.prepareDependencies(dependencies.managed)
+			if err != nil {
+				return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
+			}
+			updatedCFlags := libraryCFlags(baseCFlags, artifacts)
+			if !equalStringSlices(updatedCFlags, cflags) {
+				cflags = updatedCFlags
+				continue
+			}
 		}
 		unresolved := clangUnresolvedIncludes(analysis)
 		if len(unresolved) == 0 {
-			dependencies, err := clangDependencyPathSet(analysis, source, workingDirectory)
-			if err != nil {
-				return true, clangDependencySet{}, analysis, clangErrorDiagnostics(analysis), err
-			}
-			return false, dependencies, analysis, nil, nil
+			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, nil, nil
 		}
 
 		newRepository := false
@@ -327,7 +358,7 @@ func sourceAnalysisWithClang(
 			}
 		}
 		if err := errors.Join(downloadErrors...); err != nil {
-			return false, clangDependencySet{}, analysis, clangErrorDiagnostics(analysis), err
+			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, clangErrorDiagnostics(analysis), err
 		}
 		if newRepository {
 			continue
@@ -335,7 +366,7 @@ func sourceAnalysisWithClang(
 
 		diagnostics := clangErrorDiagnostics(analysis)
 		if managedInclude {
-			return false, clangDependencySet{}, analysis, diagnostics, fmt.Errorf(
+			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, diagnostics, fmt.Errorf(
 				"GitHub dependency remains unavailable for %s: %s",
 				source,
 				strings.Join(unresolved, ", "),
@@ -344,7 +375,7 @@ func sourceAnalysisWithClang(
 		if len(diagnostics) == 0 {
 			diagnostics = []byte(strings.Join(unresolved, "\n") + "\n")
 		}
-		return false, clangDependencySet{}, analysis, diagnostics, fmt.Errorf(
+		return false, dependencies, analysis, cflags, artifacts, libraryHeaders, diagnostics, fmt.Errorf(
 			"dependencies %s: unresolved include: %s",
 			source,
 			strings.Join(unresolved, ", "),

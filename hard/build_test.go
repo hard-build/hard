@@ -1597,6 +1597,48 @@ func TestBuildSourcesDiscoversCircularDependencyObjects(t *testing.T) {
 	}
 }
 
+func TestPlanLinkJobsUsesOnlyReachableLibraryArchives(t *testing.T) {
+	root := t.TempDir()
+	project := t.TempDir()
+	writeBuildFile(t, project, "app.cpp", "")
+	writeBuildFile(t, project, "app_library.h", "")
+	writeBuildFile(t, project, "app_library.cpp", "")
+	writeBuildFile(t, project, "unrelated.cpp", "")
+	withWorkingDirectory(t, project)
+
+	reachableArchive := filepath.Join(t.TempDir(), "libreachable.a")
+	unrelatedArchive := filepath.Join(t.TempDir(), "libunrelated.a")
+	tasks, err := planLinkJobsWithLibraries(
+		root,
+		"host",
+		[]string{"app.cpp", "app_library.cpp", "unrelated.cpp"},
+		[][]string{{filepath.Join(project, "app_library.h")}, nil, nil},
+		[][]libraryArtifact{
+			{{key: "reachable", archives: []string{reachableArchive}}},
+			{{key: "reachable", archives: []string{reachableArchive}}},
+			{{key: "unrelated", archives: []string{unrelatedArchive}}},
+		},
+		[]string{"main", "", ""},
+		1,
+		"",
+		project,
+	)
+	if err != nil {
+		t.Fatalf("planLinkJobsWithLibraries() error = %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("planLinkJobsWithLibraries() task count = %d, want 1", len(tasks))
+	}
+	wantObjects := []string{
+		mustObjectPath(t, root, "app.cpp"),
+		mustObjectPath(t, root, "app_library.cpp"),
+		reachableArchive,
+	}
+	if !reflect.DeepEqual(tasks[0].objects, wantObjects) {
+		t.Fatalf("link objects = %#v, want %#v", tasks[0].objects, wantObjects)
+	}
+}
+
 func mustObjectPath(t *testing.T, root, source string) string {
 	t.Helper()
 	object, err := objectFilePath(root, "host", source)

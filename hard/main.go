@@ -27,6 +27,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 		os.Exit(1)
 	}
+	cflags := effectiveCFlags(configuration.cflags, configuration.root, configuration.runtimeRoot)
 
 	progress := newProgressBar(os.Stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
 	sources, err := discoverSourcesWithProgress(parsed.command, parsed.paths, progress)
@@ -42,7 +43,7 @@ func main() {
 			configuration.runtimeRoot,
 			configuration.env,
 			configuration.cc,
-			configuration.cflags,
+			cflags,
 			configuration.ldflags,
 			configuration.entrypoints,
 			sources,
@@ -66,7 +67,7 @@ func main() {
 			configuration.runtimeRoot,
 			configuration.env,
 			configuration.cc,
-			configuration.cflags,
+			cflags,
 			configuration.ldflags,
 			configuration.entrypoints,
 			sources,
@@ -112,7 +113,7 @@ func main() {
 	if parsed.command == "fetch" {
 		if err := fetchSourcesWithProgress(
 			configuration.root,
-			configuration.cflags,
+			cflags,
 			sources,
 			parsed.jobs,
 			progress,
@@ -128,7 +129,7 @@ func main() {
 		configuration.runtimeRoot,
 		configuration.env,
 		configuration.cc,
-		configuration.cflags,
+		cflags,
 		configuration.ldflags,
 		sources,
 		parsed.jobs,

@@ -1,0 +1,14 @@
+description: Build and statically link TinyXML2 from an included YAML recipe.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+      compiled_once:
+        - example.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        answer=42

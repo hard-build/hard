@@ -6,6 +6,7 @@ require (
 	github.com/mattn/go-shellwords v1.0.14
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/spf13/cobra v1.10.2
+	go.yaml.in/yaml/v3 v3.0.5
 )
 
 require (

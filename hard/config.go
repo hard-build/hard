@@ -61,7 +61,7 @@ func loadConfigurationFrom(
 	cflags, err := flagsFromEnvironment(
 		lookupEnv,
 		hardCFlagsEnvironment,
-		defaultCFlags(root, runtimeRoot),
+		defaultCFlags(),
 	)
 	if err != nil {
 		return configuration{}, err
@@ -139,17 +139,24 @@ func flagsFromEnvironment(
 	return flags, nil
 }
 
-func defaultCFlags(root, runtimeRoot string) []string {
+func defaultCFlags() []string {
 	return []string{
 		"-std=c++20",
 		"-O3",
 		"-flto=auto",
 		"-Wall",
 		"-Wextra",
-		"-I" + filepath.Join(root, "source"),
+	}
+}
+
+func effectiveCFlags(cflags []string, root, runtimeRoot string) []string {
+	flags := append([]string(nil), cflags...)
+	return append(
+		flags,
+		"-I"+filepath.Join(root, "source"),
 		"-include",
 		filepath.Join(runtimeRoot, "hard.h"),
-	}
+	)
 }
 
 func defaultLDFlags() []string {

@@ -21,6 +21,9 @@ type buildResult struct {
 	index             int
 	dependencies      []string
 	cacheDependencies []string
+	cflags            []string
+	libraries         []libraryArtifact
+	libraryHeaders    []string
 	entrypoint        string
 	forward           string
 	diagnostics       []byte
@@ -35,6 +38,7 @@ type compileJob struct {
 	object            string
 	forwards          []string
 	cacheDependencies []string
+	cflags            []string
 }
 
 type compileResult struct {
@@ -129,6 +133,19 @@ func buildSourcesWithProgress(
 	}
 	rootSourceCount := len(sources)
 	githubResolver := newGitHubSnapshotResolver(root, progress)
+	libraryManager := newLibraryManager(
+		root,
+		environment,
+		compiler,
+		jobs,
+		true,
+		noCache,
+		workingDirectory,
+		githubResolver,
+		cache,
+		progress,
+		stderr,
+	)
 	supportHeader := runtimeSupportHeader(runtimeRoot, workingDirectory)
 	parsingActivity := func(path string, cached bool) {
 		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
@@ -137,7 +154,7 @@ func buildSourcesWithProgress(
 		}
 		progress.updateStep(step)
 	}
-	sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithCache(
+	sources, dependenciesBySource, cacheDependenciesBySource, cflagsBySource, librariesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithLibraries(
 		root,
 		environment,
 		supportHeader,
@@ -150,6 +167,7 @@ func buildSourcesWithProgress(
 		stderr,
 		parsingActivity,
 		cache,
+		libraryManager,
 	)
 	if err != nil {
 		return errors.Join(err, progress.finish())
@@ -170,11 +188,12 @@ func buildSourcesWithProgress(
 		return errors.Join(err, progress.finish())
 	}
 	progress.setTotal(1 + len(sources) + 2*linkCount)
-	if err := compileSources(
+	if err := compileSourcesWithConfiguration(
 		root,
 		environment,
 		compiler,
 		cflags,
+		cflagsBySource,
 		sources,
 		dependenciesBySource,
 		cacheDependenciesBySource,
@@ -188,13 +207,14 @@ func buildSourcesWithProgress(
 	); err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	err = linkSourcesWithCache(
+	err = linkSourcesWithLibraries(
 		root,
 		environment,
 		compiler,
 		ldflags,
 		sources,
 		dependenciesBySource,
+		librariesBySource,
 		entryPointsBySource,
 		rootSourceCount,
 		output,
@@ -277,23 +297,58 @@ func discoverBuildSourceClosureWithCache(
 	activity func(string, bool),
 	cache *artifactCache,
 ) ([]string, [][]string, [][]string, []string, []error, error) {
+	sources, dependencies, cacheDependencies, _, _, entryPoints, failures, err := discoverBuildSourceClosureWithLibraries(
+		root,
+		environment,
+		supportHeader,
+		githubResolver,
+		cflags,
+		configuredEntryPoints,
+		rootSources,
+		jobs,
+		workingDirectory,
+		stderr,
+		activity,
+		cache,
+		nil,
+	)
+	return sources, dependencies, cacheDependencies, entryPoints, failures, err
+}
+
+func discoverBuildSourceClosureWithLibraries(
+	root string,
+	environment string,
+	supportHeader string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	configuredEntryPoints []string,
+	rootSources []string,
+	jobs int,
+	workingDirectory string,
+	stderr io.Writer,
+	activity func(string, bool),
+	cache *artifactCache,
+	libraryManager *libraryManager,
+) ([]string, [][]string, [][]string, [][]string, [][]libraryArtifact, []string, []error, error) {
 	sources := append([]string(nil), rootSources...)
 	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
 		canonicalSource, err := realAbsolutePath(source, workingDirectory)
 		if err != nil {
-			return nil, nil, nil, nil, nil, fmt.Errorf("resolve build source %s: %w", source, err)
+			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("resolve build source %s: %w", source, err)
 		}
 		seen[canonicalSource] = struct{}{}
 	}
 
 	dependenciesBySource := make([][]string, 0, len(sources))
 	cacheDependenciesBySource := make([][]string, 0, len(sources))
+	cflagsBySource := make([][]string, 0, len(sources))
+	librariesBySource := make([][]libraryArtifact, 0, len(sources))
 	entryPointsBySource := make([]string, 0, len(sources))
 	var failures []error
 	for first := 0; first < len(sources); {
 		last := len(sources)
-		results := inspectBuildSourcesWithCache(
+		results := inspectBuildSourcesWithLibraries(
 			root,
 			environment,
 			supportHeader,
@@ -305,18 +360,23 @@ func discoverBuildSourceClosureWithCache(
 			workingDirectory,
 			activity,
 			cache,
+			libraryManager,
 		)
 		fatal := false
 		for _, result := range results {
 			var dependencies []string
 			var cacheDependencies []string
+			effectiveCFlags := append([]string(nil), cflags...)
+			var libraries []libraryArtifact
 			var entrypoint string
 			if result != nil {
 				if _, err := io.Copy(stderr, bytes.NewReader(result.diagnostics)); err != nil {
-					return nil, nil, nil, nil, nil, fmt.Errorf("write build diagnostics: %w", err)
+					return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("write build diagnostics: %w", err)
 				}
 				dependencies = result.dependencies
 				cacheDependencies = result.cacheDependencies
+				effectiveCFlags = result.cflags
+				libraries = result.libraries
 				entrypoint = result.entrypoint
 				fatal = fatal || result.fatal
 				if result.err != nil {
@@ -325,6 +385,8 @@ func discoverBuildSourceClosureWithCache(
 			}
 			dependenciesBySource = append(dependenciesBySource, dependencies)
 			cacheDependenciesBySource = append(cacheDependenciesBySource, cacheDependencies)
+			cflagsBySource = append(cflagsBySource, effectiveCFlags)
+			librariesBySource = append(librariesBySource, libraries)
 			entryPointsBySource = append(entryPointsBySource, entrypoint)
 		}
 		if fatal {
@@ -338,14 +400,14 @@ func discoverBuildSourceClosureWithCache(
 				}
 				source, err := implementationSourceForHeader(dependency, workingDirectory)
 				if err != nil {
-					return nil, nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, nil, nil, err
 				}
 				if source == "" {
 					continue
 				}
 				canonicalSource, err := realAbsolutePath(source, workingDirectory)
 				if err != nil {
-					return nil, nil, nil, nil, nil, fmt.Errorf("resolve implementation source %s: %w", source, err)
+					return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("resolve implementation source %s: %w", source, err)
 				}
 				if _, ok := seen[canonicalSource]; ok {
 					continue
@@ -356,7 +418,7 @@ func discoverBuildSourceClosureWithCache(
 		}
 		first = last
 	}
-	return sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, nil
+	return sources, dependenciesBySource, cacheDependenciesBySource, cflagsBySource, librariesBySource, entryPointsBySource, failures, nil
 }
 
 func inspectBuildSources(
@@ -401,6 +463,36 @@ func inspectBuildSourcesWithCache(
 	workingDirectory string,
 	activity func(string, bool),
 	cache *artifactCache,
+) []*buildResult {
+	return inspectBuildSourcesWithLibraries(
+		root,
+		environment,
+		supportHeader,
+		githubResolver,
+		cflags,
+		configuredEntryPoints,
+		sources,
+		jobs,
+		workingDirectory,
+		activity,
+		cache,
+		nil,
+	)
+}
+
+func inspectBuildSourcesWithLibraries(
+	root string,
+	environment string,
+	supportHeader string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	configuredEntryPoints []string,
+	sources []string,
+	jobs int,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+	libraryManager *libraryManager,
 ) []*buildResult {
 	workerCount := jobs
 	if workerCount > len(sources) {
@@ -447,6 +539,7 @@ func inspectBuildSourcesWithCache(
 						workingDirectory,
 						activity,
 						cache,
+						libraryManager,
 					)
 					if result.fatal {
 						stopWork()
@@ -492,46 +585,71 @@ func inspectBuildSourceWithCache(
 	workingDirectory string,
 	activity func(string, bool),
 	cache *artifactCache,
+	libraryManager *libraryManager,
 ) buildResult {
-	result := buildResult{index: job.index}
-	arguments := parseCacheArguments(cflags, configuredEntryPoints)
+	result := buildResult{index: job.index, cflags: append([]string(nil), cflags...)}
 	var recordPath string
 	if cache != nil {
+		cacheCandidateReady := true
 		var err error
 		recordPath, err = parseCachePath(root, environment, job.source)
 		if err != nil {
 			result.err = err
 			return result
 		}
-		record, cached, err := cache.parseHit(
-			recordPath,
-			"source-parse",
-			job.source,
-			arguments,
-			workingDirectory,
-		)
-		if err != nil {
-			result.err = fmt.Errorf("read parse cache for %s: %w", job.source, err)
-			return result
-		}
-		if cached {
-			if activity != nil {
-				activity(job.source, true)
-			}
-			forward, err := sourceForwardHeaderPath(root, environment, job.source)
+		if cache.read && libraryManager != nil {
+			candidate, ok, err := readParseCacheRecord(recordPath)
 			if err != nil {
-				result.err = err
+				result.err = fmt.Errorf("read parse cache for %s: %w", job.source, err)
 				return result
 			}
-			if err := writeForwardHeader(forward, []byte(record.Forward)); err != nil {
-				result.err = fmt.Errorf("write cached forward header %s: %w", forward, err)
+			candidateResult, resultError := parseResultFingerprint(candidate)
+			if ok && candidate.Version == artifactCacheVersion && candidate.Kind == "source-parse" &&
+				resultError == nil && candidate.Result == candidateResult {
+				result.libraries, err = libraryManager.prepareHeaders(candidate.LibraryHeaders)
+				if err != nil {
+					cacheCandidateReady = false
+					result.libraries = nil
+					result.libraryHeaders = nil
+					result.cflags = append([]string(nil), cflags...)
+				} else {
+					result.cflags = libraryCFlags(cflags, result.libraries)
+					result.libraryHeaders = append([]string(nil), candidate.LibraryHeaders...)
+				}
+			}
+		}
+		if cacheCandidateReady {
+			arguments := parseCacheArguments(result.cflags, configuredEntryPoints)
+			record, cached, err := cache.parseHit(
+				recordPath,
+				"source-parse",
+				job.source,
+				arguments,
+				workingDirectory,
+			)
+			if err != nil {
+				result.err = fmt.Errorf("read parse cache for %s: %w", job.source, err)
 				return result
 			}
-			result.dependencies = append([]string(nil), record.ManagedDependencies...)
-			result.cacheDependencies = append([]string(nil), record.Dependencies...)
-			result.entrypoint = record.EntryPoint
-			result.forward = record.Forward
-			return result
+			if cached {
+				if activity != nil {
+					activity(job.source, true)
+				}
+				forward, err := sourceForwardHeaderPath(root, environment, job.source)
+				if err != nil {
+					result.err = err
+					return result
+				}
+				if err := writeForwardHeader(forward, []byte(record.Forward)); err != nil {
+					result.err = fmt.Errorf("write cached forward header %s: %w", forward, err)
+					return result
+				}
+				result.dependencies = append([]string(nil), record.ManagedDependencies...)
+				result.cacheDependencies = append([]string(nil), record.Dependencies...)
+				result.entrypoint = record.EntryPoint
+				result.forward = record.Forward
+				return result
+			}
 		}
 		if err := cache.invalidateParse(recordPath); err != nil {
 			result.err = fmt.Errorf("invalidate parse cache for %s: %w", job.source, err)
@@ -542,14 +660,18 @@ func inspectBuildSourceWithCache(
 		activity(job.source, false)
 	}
 
-	fatal, dependencies, analysis, diagnostics, err := sourceAnalysisWithClang(
+	fatal, dependencies, analysis, effectiveCFlags, libraries, libraryHeaders, diagnostics, err := sourceAnalysisWithLibraries(
 		githubResolver,
+		libraryManager,
 		cflags,
 		job.source,
 		workingDirectory,
 	)
 	result.dependencies = dependencies.managed
 	result.cacheDependencies = dependencies.managed
+	result.cflags = effectiveCFlags
+	result.libraries = libraries
+	result.libraryHeaders = libraryHeaders
 	result.diagnostics = append([]byte(nil), diagnostics...)
 	result.fatal = fatal
 	var entryError error
@@ -557,7 +679,7 @@ func inspectBuildSourceWithCache(
 		result.entrypoint, entryError = sourceEntryPointWithFlags(
 			job.source,
 			workingDirectory,
-			cflags,
+			result.cflags,
 			configuredEntryPoints,
 		)
 	}
@@ -575,7 +697,7 @@ func inspectBuildSourceWithCache(
 				forward,
 				analysis,
 				forwardDependencies,
-				cflags,
+				result.cflags,
 				workingDirectory,
 			)
 			if contentError != nil {
@@ -591,12 +713,14 @@ func inspectBuildSourceWithCache(
 	if cache == nil || result.fatal || result.err != nil {
 		return result
 	}
+	arguments := parseCacheArguments(result.cflags, configuredEntryPoints)
 	_, cacheError := cache.storeParse(
 		recordPath,
 		parseCacheRecord{
 			Kind:                "source-parse",
 			Dependencies:        append([]string(nil), result.cacheDependencies...),
 			ManagedDependencies: append([]string(nil), result.dependencies...),
+			LibraryHeaders:      append([]string(nil), result.libraryHeaders...),
 			EntryPoint:          result.entrypoint,
 			Forward:             result.forward,
 		},
@@ -677,11 +801,48 @@ func compileSources(
 	stderr io.Writer,
 	cache *artifactCache,
 ) error {
-	results, err := compileSourceBatchWithCacheDependencies(
+	return compileSourcesWithConfiguration(
 		root,
 		environment,
 		compiler,
 		cflags,
+		nil,
+		sources,
+		dependenciesBySource,
+		cacheDependenciesBySource,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		stderr,
+		cache,
+	)
+}
+
+func compileSourcesWithConfiguration(
+	root string,
+	environment string,
+	compiler string,
+	cflags []string,
+	cflagsBySource [][]string,
+	sources []string,
+	dependenciesBySource [][]string,
+	cacheDependenciesBySource [][]string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	workingDirectory string,
+	progress *progressBar,
+	stderr io.Writer,
+	cache *artifactCache,
+) error {
+	results, err := compileSourceBatchWithConfiguration(
+		root,
+		environment,
+		compiler,
+		cflags,
+		cflagsBySource,
 		sources,
 		dependenciesBySource,
 		cacheDependenciesBySource,
@@ -747,8 +908,55 @@ func compileSourceBatchWithCacheDependencies(
 	progress *progressBar,
 	cache *artifactCache,
 ) ([]*compileResult, error) {
+	return compileSourceBatchWithConfiguration(
+		root,
+		environment,
+		compiler,
+		cflags,
+		nil,
+		sources,
+		dependenciesBySource,
+		cacheDependenciesBySource,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		cache,
+	)
+}
+
+func compileSourceBatchWithConfiguration(
+	root string,
+	environment string,
+	compiler string,
+	cflags []string,
+	cflagsBySource [][]string,
+	sources []string,
+	dependenciesBySource [][]string,
+	cacheDependenciesBySource [][]string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	workingDirectory string,
+	progress *progressBar,
+	cache *artifactCache,
+) ([]*compileResult, error) {
 	if jobs < 1 {
 		return nil, fmt.Errorf("jobs must be positive: %d", jobs)
+	}
+	if cflagsBySource == nil {
+		cflagsBySource = make([][]string, len(sources))
+		for index := range cflagsBySource {
+			cflagsBySource[index] = cflags
+		}
+	}
+	if len(cflagsBySource) != len(sources) {
+		return nil, fmt.Errorf(
+			"compiler flag source count does not match sources: %d != %d",
+			len(cflagsBySource),
+			len(sources),
+		)
 	}
 	if len(cacheDependenciesBySource) != len(sources) {
 		return nil, fmt.Errorf(
@@ -782,6 +990,7 @@ func compileSourceBatchWithCacheDependencies(
 			object:            object,
 			forwards:          []string{forward},
 			cacheDependencies: cacheDependencies,
+			cflags:            cflagsBySource[index],
 		})
 	}
 
@@ -823,7 +1032,7 @@ func compileSourceBatchWithCacheDependencies(
 					fatal, cached, err := compileSourceWithCache(
 						cache,
 						compiler,
-						cflags,
+						job.cflags,
 						job.forwards,
 						job.cacheDependencies,
 						job.source,
@@ -838,7 +1047,7 @@ func compileSourceBatchWithCacheDependencies(
 					if verbose && !silent && !cached {
 						command = renderCompileCommand(
 							compiler,
-							cflags,
+							job.cflags,
 							job.forwards,
 							job.source,
 							job.object,
@@ -1030,14 +1239,55 @@ func linkSourcesWithCache(
 	stderr io.Writer,
 	cache *artifactCache,
 ) error {
+	return linkSourcesWithLibraries(
+		root,
+		environment,
+		compiler,
+		ldflags,
+		sources,
+		dependenciesBySource,
+		nil,
+		entryPointsBySource,
+		rootSourceCount,
+		output,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		stderr,
+		cache,
+	)
+}
+
+func linkSourcesWithLibraries(
+	root string,
+	environment string,
+	compiler string,
+	ldflags []string,
+	sources []string,
+	dependenciesBySource [][]string,
+	librariesBySource [][]libraryArtifact,
+	entryPointsBySource []string,
+	rootSourceCount int,
+	output string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	workingDirectory string,
+	progress *progressBar,
+	stderr io.Writer,
+	cache *artifactCache,
+) error {
 	if jobs < 1 {
 		return fmt.Errorf("jobs must be positive: %d", jobs)
 	}
-	tasks, err := planLinkJobs(
+	tasks, err := planLinkJobsWithLibraries(
 		root,
 		environment,
 		sources,
 		dependenciesBySource,
+		librariesBySource,
 		entryPointsBySource,
 		rootSourceCount,
 		output,
@@ -1189,10 +1439,41 @@ func planLinkJobs(
 	output string,
 	workingDirectory string,
 ) ([]linkJob, error) {
+	return planLinkJobsWithLibraries(
+		root,
+		environment,
+		sources,
+		dependenciesBySource,
+		nil,
+		entryPointsBySource,
+		rootSourceCount,
+		output,
+		workingDirectory,
+	)
+}
+
+func planLinkJobsWithLibraries(
+	root string,
+	environment string,
+	sources []string,
+	dependenciesBySource [][]string,
+	librariesBySource [][]libraryArtifact,
+	entryPointsBySource []string,
+	rootSourceCount int,
+	output string,
+	workingDirectory string,
+) ([]linkJob, error) {
 	if len(dependenciesBySource) != len(sources) {
 		return nil, fmt.Errorf(
 			"dependency source count does not match sources: %d != %d",
 			len(dependenciesBySource),
+			len(sources),
+		)
+	}
+	if librariesBySource != nil && len(librariesBySource) != len(sources) {
+		return nil, fmt.Errorf(
+			"library source count does not match sources: %d != %d",
+			len(librariesBySource),
 			len(sources),
 		)
 	}
@@ -1248,6 +1529,7 @@ func planLinkJobs(
 			}
 			objects = append(objects, object)
 		}
+		objects = append(objects, libraryArchivesByIndexes(librariesBySource, objectIndexes)...)
 		artifact, err := binaryArtifactPath(root, environment, sources[entryIndex])
 		if err != nil {
 			return nil, err

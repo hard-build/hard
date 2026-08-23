@@ -74,7 +74,7 @@ ENV HOME=/tmp
 ENV HARD_ROOT=/hard
 ENV HARD_ENV=linux.v1
 ENV HARD_CC=c++
-ENV HARD_CFLAGS="-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra -I/hard/source -include /usr/local/libexec/hard/hard.h"
+ENV HARD_CFLAGS="-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra"
 ENV HARD_LDFLAGS="-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++"
 ENV HARD_ENTRYPOINTS="main _start"
 

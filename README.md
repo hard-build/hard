@@ -38,6 +38,7 @@ Depending on the command, using `hard` also requires:
 
 - a C/C++ compiler supporting the configured flags (`c++` by default) for
   `build`, `run`, and `test`;
+- CMake when an active source include contains a `hard.recipe.v1` recipe;
 - `clang-format` for source formatting;
 - `pkg-config` and GoogleTest's `gtest_main` package for test compilation and
   linking;
@@ -141,12 +142,15 @@ HARD_ROOT=/hard
 HARD_ENV=linux.v1
 HARD_CC=c++
 HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto
-            -Wall -Wextra -I/hard/source
-            -include /usr/local/libexec/hard/hard.h
+            -Wall -Wextra
 HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
              -static-libgcc -static-libstdc++
 HARD_ENTRYPOINTS=main _start
 ```
+
+The backend always adds `-I/hard/source` and
+`-include /usr/local/libexec/hard/hard.h` internally. These are hard-managed
+include mechanics rather than part of the image `HARD_CFLAGS` value.
 
 `linux.v1` is a `linux/amd64` image. Programs built by it require an
 x86-64-v3 processor; Docker does not emulate missing CPU instructions. The
@@ -241,10 +245,13 @@ source-context forward per translation unit, compiles objects, detects
 configured entry functions, links reachable objects, and delivers binaries.
 
 Every root or automatically discovered translation unit is analyzed through
-libclang 18. `hard` passes `HARD_CFLAGS`, the project working directory, and
-C++ language mode unless `HARD_CFLAGS` already selects a language. The detailed
-preprocessing record supplies one active, preprocessor-aware include graph for
-direct, transitive, macro-expanded, conditional, and force-included headers.
+libclang 18. `hard` passes the effective compiler flags: configured
+`HARD_CFLAGS`, the hard-managed source and runtime-header includes, and any
+active package includes. It also passes the project working directory and C++
+language mode unless the configured flags already select a language. The
+detailed preprocessing record supplies one active, preprocessor-aware include
+graph for direct, transitive, macro-expanded, conditional, and force-included
+headers.
 
 libclang classifies system headers, so only resolved non-system dependencies
 participate in implementation discovery, source-context forward extraction,
@@ -315,6 +322,97 @@ each actual request, it reports
 step. A missing non-GitHub header retains the original libclang
 diagnostic and does not cause a network request.
 
+#### Compiled library recipes
+
+An active included header may describe one compiled static library in a
+leading block comment. A `.hard.h` suffix is recommended so the recipe header
+does not collide with the library public header, but the suffix is a convention
+rather than a parser requirement:
+
+```cpp
+/* clang-format off */
+/* hard.recipe.v1
+source: "github.com/leethomason/tinyxml2"
+build_system: "cmake"
+source_directory: "."
+configure_arguments:
+  - "-DCMAKE_BUILD_TYPE=Release"
+  - "-Dtinyxml2_SHARED_LIBS=OFF"
+  - "-Dtinyxml2_BUILD_TESTING=OFF"
+  - "-Dtinyxml2_INSTALL_PKGCONFIG=OFF"
+  - "-DCMAKE_INSTALL_LIBDIR=lib"
+  - "-DCMAKE_INSTALL_INCLUDEDIR=include"
+source_include_directories:
+  - "."
+include_directories:
+  - "include"
+static_libraries:
+  - "lib/libtinyxml2.a"
+*/
+/* clang-format on */
+#pragma once
+
+#include <tinyxml2.h>
+```
+
+The marker must occur among the file's leading whitespace and comments before
+the first C++ token. The header may contain ordinary includes and arbitrary C++
+code after the recipe. Exactly one marker block is allowed. YAML decoding is
+strict. The previous `hard.library.v1` spelling is not recognized. Unknown and
+duplicate fields, multiple documents, aliases, anchors, merge keys, custom
+tags, absolute paths, and paths escaping through `..` are rejected.
+
+Version 1 supports a GitHub source written exactly as
+`github.com/<owner>/<repository>`, the `cmake` build system, and installed
+static archives. `source_directory` is relative to the downloaded repository.
+`source_include_directories` are used only by `fetch` while inspecting the
+downloaded source tree. `include_directories` and `static_libraries` are
+relative to the package install prefix and are used by `build`, `run`, and
+`test`.
+
+For a build command, `hard` downloads the repository snapshot, configures it
+with the resolved `HARD_CC` as the authoritative `CMAKE_CXX_COMPILER`, builds
+with the selected job count, and installs it into a content-addressed package
+directory. `hard` also owns `CMAKE_INSTALL_PREFIX`; recipes cannot override
+either managed CMake setting. Ambient `CXXFLAGS` are cleared for the configure
+process. `HARD_CFLAGS` and `HARD_LDFLAGS` are not passed to the external build;
+recipe-specific vendor options belong in `configure_arguments`.
+
+Installed include directories are appended only to translation units whose
+active libclang include graph reaches the recipe header. Installed archives
+are appended only when linking a binary whose reachable source closure uses
+that recipe. Includes hidden by an inactive preprocessor branch therefore do
+not cause a download, package build, compiler flag, or link input.
+
+Packages are stored at:
+
+```text
+HARD_ROOT/env/HARD_ENV/library/
+└── github.com/<owner>/<repository>/<fingerprint>/
+    ├── build/
+    ├── install/
+    └── manifest.json
+```
+
+The fingerprint includes the `hard` executable, recipe header and bytes, full
+downloaded source tree, CMake executable, resolved `HARD_CC` executable,
+recipe paths, and configure arguments. A manifest verifies the complete
+installed file tree before reuse. `--no-cache` rebuilds the package but does
+not refresh the downloaded GitHub snapshot. Because vendor builds intentionally
+do not receive `HARD_CFLAGS`, changing ABI-affecting project flags without also
+changing `HARD_ENV` can produce an incompatible project/package combination;
+use a distinct environment for such flag changes.
+
+The recipe is reusable like any other managed header. Another project may
+include the original header through the GitHub include namespace, for example:
+
+```cpp
+#include <github.com/hard-build/hard/unittest/011.compiled_library_recipe/tinyxml2.hard.h>
+```
+
+The existing GitHub resolver first downloads the repository containing that
+header, then discovers its active recipe and obtains TinyXML2.
+
 Each root or automatically discovered translation unit produces one
 source-context forward file from the declarations visible in its final
 libclang analysis. Only declarations physically originating in active managed
@@ -353,11 +451,15 @@ byte-for-byte unchanged, the existing regular file is retained.
 A successful translation-unit analysis is persisted as a versioned
 `.hard-parse-cache.json` record beside the mirrored source path. The record
 stores its managed dependency list, complete active non-system dependency
-snapshot, detected entry point, and final validated source-forward text.
-Records include a checksum of the stored semantic result.
+snapshot, active library recipe headers, detected entry point, and final
+validated source-forward text. Records include a checksum of that semantic
+result. After the checksum is validated, a prospective hit restores the
+packages and package include flags named by those headers before its action
+fingerprint is validated against current inputs.
 
 A parse-cache key includes the `hard` executable digest, libclang version,
-working directory, `HARD_CFLAGS`, configured entry-point names when relevant,
+working directory, the effective compiler flags (configured, hard-managed, and
+active-package flags), configured entry-point names when relevant,
 and the content of the input plus every active non-system dependency known
 from the previous successful analysis, including non-system force-included
 headers. System headers are represented by the selected `HARD_ENV` rather than
@@ -382,6 +484,9 @@ source-context forward is force-included for that translation unit:
 
 ```text
 HARD_CC <HARD_CFLAGS...> \
+  -I<HARD_ROOT>/source \
+  -include <runtime-root>/hard.h \
+  <active-library-include-flags...> \
   -include <source.cpp.fwd.h> \
   -c <source> -o <object>
 ```
@@ -391,9 +496,9 @@ Even when no eligible declarations exist, the source forward is present and
 contains `#pragma once`, which keeps the compiler command shape uniform.
 
 The canonical target of `<runtime-root>/hard.h` is the one managed header
-exception. It remains force-included through `HARD_CFLAGS`, but its declarations
-are excluded from the generated source forward. Other project or external
-headers named `hard.h` are treated normally.
+exception. It is force-included by the backend independently of
+`HARD_CFLAGS`, but its declarations are excluded from the generated source
+forward. Other project or external headers named `hard.h` are treated normally.
 
 The object path mirrors the absolute source path. The original source
 extension is preserved before `.o`, avoiding collisions between sources such
@@ -418,7 +523,8 @@ records are cache misses.
 
 `--no-cache` disables build, run, and test cache reads for this invocation. It
 forces source analysis, source-forward generation, compilation, and linking;
-`hard build` also forces binary delivery, while `hard test` reruns its tests.
+active compiled library packages are rebuilt, `hard build` also forces binary
+delivery, and `hard test` reruns its tests.
 Program execution by `hard run` is never cached and therefore happens on every
 successful invocation with or without this flag. Fresh successful build records
 are written. The flag does not remove or refresh downloaded GitHub snapshots
@@ -437,9 +543,9 @@ The value is parsed as shell-style words. An explicitly empty value disables
 entry-point detection. Declarations without a body, class methods, namespace
 functions, local functions, and lambdas are not entry points. Defining more
 than one configured entry-point name in one source is an error. Detection uses
-a full libclang translation unit with `HARD_CFLAGS`. Only the active
-preprocessor branch participates, and a function definition produced by a
-macro is detected.
+a full libclang translation unit with the effective compiler flags. Only the
+active preprocessor branch participates, and a function definition produced
+by a macro is detected.
 
 Only entry sources selected by the original command are executable targets.
 An implementation source discovered through a header is dependency-only and
@@ -470,7 +576,8 @@ Each binary is linked in parallel with the selected job count using ordinary
 compiler-driver linking:
 
 ```text
-HARD_CC <entry-and-dependency-objects...> <HARD_LDFLAGS...> \
+HARD_CC <entry-and-dependency-objects...> \
+  <reachable-static-library-archives...> <HARD_LDFLAGS...> \
   -o <internal-binary>
 ```
 
@@ -628,20 +735,26 @@ hard fetch [-s|--silent] [path...]
 ```
 
 `fetch` downloads the external GitHub dependencies required by the selected C
-and C++ translation units without building them. Unlike `build`, its default
+and C++ translation units without building them. This includes repositories
+named by active `hard.recipe.v1` recipe headers. Unlike `build`, its default
 recursive selection includes both ordinary and `*_test.*` translation units.
 Explicit files and directories use the common path-selection rules.
 
-Dependency analysis uses libclang 18 with `HARD_CFLAGS`, follows active project
-headers, and recursively discovers same-stem implementation sources. It then
-downloads the complete transitive closure of expanded
-`github.com/<owner>/<repository>/...` and well-known includes. `HARD_CC` is not
-started by `fetch`. The persistent cache and archive-safety rules are the same
-as for `build`, `run`, and `test`; existing repository directories are not
-refreshed automatically.
+Dependency analysis uses libclang 18 with the effective compiler flags,
+follows active project headers, and recursively discovers same-stem
+implementation sources. It then downloads the complete transitive closure of
+expanded `github.com/<owner>/<repository>/...` and well-known includes.
+`HARD_CC` is not started by `fetch`. The persistent cache and archive-safety
+rules are the same as for `build`, `run`, and `test`; existing repository
+directories are not refreshed automatically.
 
 `fetch` does not read or write persistent parse-result records, because it
 must remain independent of the environment build tree.
+
+When a recipe is active, `fetch` temporarily appends its
+`source_include_directories` below the downloaded repository and repeats
+dependency analysis. It does not start CMake or `HARD_CC`, install a package,
+write a manifest, or create `HARD_ROOT/env`.
 
 This command does not generate forward headers, compile objects, link or copy
 binaries, run tests, or create an environment build tree. An empty selection
@@ -730,8 +843,9 @@ pkg-config --libs gtest_main
 
 The outputs are parsed as shell-style argument vectors with environment and
 command substitution disabled. GoogleTest compiler flags are appended after
-`HARD_CFLAGS`; its linker flags are appended after `HARD_LDFLAGS`. Failure to
-start `pkg-config`, a nonzero result, or malformed output stops the command
+the backend-effective base compiler flags; active package include flags follow
+recipe discovery. Its linker flags are appended after `HARD_LDFLAGS`. Failure
+to start `pkg-config`, a nonzero result, or malformed output stops the command
 before any test is built. An empty selection succeeds without requiring
 `pkg-config` or GoogleTest.
 
@@ -760,11 +874,17 @@ step and
 compilation continues at `[2/M]`, whether dependencies were downloaded or
 already cached.
 
+Active `hard.recipe.v1` recipes use the same package build and cache rules as
+ordinary builds. Each test translation unit receives only its own active
+package include directories, and each test binary links only the static
+archives reachable from that test source closure.
+
 The test source object and all reachable production objects are linked with
 ordinary compiler-driver linking:
 
 ```text
 HARD_CC <test-and-dependency-objects...> \
+  <reachable-static-library-archives...> \
   <HARD_LDFLAGS...> <gtest_main-linker-flags...> \
   -o <internal-test-binary>
 ```
@@ -870,7 +990,7 @@ its ANSI colors in verbose output and when a failed test's output is reported.
 | `HARD_ROOT` | Persistent source and artifact root | `~/.local/share/hard` |
 | `HARD_ENV` | Isolated build-environment name | `host` |
 | `HARD_CC` | Compiler executable | `c++` |
-| `HARD_CFLAGS` | libclang analysis and object compiler flags | See below |
+| `HARD_CFLAGS` | User toolchain flags for libclang and object compilation | See below |
 | `HARD_LDFLAGS` | Executable linker flags | See below |
 | `HARD_ENTRYPOINTS` | Global entry-function names | `main _start` |
 
@@ -884,15 +1004,15 @@ Default compiler flags:
 -flto=auto
 -Wall
 -Wextra
--I<HARD_ROOT>/source
--include
-<runtime-root>/hard.h
 ```
 
-The runtime root is not configured by an environment variable. `hard` derives
-it from the physical path of its running backend executable. This keeps the
-host runtime bundle and each container image self-contained while allowing
-them to share one persistent `HARD_ROOT`.
+Regardless of this value, the backend then appends
+`-I<HARD_ROOT>/source` and `-include <runtime-root>/hard.h`. The runtime root
+is not configured by an environment variable: `hard` derives it from the
+physical path of the running backend executable. This keeps source resolution
+and the runtime support header available even when `HARD_CFLAGS` is explicitly
+empty, while allowing the host runtime bundle and container image to remain
+self-contained.
 
 Default linker flags:
 
@@ -909,11 +1029,8 @@ Default linker flags:
 When `HARD_CFLAGS` or `HARD_LDFLAGS` is present, its value is parsed as
 shell-style arguments and replaces the complete default vector. Quoting is
 honored, but environment expansion and command substitution are disabled. An
-explicitly empty value means no flags in that category.
-Consequently, an explicit `HARD_CFLAGS` must include
-`-I<HARD_ROOT>/source` if downloaded GitHub or well-known headers should remain
-reachable, and must include `<runtime-root>/hard.h` if the installed support
-header should remain force-included.
+explicitly empty value means no user-provided flags in that category. The
+hard-managed source include and runtime support include still apply.
 
 `HARD_ENTRYPOINTS` follows the same shell-style parsing and disabled expansion
 rules. Unlike `HARD_ROOT`, `HARD_ENV`, and `HARD_CC`, an explicitly empty value
@@ -1000,15 +1117,20 @@ HARD_ROOT/
 │           └── <repository>/
 └── env/
     └── HARD_ENV/
-        └── build/
-            └── <absolute path without the leading slash>/
-                ├── file.cpp.hard-parse-cache.json
-                ├── file.cpp.fwd.h
-                ├── file.cpp.o
-                ├── file.cpp.o.hard-cache.json
-                ├── application
-                ├── application.hard-cache.json
-                └── application.hard-test-cache.json
+        ├── build/
+        │   └── <absolute path without the leading slash>/
+        │       ├── file.cpp.hard-parse-cache.json
+        │       ├── file.cpp.fwd.h
+        │       ├── file.cpp.o
+        │       ├── file.cpp.o.hard-cache.json
+        │       ├── application
+        │       ├── application.hard-cache.json
+        │       └── application.hard-test-cache.json
+        └── library/
+            └── github.com/<owner>/<repository>/<fingerprint>/
+                ├── build/
+                ├── install/
+                └── manifest.json
 ```
 
 An entry source or test source also creates an extensionless internal binary
@@ -1029,11 +1151,12 @@ Downloaded repository snapshots are shared by all `HARD_ENV` values below one
 
 Commands return zero when all requested work succeeds. Invalid paths, invalid
 configuration, missing tools or support files, parsing errors, formatter
-failures, compiler failures, linker failures, and failed test executables
-produce a nonzero status. GitHub request, archive-validation, extraction, and
-installation failures during build, fetch, run, or test also produce a nonzero
-status. `hard run` propagates a normally started program's nonzero exit status;
-other command failures return status 1.
+failures, compiler failures, linker failures, failed test executables, invalid
+library recipes, and CMake package failures produce a nonzero status. GitHub
+request, archive-validation, extraction, and installation failures during
+build, fetch, run, or test also produce a nonzero status. `hard run` propagates
+the nonzero exit status of a normally started program; other command failures
+return status 1.
 
 Where independent work can continue safely, `hard` processes it and returns an
 aggregate failure when the phase completes. Failures to start a required tool

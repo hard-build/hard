@@ -55,6 +55,19 @@ func runSourcesWithProgress(
 	}
 	rootSourceCount := len(sources)
 	githubResolver := newGitHubSnapshotResolver(root, progress)
+	libraryManager := newLibraryManager(
+		root,
+		environment,
+		compiler,
+		jobs,
+		true,
+		noCache,
+		workingDirectory,
+		githubResolver,
+		cache,
+		progress,
+		stderr,
+	)
 	supportHeader := runtimeSupportHeader(runtimeRoot, workingDirectory)
 	parsingActivity := func(path string, cached bool) {
 		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
@@ -63,7 +76,7 @@ func runSourcesWithProgress(
 		}
 		progress.updateStep(step)
 	}
-	sources, dependenciesBySource, cacheDependenciesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithCache(
+	sources, dependenciesBySource, cacheDependenciesBySource, cflagsBySource, librariesBySource, entryPointsBySource, failures, err := discoverBuildSourceClosureWithLibraries(
 		root,
 		environment,
 		supportHeader,
@@ -76,6 +89,7 @@ func runSourcesWithProgress(
 		stderr,
 		parsingActivity,
 		cache,
+		libraryManager,
 	)
 	if err != nil {
 		return errors.Join(err, progress.finish())
@@ -89,11 +103,12 @@ func runSourcesWithProgress(
 	if err := errors.Join(failures...); err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	link, err := planRunLink(
+	link, err := planRunLinkWithLibraries(
 		root,
 		environment,
 		sources,
 		dependenciesBySource,
+		librariesBySource,
 		entryPointsBySource,
 		rootSourceCount,
 		workingDirectory,
@@ -103,11 +118,12 @@ func runSourcesWithProgress(
 	}
 
 	progress.setTotal(2 + len(sources))
-	if err := compileSources(
+	if err := compileSourcesWithConfiguration(
 		root,
 		environment,
 		compiler,
 		cflags,
+		cflagsBySource,
 		sources,
 		dependenciesBySource,
 		cacheDependenciesBySource,
@@ -171,10 +187,39 @@ func planRunLink(
 	rootSourceCount int,
 	workingDirectory string,
 ) (linkJob, error) {
+	return planRunLinkWithLibraries(
+		root,
+		environment,
+		sources,
+		dependenciesBySource,
+		nil,
+		entryPointsBySource,
+		rootSourceCount,
+		workingDirectory,
+	)
+}
+
+func planRunLinkWithLibraries(
+	root string,
+	environment string,
+	sources []string,
+	dependenciesBySource [][]string,
+	librariesBySource [][]libraryArtifact,
+	entryPointsBySource []string,
+	rootSourceCount int,
+	workingDirectory string,
+) (linkJob, error) {
 	if len(dependenciesBySource) != len(sources) {
 		return linkJob{}, fmt.Errorf(
 			"dependency source count does not match sources: %d != %d",
 			len(dependenciesBySource),
+			len(sources),
+		)
+	}
+	if librariesBySource != nil && len(librariesBySource) != len(sources) {
+		return linkJob{}, fmt.Errorf(
+			"library source count does not match sources: %d != %d",
+			len(librariesBySource),
 			len(sources),
 		)
 	}
@@ -224,6 +269,7 @@ func planRunLink(
 		}
 		objects = append(objects, object)
 	}
+	objects = append(objects, libraryArchivesByIndexes(librariesBySource, objectIndexes)...)
 	artifact, err := binaryArtifactPath(root, environment, sources[entryIndex])
 	if err != nil {
 		return linkJob{}, err

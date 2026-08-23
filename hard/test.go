@@ -20,6 +20,8 @@ type testPlan struct {
 	sources                   []string
 	dependenciesBySource      [][]string
 	cacheDependenciesBySource [][]string
+	cflagsBySource            [][]string
+	librariesBySource         [][]libraryArtifact
 	compileIndexes            []int
 }
 
@@ -196,6 +198,19 @@ func testSourcesWithProgressSelection(
 	testLDFlags := append(append([]string(nil), ldflags...), googleLDFlags...)
 
 	githubResolver := newGitHubSnapshotResolver(root, progress)
+	libraryManager := newLibraryManager(
+		root,
+		environment,
+		compiler,
+		jobs,
+		true,
+		noCache,
+		workingDirectory,
+		githubResolver,
+		cache,
+		progress,
+		stderr,
+	)
 	supportHeader := runtimeSupportHeader(runtimeRoot, workingDirectory)
 	activity := func(path string, cached bool) {
 		step := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
@@ -204,7 +219,7 @@ func testSourcesWithProgressSelection(
 		}
 		progress.updateStep(step)
 	}
-	preparationResults := prepareTestsWithCache(
+	preparationResults := prepareTestsWithLibraries(
 		root,
 		environment,
 		supportHeader,
@@ -215,6 +230,7 @@ func testSourcesWithProgressSelection(
 		workingDirectory,
 		activity,
 		cache,
+		libraryManager,
 	)
 	plans := make([]testPlan, 0, len(sources))
 	var failures []error
@@ -240,7 +256,7 @@ func testSourcesWithProgressSelection(
 		plans = append(plans, result.plan)
 	}
 
-	plans, compileSources, compileDependencies, compileCacheDependencies, err := mergeTestCompileSources(
+	plans, compileSources, compileDependencies, compileCacheDependencies, compileCFlags, err := mergeTestCompileSources(
 		root,
 		environment,
 		plans,
@@ -255,11 +271,12 @@ func testSourcesWithProgressSelection(
 		stepsPerPlan = 3
 	}
 	progress.setTotal(1 + len(compileSources) + stepsPerPlan*len(plans))
-	compileResults, err := compileSourceBatchWithCacheDependencies(
+	compileResults, err := compileSourceBatchWithConfiguration(
 		root,
 		environment,
 		compiler,
 		testCFlags,
+		compileCFlags,
 		compileSources,
 		compileDependencies,
 		compileCacheDependencies,
@@ -495,8 +512,34 @@ func prepareTestWithCache(
 	activity func(string, bool),
 	cache *artifactCache,
 ) (testPlan, []byte, error) {
+	return prepareTestWithLibraries(
+		root,
+		environment,
+		supportHeader,
+		githubResolver,
+		cflags,
+		testSource,
+		workingDirectory,
+		activity,
+		cache,
+		nil,
+	)
+}
+
+func prepareTestWithLibraries(
+	root string,
+	environment string,
+	supportHeader string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	testSource string,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+	libraryManager *libraryManager,
+) (testPlan, []byte, error) {
 	var diagnostics bytes.Buffer
-	sources, dependenciesBySource, cacheDependenciesBySource, _, failures, err := discoverBuildSourceClosureWithCache(
+	sources, dependenciesBySource, cacheDependenciesBySource, cflagsBySource, librariesBySource, _, failures, err := discoverBuildSourceClosureWithLibraries(
 		root,
 		environment,
 		supportHeader,
@@ -509,6 +552,7 @@ func prepareTestWithCache(
 		&diagnostics,
 		activity,
 		cache,
+		libraryManager,
 	)
 	if err != nil {
 		return testPlan{}, append([]byte(nil), diagnostics.Bytes()...),
@@ -525,6 +569,8 @@ func prepareTestWithCache(
 		sources:                   sources,
 		dependenciesBySource:      dependenciesBySource,
 		cacheDependenciesBySource: cacheDependenciesBySource,
+		cflagsBySource:            cflagsBySource,
+		librariesBySource:         librariesBySource,
 	}, append([]byte(nil), diagnostics.Bytes()...), nil
 }
 
@@ -585,6 +631,34 @@ func prepareTestsWithCache(
 	activity func(string, bool),
 	cache *artifactCache,
 ) []*testPreparationResult {
+	return prepareTestsWithLibraries(
+		root,
+		environment,
+		supportHeader,
+		githubResolver,
+		cflags,
+		sources,
+		jobs,
+		workingDirectory,
+		activity,
+		cache,
+		nil,
+	)
+}
+
+func prepareTestsWithLibraries(
+	root string,
+	environment string,
+	supportHeader string,
+	githubResolver *githubSnapshotResolver,
+	cflags []string,
+	sources []string,
+	jobs int,
+	workingDirectory string,
+	activity func(string, bool),
+	cache *artifactCache,
+	libraryManager *libraryManager,
+) []*testPreparationResult {
 	if len(sources) == 0 {
 		return nil
 	}
@@ -601,7 +675,7 @@ func prepareTestsWithCache(
 		go func() {
 			defer workers.Done()
 			for job := range queue {
-				plan, diagnostics, err := prepareTestWithCache(
+				plan, diagnostics, err := prepareTestWithLibraries(
 					root,
 					environment,
 					supportHeader,
@@ -611,6 +685,7 @@ func prepareTestsWithCache(
 					workingDirectory,
 					activity,
 					cache,
+					libraryManager,
 				)
 				results <- testPreparationResult{
 					index:       job.index,
@@ -643,17 +718,18 @@ func mergeTestCompileSources(
 	root string,
 	environment string,
 	plans []testPlan,
-) ([]testPlan, []string, [][]string, [][]string, error) {
+) ([]testPlan, []string, [][]string, [][]string, [][]string, error) {
 	compileIndexes := make(map[string]int)
 	sources := make([]string, 0)
 	dependenciesBySource := make([][]string, 0)
 	cacheDependenciesBySource := make([][]string, 0)
+	cflagsBySource := make([][]string, 0)
 	for planIndex := range plans {
 		plans[planIndex].compileIndexes = make([]int, len(plans[planIndex].sources))
 		for sourceIndex, source := range plans[planIndex].sources {
 			object, err := objectFilePath(root, environment, source)
 			if err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 			if compileIndex, ok := compileIndexes[object]; ok {
 				if !equalStringSlices(
@@ -662,9 +738,12 @@ func mergeTestCompileSources(
 				) || !equalStringSlices(
 					cacheDependenciesBySource[compileIndex],
 					plans[planIndex].cacheDependenciesBySource[sourceIndex],
+				) || !equalStringSlices(
+					cflagsBySource[compileIndex],
+					plans[planIndex].cflagsBySource[sourceIndex],
 				) {
-					return nil, nil, nil, nil, fmt.Errorf(
-						"conflicting dependency lists for shared test object %s",
+					return nil, nil, nil, nil, nil, fmt.Errorf(
+						"conflicting dependency or compiler flag lists for shared test object %s",
 						object,
 					)
 				}
@@ -683,9 +762,13 @@ func mergeTestCompileSources(
 				cacheDependenciesBySource,
 				plans[planIndex].cacheDependenciesBySource[sourceIndex],
 			)
+			cflagsBySource = append(
+				cflagsBySource,
+				plans[planIndex].cflagsBySource[sourceIndex],
+			)
 		}
 	}
-	return plans, sources, dependenciesBySource, cacheDependenciesBySource, nil
+	return plans, sources, dependenciesBySource, cacheDependenciesBySource, cflagsBySource, nil
 }
 
 func equalStringSlices(left, right []string) bool {
@@ -765,6 +848,7 @@ func planTestLinkJobs(
 		if objects == nil {
 			continue
 		}
+		objects = append(objects, libraryArchivesByIndexes(plan.librariesBySource, objectIndexes)...)
 		artifact, err := binaryArtifactPath(root, environment, plan.source)
 		if err != nil {
 			failures = append(failures, err)

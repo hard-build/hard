@@ -106,6 +106,8 @@ Implemented:
 - parallel formatting with internal unified diffs;
 - unified libclang 18 dependency, declaration, and entry-point analysis;
 - recursive GitHub snapshot fetching and persistent caching;
+- strict embedded `hard.recipe.v1` YAML recipes for content-addressed CMake
+  builds of reachable static third-party libraries;
 - the well-known `hard/` repository mapping;
 - one source-context forward-declaration file per compiled translation unit;
 - object compilation, dependency-object resolution, ordinary executable
@@ -128,7 +130,7 @@ Implemented:
   with shared source snapshots and environment-specific caches below
   `HARD_ROOT`;
 - exclusion of runtime support `hard.h` declarations from source forwards
-  while retaining its configured force include;
+  while retaining its backend-managed force include;
 - a GitHub Actions workflow for `linux/amd64` image publication with stable,
   release, commit, and edge tags.
 
@@ -159,7 +161,7 @@ cache entries and are not refreshed automatically.
 | `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios |
 | `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
 | `unittest/README.md` | Documents the YAML schema, commands, variables, and new-scenario workflow |
-| `unittest/001.*` through `unittest/010.*` | Self-contained C and C++ source scenarios whose local `test.yaml` files own every command argument and expectation |
+| Eleven `unittest/001.*` through `unittest/011.*` directories | Self-contained C and C++ source scenarios whose local `test.yaml` files own every command argument and expectation |
 | `hard/go.mod`, `hard/go.sum` | Module identity, Go version, dependencies, and checksums |
 | `hard/main.go` | Process entry, dispatch, configuration loading, and shared search progress |
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
@@ -179,6 +181,8 @@ cache entries and are not refreshed automatically.
 | `hard/clang_test.go` | Includes, macros, conditional behavior, declarations, templates, and functions |
 | `hard/github.go` | Repository mapping, synchronized downloads, extraction, aliases, and cache |
 | `hard/github_test.go` | HTTP, extraction safety, aliases, caching, retries, and concurrency |
+| `hard/library.go` | Strict recipe parsing, vendor source/build preparation, package fingerprinting, manifests, and reachable static-library metadata |
+| `hard/library_test.go` | Recipe validation, CMake authority, fetch-only behavior, package reuse, and link-closure coverage |
 | `hard/forward.go` | Source-context forward extraction, validation, rendering, path mapping, and atomic writes |
 | `hard/forward_test.go` | Namespace/template output, translation-unit context, filtering, paths, and preservation |
 | `hard/entry.go` | Configured global entry-function definition detection |
@@ -205,7 +209,8 @@ Direct Go dependencies:
 
 - `github.com/mattn/go-shellwords v1.0.14`;
 - `github.com/pmezard/go-difflib v1.0.0`;
-- `github.com/spf13/cobra v1.10.2`.
+- `github.com/spf13/cobra v1.10.2`;
+- `go.yaml.in/yaml/v3 v3.0.5`.
 
 Indirect Go dependencies:
 
@@ -251,7 +256,9 @@ Runtime tools by command:
   forward extraction in `build`, `run`, and `test`, and entry detection in
   `build` and `run`;
 - `HARD_CC` for object compilation and compiler-driver linking in `build`,
-  `run`, and `test`;
+  `run`, and `test`, and as the authoritative CMake C++ compiler for an active
+  compiled-library recipe;
+- CMake for active compiled-library recipes in `build`, `run`, and `test`;
 - `pkg-config` and `gtest_main` for `test`;
 - HTTPS access to GitHub when a required repository is not cached.
 
@@ -324,7 +331,7 @@ Its fixed target environment is:
     HARD_ROOT=/hard
     HARD_ENV=linux.v1
     HARD_CC=c++
-    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra -I/hard/source -include /usr/local/libexec/hard/hard.h
+    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
     HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++
     HARD_ENTRYPOINTS=main _start
 
@@ -446,40 +453,44 @@ characters.
 
 - unset or empty: `c++`;
 - non-empty: one executable name or path;
-- used only for object compilation and linking, not dependency discovery or
-  `fetch`.
+- used for object compilation and compiler-driver linking in `build`, `run`,
+  and `test`;
+- resolved and passed authoritatively as `CMAKE_CXX_COMPILER` when those
+  commands prepare an active compiled-library package;
+- not used for dependency discovery or by `fetch`.
 
 ### `HARD_CFLAGS`
 
-The default vector is:
+The configured default vector is toolchain-only:
 
     -std=c++20
     -O3
     -flto=auto
     -Wall
     -Wextra
+
+A non-empty explicit value is parsed with `go-shellwords` and replaces that
+complete configured vector. Quoting works, but environment expansion and
+backtick execution are disabled. Malformed quoting names `HARD_CFLAGS` in the
+error. A present but empty value supplies no configured compiler flags.
+
+The backend always appends these hard-managed arguments afterward:
+
     -I<HARD_ROOT>/source
     -include
     <runtime-root>/hard.h
 
-If `HARD_CFLAGS` is present but empty, no compiler flags are supplied. A
-non-empty value is parsed with `go-shellwords`. Quoting works, but environment
-expansion and backtick execution are disabled. Malformed quoting names
-`HARD_CFLAGS` in the error.
+They remain present even when configured `HARD_CFLAGS` is empty. Active
+compiled-library include directories are additionally appended per translation
+unit after recipe discovery. The resulting effective vector is used by
+libclang dependency, source-forward, and entry analyses and by `HARD_CC` object
+compilation. Dependency and entry analysis add the working directory and
+default to C++ mode unless `-x` is already present. Vendor CMake builds do not
+receive `HARD_CFLAGS`.
 
-An explicit value replaces the complete default vector. It must provide
-`-I<HARD_ROOT>/source` when external cached and well-known headers should remain
-reachable, and it must provide the support-header force include if desired.
-
-The same vector is used by libclang dependency, source-forward, and entry
-analyses and by `HARD_CC` object compilation. Dependency and entry analysis add
-the working directory and default to C++ mode unless `-x` is already present.
-
-Build, run, and test canonicalize `<runtime-root>/hard.h` through symlinks after
-dependency closure discovery and exclude declarations physically owned by that
-canonical target from source forwards. The original `HARD_CFLAGS -include`
-remains.
-Consequences:
+Build, run, and test canonicalize `<runtime-root>/hard.h` through symlinks and
+exclude declarations physically owned by that canonical target from source
+forwards. The backend-managed force include remains. Consequences:
 
 - libclang and the compiler still see the runtime support header;
 - it receives no standalone `Parsing` step or per-header forward output;
@@ -487,7 +498,7 @@ Consequences:
 - unrelated project or external headers also named `hard.h` remain managed;
 - old header-specific forward artifacts are not deleted automatically;
 - failure to resolve the runtime support path adds no new filter-specific
-  error; the normal parser/compiler handling of the flags remains authoritative.
+  error; normal parser/compiler handling remains authoritative.
 
 ### `HARD_LDFLAGS`
 
@@ -674,8 +685,10 @@ and test reuse the final dependency-analysis AST for source-context forward
 extraction.
 
 Dependency translation units use detailed preprocessing records, keep-going,
-and skipped function bodies. They receive the source absolute path,
-`HARD_CFLAGS`, `-working-directory`, and C++ mode unless `-x` already exists.
+and skipped function bodies. They receive the source absolute path, the
+effective compiler flags, `-working-directory`, and C++ mode unless the
+configured flags already contain `-x`. Active package include directories
+participate after recipe discovery.
 
 Inclusion records provide:
 
@@ -702,10 +715,13 @@ original libclang error and never cause arbitrary network access.
 
 Successful source analysis in `build`, `run`, and `test` writes a versioned
 `<source>.hard-parse-cache.json` record below the mirrored
-`HARD_ROOT/env/HARD_ENV/build` path. Each record contains the managed dependency
-list, complete active non-system dependency snapshot, detected entry point, and
-final validated source-forward text. A separate result digest protects these
-semantic fields from valid-JSON corruption.
+`HARD_ROOT/env/HARD_ENV/build` path. Each record contains the managed
+dependency list, complete active non-system dependency snapshot, active library
+recipe header paths, detected entry point, and final validated source-forward
+text. A separate result digest protects these semantic fields from valid-JSON
+corruption. After that checksum is validated, a prospective hit restores the
+packages and per-source package include flags before its action fingerprint is
+validated against current inputs.
 
 The action fingerprint contains the current `hard` executable digest,
 `clang_getClangVersion()` value, working directory, ordered compiler flags,
@@ -875,7 +891,8 @@ excluded from every source forward. Other project or external headers named
 Build root selection excludes `*_test.*`. For a non-empty selection, the
 implemented pipeline is:
 
-1. discover dependencies and configured entry definitions;
+1. discover dependencies, prepare active compiled-library packages, and detect
+   configured entry definitions;
 2. recursively add same-stem production sources for managed headers;
 3. generate one source-context forward for each translation unit while
    filtering declarations from the canonical runtime support header;
@@ -912,14 +929,17 @@ macro-expanded, and force-included active managed dependencies.
 
 The command shape is:
 
-    HARD_CC <HARD_CFLAGS...> \
+    HARD_CC <configured-HARD_CFLAGS...> \
+      -I<HARD_ROOT>/source \
+      -include <runtime-root>/hard.h \
+      <active-library-include-flags...> \
       -include <source.cpp.fwd.h> \
       -c <source> -o <object>
 
-The generated forward `-include` pair follows all `HARD_CFLAGS` and precedes
-`-c`. A source with no eligible declarations still gets an output containing
-`#pragma once`. The original runtime support-header include remains inside
-`HARD_CFLAGS`.
+The generated forward `-include` pair follows the complete per-source effective
+flags and precedes `-c`. A source with no eligible declarations still gets an
+output containing `#pragma once`. The source-root and runtime-header includes
+are backend-managed rather than part of configured `HARD_CFLAGS`.
 
 Compilation uses up to the resolved job count and creates parent directories.
 Compiler exit failures are accumulated while independent jobs continue. A
@@ -949,7 +969,8 @@ old record before compilation, and stores a fresh record only after success.
 ### Entry-point detection
 
 Every root and automatically discovered source is separately parsed as a full
-translation unit, without skipped function bodies, using `HARD_CFLAGS`.
+translation unit, without skipped function bodies, using its effective compiler
+flags.
 
 A source is an entry source only if it directly defines a global function whose
 exact name is in `HARD_ENTRYPOINTS`. Accepted definitions are directly under
@@ -988,7 +1009,8 @@ building only `example.cpp` omitted the implementation objects for
 
 Linking always uses ordinary compiler-driver startup behavior:
 
-    HARD_CC <entry-and-dependency-objects...> <HARD_LDFLAGS...> \
+    HARD_CC <entry-and-dependency-objects...> \
+      <reachable-static-library-archives...> <HARD_LDFLAGS...> \
       -o <internal-binary>
 
 Do not add `-nostartfiles`, `-e`, or a custom entry linker option solely because
@@ -1109,8 +1131,10 @@ Fetch never reads or writes the environment-backed persistent parse-result
 cache; its parsing behavior and absence of `HARD_ROOT/env` artifacts remain
 unchanged.
 Fetch selects all supported translation units, including `*_test.*`, then uses
-the same `HARD_CFLAGS`, libclang analysis, recursive same-stem source closure,
-GitHub recovery, well-known mapping, cache, and worker limit as build.
+the same backend-effective base compiler flags, libclang analysis, recursive
+same-stem source closure, GitHub recovery, well-known mapping, cache, and worker
+limit as build. Active recipes add their declared source-tree include
+directories for analysis only.
 
 It stops after dependency closure succeeds. It does not:
 
@@ -1186,8 +1210,9 @@ preserved except in silent mode. A start failure, nonzero status, malformed
 output, or diagnostics write error stops before building tests. Empty
 selection succeeds without pkg-config.
 
-GoogleTest compiler flags are appended after `HARD_CFLAGS`. GoogleTest linker
-flags are appended after `HARD_LDFLAGS`.
+GoogleTest compiler flags are appended after the backend-effective base compiler
+flags; active per-source package includes follow recipe discovery. GoogleTest
+linker flags are appended after `HARD_LDFLAGS`.
 
 For each selected test root:
 
@@ -1214,6 +1239,7 @@ workers.
 The link shape is:
 
     HARD_CC <test-and-dependency-objects...> \
+      <reachable-static-library-archives...> \
       <HARD_LDFLAGS...> <gtest_main-linker-flags...> \
       -o <internal-test-binary>
 
@@ -1297,15 +1323,20 @@ The implemented layout is:
     │           └── <repository>/
     └── env/
         └── HARD_ENV/
-            └── build/
-                └── <absolute path without leading slash>/
-                    ├── application
-                    ├── application.hard-cache.json
-                    ├── application.hard-test-cache.json
-                    ├── file.cpp.hard-parse-cache.json
-                    ├── file.cpp.fwd.h
-                    ├── file.cpp.o
-                    └── file.cpp.o.hard-cache.json
+            ├── build/
+            │   └── <absolute path without leading slash>/
+            │       ├── application
+            │       ├── application.hard-cache.json
+            │       ├── application.hard-test-cache.json
+            │       ├── file.cpp.hard-parse-cache.json
+            │       ├── file.cpp.fwd.h
+            │       ├── file.cpp.o
+            │       └── file.cpp.o.hard-cache.json
+            └── library/
+                └── github.com/<owner>/<repository>/<fingerprint>/
+                    ├── build/
+                    ├── install/
+                    └── manifest.json
 
 External repository snapshots are shared by all environments below one
 `HARD_ROOT`. Environment build artifacts are isolated by `HARD_ENV`.
@@ -1323,14 +1354,14 @@ reject an environment name that escapes `HARD_ROOT/env`.
 ## Integration fixtures and external examples
 
 The repository contains a self-contained positive integration suite below
-`unittest/`. It has ten scenarios, thirteen application entry points, eight
+`unittest/`. It has eleven scenarios, fourteen application entry points, eight
 GoogleTest translation units, and fifteen GoogleTest cases. The scenarios cover
 a minimal application, multiple entries sharing an object, transitive
 implementation discovery, cyclic headers and implementation graphs, a
-header-only template, ordinary GoogleTest production dependencies, an object
-shared by two test plans, all supported source extensions, equal binary
-basenames in different directories, and the force-included runtime support
-header.
+header-only template, ordinary GoogleTest production dependencies, a compiled
+TinyXML2 package linked statically from an embedded recipe, an object shared by
+two test plans, all supported source extensions, equal binary basenames in
+different directories, and the force-included runtime support header.
 
 The self-contained unit is one numbered scenario, not each individual
 GoogleTest `TEST` declaration. Every scenario directory owns one readable
@@ -1369,9 +1400,11 @@ They default to `python3`, the installed `hard` command,
 `/tmp/hard-unittest`, zero, and empty respectively. Zero jobs select all
 logical CPUs through the public `hard` semantics. An empty `SCENARIO`
 discovers every YAML scenario; a name selects only that scenario. Direct
-runner invocation accepts zero or more scenario names. The fixtures use only
-local and system headers, so they require no external repository download.
-Generated headers, objects, and test binaries remain below `HARD_ROOT`;
+runner invocation accepts zero or more scenario names. Most fixtures use only
+local and system headers. `011.compiled_library_recipe` downloads TinyXML2
+from GitHub and requires CMake; its downloaded snapshot remains shared below
+`HARD_ROOT/source`. Generated headers, objects, and test binaries remain below
+`HARD_ROOT`;
 delivered application binaries remain below `OUTPUT/<scenario>`.
 
 The main example tree is:
@@ -1438,7 +1471,9 @@ to leave the library unchanged for now.
 - Build no longer prints discovered headers.
 - Build compilation progress is labeled `Compiling`; linking and copying use
   `Linking` and `Copying`, all under one counter.
-- Include discovery must honor `HARD_CFLAGS` and exclude system headers.
+- Include discovery must honor the effective compiler flags, including
+  configured `HARD_CFLAGS` and backend-managed include mechanics, and exclude
+  system headers.
 - `HARD_ENV` is the immutability boundary for system headers and toolchain
   state; parse and object caches hash only non-system dependencies.
 - The environment support header path first changed from
@@ -1477,7 +1512,7 @@ to leave the library unchanged for now.
 - Multiple repositories downloaded in one invocation share one progress step,
   and each Downloading message is displayed before its request starts.
 - Declarations owned by the canonical runtime support `hard.h` are excluded
-  from source forwards, while the original configured force include remains.
+  from source forwards, while the backend-managed force include remains.
 - The public installed command is `PREFIX/bin/hard`, a shell wrapper around
   `PREFIX/libexec/hard/hard`; `hard.h` and formats are installed beside that
   backend, while persistent source and caches remain in `PREFIX/share/hard` for
@@ -1560,6 +1595,9 @@ to leave the library unchanged for now.
   creation/reuse/conflicts, exact HTTP requests, safe extraction, PAX metadata,
   `.git` and traversal rejection, persistent cache, concurrency deduplication,
   live progress, transitive retries, and non-GitHub diagnostics.
+- `hard/library_test.go`: strict YAML and marker validation, source/path rules,
+  authoritative CMake compiler and install prefix, cleared `CXXFLAGS`, package
+  manifest reuse, fetch-only source includes, and reachable archive selection.
 - `hard/forward_test.go`: physical-file extraction, namespace and template
   rendering, macro and inline namespaces, safe candidate filtering, exclusions,
   invalid syntax, source-context paths, translation-unit conditional isolation,
@@ -1598,12 +1636,13 @@ to leave the library unchanged for now.
   helper signatures.
 - `hard/main_test.go`: normal, verbose, and silent search progress for every
   command while retaining command-specific selection.
-- `unittest/`: ten declarative source-tree scenarios whose local `test.yaml`
-  files require thirteen applications to build and produce exact outputs,
+- `unittest/`: eleven declarative source-tree scenarios whose local `test.yaml`
+  files require fourteen applications to build and produce exact outputs,
   eight GoogleTest binaries with fifteen cases to run successfully, automatic
-  dependency sources to be discovered, and one shared production object to
-  compile once; the Python runner validates and executes ordered steps, while
-  the top-level Makefile only passes configuration.
+  dependency sources to be discovered, one TinyXML2 package to be built and
+  linked statically, and one shared production object to compile once; the
+  Python runner validates and executes ordered steps, while the top-level
+  Makefile only passes configuration.
 
 ## Required verification
 
@@ -1959,6 +1998,107 @@ root. The first run compiled, linked, and executed `001.hello_world` with the
 image flags; the second reused cached parsing, compilation, and linking. The
 pre-existing local GHCR wrapper tag was restored to its original image ID. The
 complete required Go check set also passed. No image was pushed or published.
+
+## Compiled external library recipe decision
+
+On 2026-08-23, compiled third-party library integration was defined around an
+active included recipe header. A recipe is a leading block comment marked
+`hard.recipe.v1`, followed by strict YAML, and may coexist with arbitrary C++
+code and includes in that header. A `.hard.h` suffix is the recommended
+collision-free convention. Only marker blocks among the leading comments
+before the first C++ token are recognized. Unknown or duplicate YAML fields,
+second documents, anchors, aliases, merge keys, custom tags, absolute paths,
+and lexical path escapes are rejected. The former `hard.library.v1` spelling
+is not recognized.
+
+The initial format supports one `github.com/<owner>/<repository>` source, CMake,
+and installed static archives. It records `source_directory`, CMake configure
+arguments, source-tree include directories for `fetch`, installed include
+directories, and installed archive paths. The source recipe stays with the
+source that consumes it and can be reused through the existing GitHub include
+namespace. The example is `unittest/011.compiled_library_recipe/tinyxml2.hard.h`;
+another repository can include that header as
+`github.com/hard-build/hard/unittest/011.compiled_library_recipe/tinyxml2.hard.h`.
+
+Only the active libclang include graph activates a recipe. `fetch` downloads
+both the recipe source and vendor source, uses the declared source include
+directories to finish dependency analysis, and does not run CMake or the
+compiler or create an environment tree. `build`, `run`, and `test` build and
+install the package, append installed includes only to affected translation
+units, and append static archives only to reachable binary closures.
+
+`HARD_CC` is resolved and passed authoritatively as `CMAKE_CXX_COMPILER`.
+`CMAKE_INSTALL_PREFIX` is also hard-managed. Ambient `CXXFLAGS` are cleared.
+Neither `HARD_CFLAGS` nor `HARD_LDFLAGS` is passed to the vendor build. Recipe
+configure arguments are the explicit place for vendor-specific options. This
+means ABI-affecting project flag changes require a distinct `HARD_ENV` when
+vendor compatibility could change.
+
+Packages use the content-addressed layout
+`HARD_ROOT/env/HARD_ENV/library/github.com/<owner>/<repository>/<fingerprint>`
+with `build`, `install`, and `manifest.json`. The fingerprint covers the hard
+executable, complete recipe header and contents, full downloaded source tree,
+CMake tool, resolved compiler tool, and recipe configuration. The manifest
+verifies the complete installed regular-file tree. Parse-cache records retain
+active recipe header paths. After validating the semantic-result checksum, a
+prospective hit restores the package and compiler flags before validating its
+action fingerprint against current inputs. If that preliminary restoration
+fails, the record is treated as a cache miss and current source analysis remains
+authoritative; this permits a removed recipe header to invalidate cleanly.
+`--no-cache` rebuilds packages but does not refresh downloaded GitHub snapshots.
+
+At the same time, `-I<HARD_ROOT>/source` and
+`-include <runtime-root>/hard.h` moved out of configured `HARD_CFLAGS` into the
+backend effective compiler arguments. They are appended even when
+`HARD_CFLAGS` is explicitly empty. Host defaults are now toolchain-only:
+`-std=c++20 -O3 -flto=auto -Wall -Wextra`. The `linux.v1` image retains its
+x86-64-v3 and generic tuning flags in `HARD_CFLAGS`, while the backend appends
+`/hard/source` and the image runtime `hard.h` internally.
+
+The approved YAML module is `go.yaml.in/yaml/v3 v3.0.5`. The
+`011.compiled_library_recipe` example builds TinyXML2 with tests, shared
+libraries, and pkg-config installation disabled, installs a static
+`libtinyxml2.a`, links it, and prints `answer=42`.
+
+The implementation passed clean gofmt output, ordinary and race tests, vet, an
+out-of-tree backend build, module verification, and repository diff checking.
+Unit coverage includes strict recipe parsing, CMake compiler authority,
+`CXXFLAGS` clearing, package manifest reuse, fetch-only source includes without
+an environment tree, internal compiler flags, reachable archive selection, and
+fallback from a stale parse record whose former recipe header was removed.
+
+The unique local `linux/amd64` image
+`hard-build/hard:linux-v1-vendor-check-20260823` built twice; the second build
+reused every layer. Inspection confirmed the backend entrypoint, toolchain-only
+image `HARD_CFLAGS`, CMake 3.22.1, GCC 11.4.0, clang-format 18.1.8, and the
+runtime support and Clang resource headers.
+
+A real wrapper build with an isolated root downloaded TinyXML2, configured,
+built, and installed it, compiled the project with the internal `/hard/source`
+and runtime-header flags plus the installed package include, linked the
+installed static archive, and produced `answer=42`. The second wrapper build
+reported cached package, parsing, compilation, linking, and copying. A
+subsequent `hard run` reused those cached build stages and still executed the
+program. A separate `fetch` root downloaded TinyXML2, parsed its implementation,
+and contained no `env` directory.
+
+All 11 declarative integration scenarios passed in the Ubuntu 22.04 image with
+a fresh root, including the new vendor build and all existing real GoogleTest
+cases. No Docker image was pushed or published, and no existing GHCR local tag
+was replaced.
+
+A final cache audit added semantic-checksum validation before preliminary
+package restoration and made an unavailable recipe named by a stale parse
+record an ordinary cache miss. The targeted remove-recipe regression passed,
+followed by the complete gofmt, ordinary test, race test, vet, out-of-tree
+build, and module verification set.
+
+The final local image `hard-build/hard:linux-v1-vendor-final-20260823` rebuilt
+from that backend as amd64 with image ID `1dbad816b8e1`, the expected entrypoint,
+and toolchain-only `HARD_CFLAGS`. A fresh-root TinyXML2 build configured, built,
+and installed the package, linked its static archive, and produced `answer=42`.
+The second build reported cached package, parsing, compilation, and linking. No
+image was pushed or published.
 
 ## Workspace safety snapshot
 

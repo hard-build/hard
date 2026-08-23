@@ -23,7 +23,7 @@ func TestLoadConfigurationDefaults(t *testing.T) {
 		runtimeRoot: runtimeRoot,
 		env:         defaultHardEnv,
 		cc:          "c++",
-		cflags:      defaultCFlags(root, runtimeRoot),
+		cflags:      defaultCFlags(),
 		ldflags:     defaultLDFlags(),
 		entrypoints: []string{"main", "_start"},
 	}
@@ -94,39 +94,25 @@ func TestLoadConfigurationEmptyValues(t *testing.T) {
 	}
 }
 
-func TestDefaultCFlagsUseConfiguredRoots(t *testing.T) {
-	runtimeRoot := "/opt/libexec/hard"
-	values := map[string]string{
-		hardRootEnvironment: "/srv/hard",
-		hardEnvEnvironment:  "target",
-	}
-
-	got, err := loadConfigurationFrom(runtimeRoot, environment(values), homeDirectory("unused"))
-	if err != nil {
-		t.Fatalf("loadConfigurationFrom() error = %v", err)
-	}
-
-	want := defaultCFlags("/srv/hard", runtimeRoot)
-	if !reflect.DeepEqual(got.cflags, want) {
-		t.Fatalf("cflags = %#v, want %#v", got.cflags, want)
+func TestDefaultCFlagsAreToolchainOnly(t *testing.T) {
+	want := []string{"-std=c++20", "-O3", "-flto=auto", "-Wall", "-Wextra"}
+	if got := defaultCFlags(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("defaultCFlags() = %#v, want %#v", got, want)
 	}
 }
 
-func TestDefaultCFlagsUseSourceAndRuntimeDirectories(t *testing.T) {
+func TestEffectiveCFlagsAlwaysUseSourceAndRuntimeDirectories(t *testing.T) {
 	root := filepath.Join(string(filepath.Separator), "srv", "hard")
 	runtimeRoot := filepath.Join(string(filepath.Separator), "opt", "libexec", "hard")
-	flags := defaultCFlags(root, runtimeRoot)
-	wantSource := "-I" + filepath.Join(root, "source")
-	wantHeader := filepath.Join(runtimeRoot, "hard.h")
-
-	if len(flags) < 8 {
-		t.Fatalf("defaultCFlags() = %#v", flags)
+	flags := effectiveCFlags([]string{"-std=c++23"}, root, runtimeRoot)
+	want := []string{
+		"-std=c++23",
+		"-I" + filepath.Join(root, "source"),
+		"-include",
+		filepath.Join(runtimeRoot, "hard.h"),
 	}
-	if flags[5] != wantSource {
-		t.Fatalf("defaultCFlags()[5] = %q, want %q", flags[5], wantSource)
-	}
-	if flags[6] != "-include" || flags[7] != wantHeader {
-		t.Fatalf("defaultCFlags() support header = %#v, want -include %q", flags[6:], wantHeader)
+	if !reflect.DeepEqual(flags, want) {
+		t.Fatalf("effectiveCFlags() = %#v, want %#v", flags, want)
 	}
 }
 

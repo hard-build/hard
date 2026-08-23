@@ -42,10 +42,23 @@ func fetchSourcesWithProgress(
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
 	resolver := newGitHubSnapshotResolver(root, progress)
+	libraryManager := newLibraryManager(
+		root,
+		"",
+		"",
+		jobs,
+		false,
+		false,
+		workingDirectory,
+		resolver,
+		nil,
+		progress,
+		stderr,
+	)
 	activity := func(path string) {
 		progress.updateStep("Parsing " + buildParsingDisplayPath(root, path, workingDirectory))
 	}
-	err = fetchSourceDependenciesWithActivity(
+	err = fetchSourceDependenciesWithLibraries(
 		resolver,
 		cflags,
 		sources,
@@ -53,6 +66,7 @@ func fetchSourcesWithProgress(
 		workingDirectory,
 		stderr,
 		activity,
+		libraryManager,
 	)
 	progress.setTotal(1)
 	return errors.Join(err, progress.finish())
@@ -86,13 +100,44 @@ func fetchSourceDependenciesWithActivity(
 	stderr io.Writer,
 	activity func(string),
 ) error {
+	return fetchSourceDependenciesWithLibraries(
+		resolver,
+		cflags,
+		sources,
+		jobs,
+		workingDirectory,
+		stderr,
+		activity,
+		nil,
+	)
+}
+
+func fetchSourceDependenciesWithLibraries(
+	resolver *githubSnapshotResolver,
+	cflags []string,
+	sources []string,
+	jobs int,
+	workingDirectory string,
+	stderr io.Writer,
+	activity func(string),
+	libraryManager *libraryManager,
+) error {
 	if len(sources) == 0 {
 		return nil
 	}
 	if jobs < 1 {
 		return fmt.Errorf("jobs must be positive: %d", jobs)
 	}
-	_, _, _, failures, err := discoverBuildSourceClosureWithActivity(
+	var parsingActivity func(string, bool)
+	if activity != nil {
+		parsingActivity = func(path string, _ bool) {
+			activity(path)
+		}
+	}
+	_, _, _, _, _, _, failures, err := discoverBuildSourceClosureWithLibraries(
+		"",
+		"",
+		"",
 		resolver,
 		cflags,
 		nil,
@@ -100,7 +145,9 @@ func fetchSourceDependenciesWithActivity(
 		jobs,
 		workingDirectory,
 		stderr,
-		activity,
+		parsingActivity,
+		nil,
+		libraryManager,
 	)
 	return errors.Join(err, errors.Join(failures...))
 }

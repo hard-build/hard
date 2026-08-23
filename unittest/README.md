@@ -18,9 +18,10 @@ chosen Python environment when it is not already available:
 python3 -m pip install -r unittest/requirements.txt
 ```
 
-The C and C++ fixtures use only local and system headers. They do not require
-an external repository download. GoogleTest scenarios require `pkg-config`
-and `gtest_main`, as does `hard test` itself.
+Most C and C++ fixtures use only local and system headers. The
+`011.compiled_library_recipe` scenario downloads TinyXML2 from GitHub and
+requires CMake in addition to the configured C++ compiler. GoogleTest
+scenarios require `pkg-config` and `gtest_main`, as does `hard test` itself.
 
 ## Running scenarios
 
@@ -96,6 +97,8 @@ types, absolute paths, and paths containing `..` are configuration errors.
 The runner deliberately passes `--no-cache` to every `build` and `test` action.
 This keeps `compiled_once`, copied-binary, and executed-test assertions about
 the current scenario step independent of artifacts left by an earlier run.
+Active compiled library packages are rebuilt for those steps; downloaded
+GitHub source snapshots remain shared in `HARD_ROOT/source`.
 
 ### `build`
 
