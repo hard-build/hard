@@ -124,6 +124,8 @@ Implemented:
 - a `run` command that builds exactly one root entry target without delivery,
   forwards program arguments and live streams, and propagates its exit status;
 - a POSIX command wrapper and Make-based user-local build and installation;
+- an interactive or unattended `curl | sh` installer for a checksum-verified
+  portable `linux/amd64` release, with host, Docker, and combined modes;
 - an optional wrapper-owned `linux.v1` Docker target whose image is pulled from
   GHCR and whose persistent source/cache root is bind-mounted from the host;
 - separate executable-relative runtime bundles for the host and container,
@@ -131,9 +133,12 @@ Implemented:
   `HARD_ROOT`;
 - exclusion of runtime support `hard.h` declarations from source forwards
   while retaining its backend-managed force include;
-- a GitHub Actions workflow that publishes only the stable `linux.v1` image
-  for semantic release tags or manual runs, without rebuilding on branch
-  pushes.
+- a GitHub Actions workflow that publishes a target image only when a
+  previously unseen `target/<target>.Dockerfile` is added to `main`, while
+  keeping existing target tags immutable;
+- a release-tag GitHub workflow that builds the host backend against
+  the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
+  file.
 
 Not implemented:
 
@@ -153,11 +158,13 @@ cache entries and are not refreshed automatically.
 | `README.md` | English user-facing description of the current system |
 | `LICENSE` | MIT license |
 | `Makefile` | Builds the Go backend and installs the host wrapper and runtime bundle |
-| `hard.sh` | Installed public-command wrapper; directly executes the host backend or `docker run` for `--target=linux.v1` |
+| `install.sh` | Portable-release installer with host, Docker, and combined dependency modes |
+| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or `docker run` for `linux.v1` |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
 | `target/linux.v1.Dockerfile` | Self-contained Ubuntu 22.04 `linux/amd64` target image definition |
-| `.github/workflows/container.yml` | GHCR publication workflow and target tag policy |
+| `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
+| `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
 | `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios |
 | `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
@@ -168,6 +175,7 @@ cache entries and are not refreshed automatically.
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
 | `hard/cli.go` | Cobra command tree, flags, positional paths, run arguments, test selectors, and job normalization |
 | `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, test selection, and job forms |
+| `hard/install_test.go` | Isolated portable installer modes, dependencies, layout, file modes, and checksum failure |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
 | `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
@@ -235,6 +243,23 @@ Building `hard` requires Go 1.23, CGO, a C++20 host toolchain, and the LLVM 18
 development headers and library. Running the resulting binary needs the
 libclang 18 shared library.
 
+The portable host release is `linux/amd64` and has a glibc 2.27 minimum. The
+release workflow runs the build directly inside the pinned Ubuntu 18.04 image
+`ubuntu:18.04@sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98`;
+there is intentionally no `target/host.Dockerfile`. It checksum-verifies and
+uses the official LLVM 18.1.8 Ubuntu 18.04 archive, builds the CGO backend with
+that Clang toolchain, bundles libclang, Clang resource headers, clang-format,
+and Ubuntu 18's `libtinfo.so.5`, and gives the backend an executable-relative
+RUNPATH. CI rejects GLIBC symbol requirements above 2.27 and smoke-tests the
+result on Ubuntu 18.04, 22.04, and 24.04.
+
+The glibc floor applies to launching the bundled backend and clang-format. It
+does not make an old distribution's native compiler or C++ standard-library
+headers satisfy hard's configured build flags. In particular, Ubuntu 18.04's
+default GCC 7 does not implement the default C++20 contract; Docker remains the
+recommended execution target there unless the user supplies a suitable host
+toolchain.
+
 The `linux.v1` image build uses Ubuntu 22.04 for both stages, downloads and
 checksum-verifies Go 1.23.12 for `linux/amd64`, and builds the CGO backend
 against `libclang-18-dev`. Jammy's distribution default is LLVM 14, so the
@@ -285,17 +310,21 @@ The default logical installation is:
 $HOME/.local/
 ├── bin/hard                         mode 0755, installed from hard.sh
 ├── libexec/hard/
+│   ├── default-target               mode 0644, `host` for make install
 │   ├── hard                         mode 0755, Go backend
 │   ├── hard.h                       mode 0644
 │   └── format/format.v1             mode 0644
 └── share/hard/                      persistent state root
 ```
 
-`hard.sh` is a POSIX `sh` wrapper. Without `--target`, it uses `exec` on
-`$HOME/.local/libexec/hard/hard` and passes the original argument vector with
-`"$@"`. With `--target=linux.v1` or `--target linux.v1` before `--`, it removes
-that wrapper option and uses `exec docker run`. Empty, duplicate, and unknown
-targets are errors. Values after `--` remain untouched.
+`hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host` and `linux.v1`
+targets. Without `--target`, it reads
+`$HOME/.local/libexec/hard/default-target`, falling back to `host` when the
+file is absent. Host mode prefixes the runtime's `bin` directory to `PATH`,
+uses `exec` on `$HOME/.local/libexec/hard/hard`, and passes the remaining
+argument vector with `"$@"`. Linux target mode removes the wrapper option and
+uses `exec docker run`. Empty, duplicate, and unknown targets are errors.
+Values after `--` remain untouched.
 
 The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
 source of a bind mount targeting `/hard`. The physical current working
@@ -314,6 +343,42 @@ assets.
 part of the logical prefix. This permits packaging tests without writing into
 the user's home or a system directory. There are intentionally no `clean` or
 `uninstall` targets in the current scope.
+
+### Portable host release and installer
+
+A release Git tag `vX.Y` runs `.github/workflows/release.yml`. It creates
+stable release assets named `hard-linux-amd64.tar.gz` and
+`hard-linux-amd64.tar.gz.sha256`, smoke-tests them, uploads them as workflow
+artifacts, and creates or updates the matching GitHub release. The archive has
+one top-level `hard-linux-amd64` directory and a relocatable `bin/` plus
+`libexec/hard/` layout. Its runtime includes the Go backend, `hard.h`,
+`format.v1`, clang-format, libclang, LLVM resource headers, the required
+libtinfo compatibility library, licenses, and `VERSION`.
+
+`install.sh` is POSIX `sh` and supports an interactive terminal prompt or one
+noninteractive argument: `docker`, `host`, or `both`. Docker is the recommended
+and empty-input choice. The installer supports Linux x86-64 only, downloads the
+latest stable archive and checksum from GitHub Releases, verifies the checksum
+before package-manager changes, and stages replacement of the runtime below
+`$HOME/.local`. It creates `$HOME/.local/share/hard` but keeps every runtime
+asset under `$HOME/.local/libexec/hard`.
+
+The installer recognizes Debian/Ubuntu, Arch/CachyOS/Manjaro, Fedora,
+RHEL/Rocky/Alma/CentOS, and openSUSE/SLES package families. It obtains
+administrative access with `sudo -v` for a non-root user. Host mode installs
+only a native C++ compiler, pkg-config, and GoogleTest development files; it
+deliberately omits Make, CMake, Meson/Ninja, Autoconf, Automake, and Libtool.
+Docker mode installs, enables, and starts Docker when needed and adds the
+current user to the `docker` group when needed. RHEL-family Docker installation
+uses Docker's official RHEL package repository; other supported families use
+their distribution package. RHEL, Rocky, AlmaLinux, and CentOS host mode enables
+EPEL for GoogleTest. The openSUSE package set uses `gtest` and
+`pkgconf-pkg-config`; Fedora/RHEL use `gtest-devel` and
+`pkgconf-pkg-config`; Arch uses `gtest` and `pkgconf`. Docker and both modes
+record `linux.v1` as the default; host mode records `host`. An explicit
+`--target=host` always dispatches directly without compatibility diagnostics,
+even after a Docker-only install whose host compilation dependencies may be
+absent.
 
 ### Container image and publication
 
@@ -340,8 +405,15 @@ Its fixed target environment is:
 an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
 system, or minimum-CPU changes require a new target version.
 
-The GHCR workflow does not run for branch pushes. A semantic Git tag `vX.Y.Z`
-or a manual workflow dispatch builds the image and publishes only `linux.v1`.
+The GHCR workflow is independent from release tags and has no manual dispatch.
+On a push to `main`, it considers only added `target/*.Dockerfile` paths. A path
+that already occurred in earlier Git history is not a new target and is
+skipped. The basename before `.Dockerfile` becomes the image tag, so adding
+`target/linux.v2.Dockerfile` publishes `linux.v2`. Changing, deleting, or
+re-adding an existing target Dockerfile does not build an image. `linux.v1` is
+also excluded explicitly and is never advanced by the current workflow. If the
+previous push commit is unavailable, discovery fails closed instead of treating
+the current target tree as newly added.
 Release-specific, commit, edge, and implicit `latest` tags are not published.
 The first externally published GitHub package defaults private and must be
 made public once by a maintainer before anonymous pulls work. Package
@@ -360,11 +432,11 @@ The public command forms are:
     hard test   [--list-tests] [--test=<selector>]...
                 [--no-cache] [-s|--silent] [path...]
 
-The installed wrapper additionally accepts `--target=linux.v1` or
-`--target linux.v1` anywhere before `--`. This selects how one of the same five
-public commands is executed; it does not add another public command. The Go
-help template documents the wrapper option, while the wrapper owns its parsing
-and Docker behavior.
+The installed wrapper additionally accepts `--target=host`,
+`--target=linux.v1`, or their separate-value forms anywhere before `--`. This
+selects how one of the same five public commands is executed; it does not add
+another public command. The Go help template documents the wrapper option,
+while the wrapper owns its parsing, installed default, and Docker behavior.
 
 Persistent flags accepted by every command:
 
@@ -1308,9 +1380,10 @@ earlier implementation.
 
 ## Artifact layout
 
-The implemented layout is:
+The implemented installed host layout is:
 
-    <runtime-root>/
+    <host-runtime-root>/
+    ├── default-target
     ├── hard
     ├── hard.h
     └── format/
@@ -1348,6 +1421,12 @@ and `/home/taitov/projects/hard-build/hard/format/`. `make install` copies the
 host backend, header, and format into `PREFIX/libexec/hard/`. The container
 image carries its independent runtime bundle below `/usr/local/libexec/hard/`.
 Neither installation stores runtime files below `HARD_ROOT`.
+
+The portable host bundle additionally owns `bin/clang-format`, `lib/` with
+libclang, LLVM resource headers, and libtinfo, license records, and `VERSION`.
+These files move as one runtime and are not supplied by `make install`.
+The container runtime has no `default-target` because target selection belongs
+to the host wrapper.
 
 Forward, object, and binary paths use lexical absolute source paths. They all
 reject an environment name that escapes `HARD_ROOT/env`.
@@ -1521,6 +1600,18 @@ to leave the library unchanged for now.
 - The wrapper supports `--target=linux.v1` by running the published GHCR image,
   with fixed container configuration and a bind-mounted persistent root. It
   does not build images and `make install` remains host-only.
+- `host` is an explicit wrapper target. A missing `default-target` means host;
+  `make install` and installer host mode record host, while installer Docker
+  and both modes record `linux.v1`. Explicit `--target=host` performs direct
+  execution without an added diagnostic layer.
+- Portable distribution uses one relocatable `linux/amd64` archive instead of
+  native DEB/RPM packages. The release contract is glibc 2.27 or newer, built
+  directly by GitHub Actions in a pinned Ubuntu 18.04 container and verified
+  on Ubuntu 18.04, 22.04, and 24.04. The archive carries the Go backend and its
+  LLVM runtime rather than requiring distro-specific libclang packages.
+- `install.sh` offers host, Docker, and both dependency modes, recommends
+  Docker, uses `sudo` automatically, and deliberately excludes optional
+  external-library build systems from host mode.
 - Before its first external publication, `linux.v1` was rebaselined from the
   provisional Ubuntu 24.04 image to Ubuntu 22.04. The finalized target keeps
   GCC 11 and glibc 2.35 from Jammy while preserving libclang and clang-format
@@ -1578,8 +1669,13 @@ to leave the library unchanged for now.
   source include and runtime support include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
 - `hard/wrapper_test.go`: host passthrough, both target spellings and positions,
-  exact Docker arguments and mounts, default persistent root, argument
-  preservation, no host `HARD_*` forwarding, and invalid target diagnostics.
+  installed target defaults, bundled host tool lookup, exact Docker arguments
+  and mounts, default persistent root, argument preservation, no host `HARD_*`
+  forwarding, and invalid target diagnostics.
+- `hard/install_test.go`: checksum-gated installation, all three installer
+  modes, Ubuntu package selection, default targets, portable runtime file
+  modes and symlinks, Docker service activation, failed-update runtime
+  restoration, and omission of optional host build systems.
 - `hard/source_test.go`: accepted and rejected extensions, case-insensitive test
   suffix, recursion/order, explicit paths, relative display, canonical
   deduplication, file and directory symlinks, cycles, missing paths, and empty
@@ -1663,6 +1759,7 @@ For every completed Go implementation change, run these commands from the
 For wrapper or installation changes, also run:
 
     sh -n hard.sh
+    sh -n install.sh
     make BUILD_DIR=<unused /tmp path> build
     make BUILD_DIR=<unused /tmp path> PREFIX=<logical prefix> DESTDIR=<unused /tmp staging root> install
 
@@ -1670,6 +1767,12 @@ Inspect the staged paths, file modes, and file types, and invoke the staged
 public wrapper. Verify that the backend, `hard.h`, and format file work after
 staging or relocating the complete runtime bundle. Do not install into the real
 home or system tree during routine verification.
+
+For portable release changes, validate the release workflow syntax, pinned
+download checksums and builder image, archive paths and modes, executable
+RUNPATHs, the maximum required GLIBC symbol, and Ubuntu 18.04/22.04/24.04 smoke
+tests. Release publication remains an external action and is never part of
+routine local verification.
 
 For container-target changes, build the image locally for `linux/amd64`, inspect
 its architecture, entrypoint, fixed `HARD_*` values, runtime bundle, and dynamic
@@ -2113,13 +2216,67 @@ stable `ghcr.io/hard-build/hard:linux.v1` reference is the only tag the
 workflow should publish. Ordinary branch pushes must not build or rebuild the
 image.
 
-The accepted workflow runs only for a semantic Git tag matching `vX.Y.Z` or a
-manual dispatch. Each run publishes only `linux.v1`; it does not publish
-release-specific, commit, edge, or `latest` tags. Existing remote tags are not
+The replacement workflow is independent from releases and has no manual
+dispatch. A push to `main` publishes only Dockerfiles added below `target/`
+whose paths have never occurred in earlier history, mapping each basename to
+the same image tag. Existing target Dockerfiles are immutable: modification,
+deletion, and re-addition do not publish them. `linux.v1` is excluded
+explicitly, so the current workflow cannot advance it. Release-specific,
+commit, edge, and `latest` tags are not published. Existing remote tags are not
 deleted by this repository change because registry deletion is a separate
 external action. At the time of the decision, an anonymous manifest request
 for the published commit tag returned `unauthorized`, so public package
 visibility still required a maintainer action in GitHub.
+
+On 2026-08-24, release tags were changed from three components to the strict
+`vX.Y` format, and container publication was separated from releases. Both
+workflow files parsed as YAML. The exact release validation accepted `v1.0`
+and `v12.34` and rejected `v1`, `v1.0.0`, `1.0`, and `v1.x`. The container
+discovery script was executed in an isolated Git repository: adding
+`target/linux.v2.Dockerfile` produced only the `linux.v2` matrix entry;
+modifying existing target files produced an empty matrix; deleting and
+re-adding `linux.v2` was skipped by the history check; and re-adding
+`linux.v1` was skipped by its explicit immutable-target guard. No Docker image
+was built or published during this verification.
+
+## Last known verification of the portable release
+
+On 2026-08-24, the portable installer and host release passed clean gofmt,
+ordinary and race tests, vet, an out-of-tree backend build, module
+verification, both wrapper shell syntax checks, workflow YAML parsing, and
+repository diff checking. `go test -count=1 ./...` forced the external
+`install.sh` tests to run without Go's test cache. Their fake package manager,
+Docker, service manager, and downloads verified all three modes, installed
+defaults and file modes, restored a previous runtime after an injected update
+failure, omitted host build-system packages, and stopped before package changes
+on a bad archive checksum.
+
+A staged `make install` under `/tmp` produced 0755 wrapper/backend files, 0644
+`hard.h`, `format.v1`, and `default-target`, recorded `host`, and ran the staged
+wrapper's explicit host help. The installer package mappings were separately
+queried in current Fedora, Rocky Linux 9, and openSUSE Tumbleweed containers.
+This confirmed Fedora's `gtest-devel`, `pkgconf-pkg-config`, and `moby-engine`,
+Rocky's EPEL `gtest-devel` and Docker's RHEL repository packages, and
+openSUSE's `gtest`, `pkgconf-pkg-config`, and `docker` names.
+
+The exact release build was then reproduced locally with test version
+`v0.0.0`, the pinned Ubuntu 18.04 image, the checksum-verified official LLVM
+18.1.8 archive, and Go 1.23.12. It produced a 59 MiB
+`hard-linux-amd64.tar.gz` with SHA-256
+`7f1c0a1e80bc486c4a426d70a5850589bb31cff57e8c3f4071269a7e7b5ab624`.
+The backend RUNPATH was `$ORIGIN/lib`; backend and clang-format `ldd` output had
+no missing libraries; the maximum GLIBC symbol across the bundled backend,
+formatter, libclang, and libtinfo was `GLIBC_2.16`, below the promised 2.27
+ceiling. Wrapper, backend, and formatter modes were 0755, data files were 0644,
+and library aliases remained symbolic links.
+
+The archive's explicit host help and bundled formatting operation succeeded in
+clean Ubuntu 18.04, 22.04, and 24.04 containers. An attempted dependency parse
+in a package-empty Ubuntu 18.04 base correctly demonstrated why the glibc
+launch floor is not a native toolchain promise: that image has no C++20
+standard-library headers, and its packaged GCC 7 also rejects `-std=c++20`.
+No GitHub release, registry package, or image was published or changed during
+this verification.
 
 ## Workspace safety snapshot
 

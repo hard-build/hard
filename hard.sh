@@ -55,11 +55,20 @@ while [ "$remaining" -gt 0 ]; do
 	esac
 done
 
+runtime_root=$HOME/.local/libexec/hard
 if [ "$target_seen" -eq 0 ]; then
-	exec "$HOME/.local/libexec/hard/hard" "$@"
+	target=host
+	if [ -r "$runtime_root/default-target" ]; then
+		IFS= read -r target < "$runtime_root/default-target" || fail "cannot read default target"
+	fi
 fi
 
 case "$target" in
+	host)
+		PATH=$runtime_root/bin${PATH:+:$PATH}
+		export PATH
+		exec "$runtime_root/hard" "$@"
+		;;
 	linux.v1)
 		image=ghcr.io/hard-build/hard:linux.v1
 		;;

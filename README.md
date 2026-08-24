@@ -24,7 +24,63 @@ formatting, dependency fetching, building, running, and testing.
 - Expose only formatting, dependency fetching, building, running, and testing
   as public operations.
 
+## Installation
+
+On Linux x86-64, run the installer from a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | sh
+```
+
+The installer explains and prompts for one of three modes:
+
+| Mode | System dependencies | Default target |
+| --- | --- | --- |
+| `docker` (recommended) | Docker | `linux.v1` |
+| `host` | Native C++ compiler, pkg-config, and GoogleTest development files | `host` |
+| `both` | Both dependency sets | `linux.v1` |
+
+For unattended installation, pass the mode explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | sh -s -- docker
+```
+
+The script downloads `hard-linux-amd64.tar.gz` and its SHA-256 file from the
+latest GitHub release, verifies the archive before changing the system, and
+installs it below `~/.local`. It detects Debian/Ubuntu, Arch/CachyOS/Manjaro,
+Fedora, RHEL/Rocky/Alma/CentOS, and openSUSE/SLES families. System packages are
+installed through `sudo` when the current user is not root. Docker mode starts
+and enables the Docker service and adds the current user to the `docker` group
+when needed; a new login is then required, and membership in that group grants
+root-level access.
+
+Host mode enables EPEL to obtain GoogleTest on RHEL, Rocky, AlmaLinux, and
+CentOS. Docker installation on RHEL-family systems uses Docker's official RHEL
+repository; other supported families use their distribution Docker package.
+
+Host mode deliberately does not install GNU Make, CMake, Meson/Ninja,
+Autoconf, Automake, or Libtool. Install the particular tool separately when a
+reachable external-library recipe needs it. Docker mode already includes
+those tools in `linux.v1`. Docker-only installations still contain the host
+backend, so `--target=host` is accepted, but it will naturally fail if its
+native compiler or test dependencies are absent.
+
 ## Requirements
+
+The portable release requires Linux x86-64 and glibc 2.27 or newer. Its host
+backend, libclang 18.1.8, Clang resource headers, clang-format, and the required
+`libtinfo` compatibility library are installed together. Release CI builds the
+backend in a pinned Ubuntu 18.04 environment, rejects a runtime GLIBC symbol
+requirement above 2.27, and smoke-tests the archive on Ubuntu 18.04, 22.04, and
+24.04.
+
+That glibc floor covers launching the bundled backend and formatter. Native
+dependency analysis, compilation, linking, and tests still require C++20
+standard-library headers and a compiler that accepts the configured flags.
+Ubuntu 18.04's default GCC 7 does not meet that toolchain contract; use the
+recommended `linux.v1` target there unless a suitable host toolchain is
+configured explicitly.
 
 Building the Go module in `hard/` requires:
 
@@ -46,7 +102,7 @@ Depending on the command, using `hard` also requires:
   or well-known repository snapshot is not already cached below
   `HARD_ROOT/source`.
 
-Using a container target requires Docker. The target image contains its own
+Using `--target=linux.v1` requires Docker. The target image contains its own
 backend and C/C++ toolchain, so the host does not need the native build
 requirements listed above for target-mode execution.
 
@@ -87,15 +143,20 @@ hard test   [--list-tests] [--test=<selector>]...
 ### Container targets
 
 The installed POSIX wrapper accepts `--target=<name>` and
-`--target <name>` anywhere before `--`. Without this option it directly
-executes the host backend at `~/.local/libexec/hard/hard`. The only supported
-container target is currently `linux.v1`:
+`--target <name>` anywhere before `--`. The supported targets are `host`, which
+directly executes `~/.local/libexec/hard/hard`, and the `linux.v1` container:
 
 ```bash
+hard --target=host build src
 hard --target=linux.v1 build src
 hard test --target linux.v1 tests
 hard run --target=linux.v1 src/application.cpp -- --mode=check
 ```
+
+Without `--target`, the wrapper uses the choice recorded at installation.
+`make install` and installer host mode select `host`; installer Docker and both
+modes select `linux.v1`. An explicit target always overrides that default and
+no compatibility diagnostics are added to host execution.
 
 A target-looking value after the `run` separator belongs to the program and
 is not interpreted by the wrapper. Empty, repeated, and unknown targets are
@@ -154,17 +215,26 @@ include mechanics rather than part of the image `HARD_CFLAGS` value.
 
 `linux.v1` is a `linux/amd64` image. Programs built by it require an
 x86-64-v3 processor; Docker does not emulate missing CPU instructions. The
-only published tag is:
+target used by the current wrapper is:
 
 - `linux.v1`: the stable target selected by the wrapper.
 
-No `latest`, release-specific, commit, or edge tag is published. The GitHub
-workflow rebuilds and advances `linux.v1` only for a semantic Git tag of the
-form `vX.Y.Z` or a manual workflow run; ordinary branch pushes do not build the
-image. A toolchain, ABI, base-system, or minimum-CPU change requires a new
-target version rather than silently changing the `linux.v1` contract. After
-the first publication, a maintainer must make the GitHub package public once;
-public images can then be pulled without authentication.
+No `latest`, release-specific, commit, or edge tag is published. Target image
+tags are immutable. A push to `main` publishes an image only when it adds a
+previously unseen `target/<target>.Dockerfile`; the basename becomes the image
+tag. For example, `target/linux.v2.Dockerfile` publishes `linux.v2`. Changing,
+deleting, or re-adding an existing target Dockerfile does not build an image,
+and release tags do not run the container workflow. `linux.v1` is explicitly
+excluded from future publication. A toolchain, ABI, base-system, or
+minimum-CPU change therefore requires a new target version. After the first
+publication, a maintainer must make the GitHub package public once; public
+images can then be pulled without authentication.
+
+A separate release workflow runs for `vX.Y` release tags and attaches the
+stable `hard-linux-amd64.tar.gz` portable archive plus its SHA-256 file to the
+GitHub release. It does not build or publish container images. The host backend
+is built directly by that workflow inside its pinned Ubuntu 18.04 container;
+there is no host-target Dockerfile.
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
@@ -1076,6 +1146,7 @@ From the repository root, `make` builds the Go backend as `build/hard`.
 ~/.local/
 ├── bin/hard
 ├── libexec/hard/
+│   ├── default-target
 │   ├── hard
 │   ├── hard.h
 │   └── format/
@@ -1084,15 +1155,23 @@ From the repository root, `make` builds the Go backend as `build/hard`.
 ```
 
 The public `bin/hard` command is a POSIX shell wrapper. Without `--target`, it
-replaces itself with `$HOME/.local/libexec/hard/hard` and forwards every
-argument unchanged. With `--target=linux.v1`, it replaces itself with the
-documented `docker run` invocation. It never builds an image.
+reads `libexec/hard/default-target`; a missing file preserves the host default.
+`--target=host` replaces the wrapper with the host backend and prefixes its
+bundled tool directory to `PATH`. `--target=linux.v1` replaces the wrapper with
+the documented `docker run` invocation. It never builds an image.
 
 `PREFIX` defaults to `$HOME/.local`, `BUILD_DIR` defaults to `build`, and
 `DESTDIR` can stage an installation without changing its logical prefix. The
 installed wrapper intentionally uses the user-local `$HOME/.local` backend
 path; changing `PREFIX` does not rewrite it. `make install` is host-only: it
-does not invoke Docker and does not install target images or container assets.
+does not invoke Docker or install target images or container assets, and it
+writes `host` to `default-target`.
+
+The portable archive extends the runtime bundle with the host backend's shared
+libraries, LLVM resource headers, `bin/clang-format`, license records, and a
+version file. The installer writes the selected default target while placing
+that complete bundle below `~/.local/libexec/hard`. It does not put runtime
+assets below `HARD_ROOT`.
 
 The backend, support header, and format files form an immutable runtime bundle:
 

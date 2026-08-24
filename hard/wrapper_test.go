@@ -46,6 +46,82 @@ func TestWrapperRunsHostBackendWithoutTarget(t *testing.T) {
 	}
 }
 
+func TestWrapperRunsExplicitHostTargetWithBundledTools(t *testing.T) {
+	home := t.TempDir()
+	runtimeRoot := filepath.Join(home, ".local", "libexec", "hard")
+	backend := filepath.Join(runtimeRoot, "hard")
+	if err := os.MkdirAll(filepath.Join(runtimeRoot, "bin"), 0o755); err != nil {
+		t.Fatalf("create runtime directory: %v", err)
+	}
+	writeWrapperExecutable(
+		t,
+		backend,
+		"#!/bin/sh\nprintf '%s\\0' \"$PATH\" \"$@\" > \"$BACKEND_LOG\"\n",
+	)
+	backendLog := filepath.Join(t.TempDir(), "backend.log")
+	dockerLog := filepath.Join(t.TempDir(), "docker.log")
+	binDirectory := installFakeWrapperDocker(t, dockerLog)
+	originalPath := binDirectory + string(os.PathListSeparator) + os.Getenv("PATH")
+
+	command := exec.Command(wrapperPath(t), "build", "--target=host", "source.cpp")
+	command.Env = wrapperTestEnvironment(map[string]string{
+		"BACKEND_LOG": backendLog,
+		"HOME":        home,
+		"PATH":        originalPath,
+	})
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("host wrapper error = %v, output = %q", err, output)
+	}
+
+	want := []string{
+		filepath.Join(runtimeRoot, "bin") + string(os.PathListSeparator) + originalPath,
+		"build",
+		"source.cpp",
+	}
+	if got := readWrapperArguments(t, backendLog); !reflect.DeepEqual(got, want) {
+		t.Fatalf("host backend arguments = %#v, want %#v", got, want)
+	}
+	if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("docker log error = %v, want not exist", err)
+	}
+}
+
+func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
+	home := t.TempDir()
+	runtimeRoot := filepath.Join(home, ".local", "libexec", "hard")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("create runtime directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeRoot, "default-target"), []byte("linux.v1\n"), 0o644); err != nil {
+		t.Fatalf("write default target: %v", err)
+	}
+	hardRoot := filepath.Join(home, ".local", "share", "hard")
+	if err := os.MkdirAll(hardRoot, 0o755); err != nil {
+		t.Fatalf("create HARD_ROOT: %v", err)
+	}
+	project := t.TempDir()
+	dockerLog := filepath.Join(t.TempDir(), "docker.log")
+	binDirectory := installFakeWrapperDocker(t, dockerLog)
+
+	command := exec.Command(wrapperPath(t), "build", "source.cpp")
+	command.Dir = project
+	command.Env = wrapperTestEnvironment(map[string]string{
+		"HOME": home,
+		"PATH": binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+	})
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("target wrapper error = %v, output = %q", err, output)
+	}
+
+	arguments := readWrapperArguments(t, dockerLog)
+	if !containsWrapperArgument(arguments, "ghcr.io/hard-build/hard:linux.v1") {
+		t.Fatalf("docker arguments = %#v, want linux.v1 image", arguments)
+	}
+	if got := arguments[len(arguments)-2:]; !reflect.DeepEqual(got, []string{"build", "source.cpp"}) {
+		t.Fatalf("backend arguments = %#v, want build arguments", got)
+	}
+}
+
 func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 	tests := []struct {
 		name string

@@ -65,7 +65,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 	}
 	root.SetHelpTemplate(root.HelpTemplate() + `
 Wrapper options:
-      --target string   run with a container target (supported: linux.v1)
+      --target string   select an execution target (supported: host, linux.v1)
 `)
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "print debug information")

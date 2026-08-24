@@ -375,6 +375,7 @@ func TestHelp(t *testing.T) {
 				"(default 1)",
 				"--no-color",
 				"--target string",
+				"supported: host, linux.v1",
 				"-v, --verbose",
 			},
 		},
