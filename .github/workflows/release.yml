@@ -173,13 +173,12 @@ jobs:
               --volume "$RUNNER_TEMP/release/hard-linux-amd64.tar.gz:/tmp/hard.tar.gz:ro" \
               "$image" \
               sh -euxc '
-                mkdir -p /tmp/home/.local /tmp/project
-                tar -xzf /tmp/hard.tar.gz \
-                  --directory /tmp/home/.local \
-                  --strip-components=1
+                mkdir -p /tmp/home /tmp/project /tmp/release
+                tar -xzf /tmp/hard.tar.gz --directory /tmp/release
+                hard=/tmp/release/hard-linux-amd64/bin/hard
                 printf "int answer=42;\n" > /tmp/project/example.cpp
-                HOME=/tmp/home /tmp/home/.local/bin/hard --target=host --help >/dev/null
-                HOME=/tmp/home /tmp/home/.local/bin/hard --target=host format /tmp/project/example.cpp
+                HOME=/tmp/home "$hard" --target=host --help >/dev/null
+                HOME=/tmp/home "$hard" --target=host format /tmp/project/example.cpp
                 grep -q "int answer = 42;" /tmp/project/example.cpp
               '
           done

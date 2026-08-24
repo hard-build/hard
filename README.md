@@ -55,6 +55,17 @@ and enables the Docker service and adds the current user to the `docker` group
 when needed; a new login is then required, and membership in that group grants
 root-level access.
 
+The release archive can also be unpacked and used without installation:
+
+```bash
+tar -xzf hard-linux-amd64.tar.gz
+./hard-linux-amd64/bin/hard --target=host --help
+```
+
+The archive wrapper derives its installation prefix from its own location and
+executes the sibling `libexec/hard/hard` backend for `host`. Because an
+unpacked archive has no `default-target`, its default is `host`.
+
 Host mode enables EPEL to obtain GoogleTest on RHEL, Rocky, AlmaLinux, and
 CentOS. Docker installation on RHEL-family systems uses Docker's official RHEL
 repository; other supported families use their distribution Docker package.
@@ -142,9 +153,10 @@ hard test   [--list-tests] [--test=<selector>]...
 
 ### Container targets
 
-The installed POSIX wrapper accepts `--target=<name>` and
+The POSIX wrapper accepts `--target=<name>` and
 `--target <name>` anywhere before `--`. The supported targets are `host`, which
-directly executes `~/.local/libexec/hard/hard`, and the `linux.v1` container:
+executes the private backend from the same installation prefix, and the
+`linux.v1` container:
 
 ```bash
 hard --target=host build src
@@ -153,17 +165,20 @@ hard test --target linux.v1 tests
 hard run --target=linux.v1 src/application.cpp -- --mode=check
 ```
 
-Without `--target`, the wrapper uses the choice recorded at installation.
+Without `--target`, the wrapper uses the choice recorded in the sibling
+`libexec/hard/default-target` file.
 `make install` and installer host mode select `host`; installer Docker and both
-modes select `linux.v1`. An explicit target always overrides that default and
-no compatibility diagnostics are added to host execution.
+modes select `linux.v1`. An unpacked archive has no default-target file and
+therefore selects `host`. An explicit target always overrides that default,
+and no compatibility diagnostics are added to host execution.
 
 A target-looking value after the `run` separator belongs to the program and
 is not interpreted by the wrapper. Empty, repeated, and unknown targets are
 errors.
 
 For `linux.v1`, the wrapper only executes `docker run`; it never builds an
-image. Docker pulls the missing image from:
+image or resolves the host runtime. The image entrypoint runs the container
+backend. Docker pulls the missing image from:
 
 ```text
 ghcr.io/hard-build/hard:linux.v1
@@ -1176,24 +1191,30 @@ From the repository root, `make` builds the Go backend as `build/hard`.
 └── share/hard/
 ```
 
-The public `bin/hard` command is a POSIX shell wrapper. Without `--target`, it
-reads `libexec/hard/default-target`; a missing file preserves the host default.
+The public `bin/hard` command is a POSIX shell wrapper. It derives the logical
+installation prefix from its own location in `<prefix>/bin` and uses the
+sibling `<prefix>/libexec/hard` directory only for host execution and the
+installed default target. Without `--target`, it reads
+`libexec/hard/default-target`; a missing file preserves the host default.
 `--target=host` replaces the wrapper with the host backend and prefixes its
-bundled tool directory to `PATH`. `--target=linux.v1` replaces the wrapper with
-the documented `docker run` invocation. It never builds an image.
+bundled tool directory to `PATH`. `--target=linux.v1` executes the documented
+`docker run` invocation without resolving the host runtime. It never builds an
+image.
 
 `PREFIX` defaults to `$HOME/.local`, `BUILD_DIR` defaults to `build`, and
-`DESTDIR` can stage an installation without changing its logical prefix. The
-installed wrapper intentionally uses the user-local `$HOME/.local` backend
-path; changing `PREFIX` does not rewrite it. `make install` is host-only: it
-does not invoke Docker or install target images or container assets, and it
-writes `host` to `default-target`.
+`DESTDIR` can stage an installation without changing its logical prefix.
+Because the wrapper derives the prefix at runtime, installations under another
+`PREFIX` and staged installations preserve the same relative layout without
+rewriting the wrapper. `make install` is host-only: it does not invoke Docker
+or install target images or container assets, and it writes `host` to
+`default-target`.
 
 The portable archive extends the runtime bundle with the host backend's shared
 libraries, LLVM resource headers, `bin/clang-format`, license records, and a
-version file. The installer writes the selected default target while placing
-that complete bundle below `~/.local/libexec/hard`. It does not put runtime
-assets below `HARD_ROOT`.
+version file. Its top-level `bin/hard` can execute that bundle in place
+immediately after extraction. The installer writes the selected default target
+while placing that complete bundle below `~/.local/libexec/hard`. It does not
+put runtime assets below `HARD_ROOT`.
 
 The backend, support header, and format files form an immutable runtime bundle:
 

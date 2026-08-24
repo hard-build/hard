@@ -5,6 +5,25 @@ fail() {
 	exit 1
 }
 
+installation_root=
+resolve_installation_root() {
+	if [ -n "$installation_root" ]; then
+		return
+	fi
+
+	wrapper_path=$0
+	case "$wrapper_path" in
+		*/*) ;;
+		*)
+			wrapper_path=$(command -v "$wrapper_path") || fail "cannot determine wrapper path"
+			;;
+	esac
+	wrapper_directory=$(CDPATH= cd -P "$(dirname "$wrapper_path")" 2>/dev/null && pwd) ||
+		fail "cannot determine wrapper directory"
+	installation_root=$(CDPATH= cd -P "$wrapper_directory/.." 2>/dev/null && pwd) ||
+		fail "cannot determine installation root"
+}
+
 target=
 target_seen=0
 parse_target=1
@@ -55,16 +74,19 @@ while [ "$remaining" -gt 0 ]; do
 	esac
 done
 
-runtime_root=$HOME/.local/libexec/hard
 if [ "$target_seen" -eq 0 ]; then
 	target=host
-	if [ -r "$runtime_root/default-target" ]; then
-		IFS= read -r target < "$runtime_root/default-target" || fail "cannot read default target"
+	resolve_installation_root
+	default_target=$installation_root/libexec/hard/default-target
+	if [ -r "$default_target" ]; then
+		IFS= read -r target < "$default_target" || fail "cannot read default target"
 	fi
 fi
 
 case "$target" in
 	host)
+		resolve_installation_root
+		runtime_root=$installation_root/libexec/hard
 		PATH=$runtime_root/bin${PATH:+:$PATH}
 		export PATH
 		exec "$runtime_root/hard" "$@"

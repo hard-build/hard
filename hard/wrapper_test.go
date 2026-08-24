@@ -12,9 +12,12 @@ import (
 	"testing"
 )
 
-func TestWrapperRunsHostBackendWithoutTarget(t *testing.T) {
+func TestWrapperRunsHostBackendFromPortableLayoutWithoutTarget(t *testing.T) {
 	home := t.TempDir()
-	backend := filepath.Join(home, ".local", "libexec", "hard", "hard")
+	prefix := filepath.Join(t.TempDir(), "portable hard")
+	wrapper := installWrapperAtPrefix(t, prefix)
+	runtimeRoot := filepath.Join(prefix, "libexec", "hard")
+	backend := filepath.Join(runtimeRoot, "hard")
 	if err := os.MkdirAll(filepath.Dir(backend), 0o755); err != nil {
 		t.Fatalf("create backend directory: %v", err)
 	}
@@ -27,7 +30,7 @@ func TestWrapperRunsHostBackendWithoutTarget(t *testing.T) {
 	dockerLog := filepath.Join(t.TempDir(), "docker.log")
 	binDirectory := installFakeWrapperDocker(t, dockerLog)
 
-	command := exec.Command(wrapperPath(t), "run", "--", "--target", "linux.v1")
+	command := exec.Command(wrapper, "run", "--", "--target", "linux.v1")
 	command.Env = wrapperTestEnvironment(map[string]string{
 		"BACKEND_LOG": backendLog,
 		"HOME":        home,
@@ -48,7 +51,9 @@ func TestWrapperRunsHostBackendWithoutTarget(t *testing.T) {
 
 func TestWrapperRunsExplicitHostTargetWithBundledTools(t *testing.T) {
 	home := t.TempDir()
-	runtimeRoot := filepath.Join(home, ".local", "libexec", "hard")
+	prefix := filepath.Join(home, ".local")
+	wrapper := installWrapperAtPrefix(t, prefix)
+	runtimeRoot := filepath.Join(prefix, "libexec", "hard")
 	backend := filepath.Join(runtimeRoot, "hard")
 	if err := os.MkdirAll(filepath.Join(runtimeRoot, "bin"), 0o755); err != nil {
 		t.Fatalf("create runtime directory: %v", err)
@@ -63,7 +68,7 @@ func TestWrapperRunsExplicitHostTargetWithBundledTools(t *testing.T) {
 	binDirectory := installFakeWrapperDocker(t, dockerLog)
 	originalPath := binDirectory + string(os.PathListSeparator) + os.Getenv("PATH")
 
-	command := exec.Command(wrapperPath(t), "build", "--target=host", "source.cpp")
+	command := exec.Command(wrapper, "build", "--target=host", "source.cpp")
 	command.Env = wrapperTestEnvironment(map[string]string{
 		"BACKEND_LOG": backendLog,
 		"HOME":        home,
@@ -86,9 +91,42 @@ func TestWrapperRunsExplicitHostTargetWithBundledTools(t *testing.T) {
 	}
 }
 
+func TestWrapperRunsHostBackendThroughPath(t *testing.T) {
+	home := t.TempDir()
+	prefix := filepath.Join(t.TempDir(), "installed hard")
+	installWrapperAtPrefix(t, prefix)
+	runtimeRoot := filepath.Join(prefix, "libexec", "hard")
+	backend := filepath.Join(runtimeRoot, "hard")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("create runtime directory: %v", err)
+	}
+	writeWrapperExecutable(
+		t,
+		backend,
+		"#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$BACKEND_LOG\"\n",
+	)
+	backendLog := filepath.Join(t.TempDir(), "backend.log")
+	path := filepath.Join(prefix, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
+	command := exec.Command("env", "hard", "--target=host", "build", "source.cpp")
+	command.Env = wrapperTestEnvironment(map[string]string{
+		"BACKEND_LOG": backendLog,
+		"HOME":        home,
+		"PATH":        path,
+	})
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("host wrapper error = %v, output = %q", err, output)
+	}
+	want := []string{"build", "source.cpp"}
+	if got := readWrapperArguments(t, backendLog); !reflect.DeepEqual(got, want) {
+		t.Fatalf("host backend arguments = %#v, want %#v", got, want)
+	}
+}
+
 func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 	home := t.TempDir()
-	runtimeRoot := filepath.Join(home, ".local", "libexec", "hard")
+	prefix := filepath.Join(home, ".local")
+	wrapper := installWrapperAtPrefix(t, prefix)
+	runtimeRoot := filepath.Join(prefix, "libexec", "hard")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("create runtime directory: %v", err)
 	}
@@ -103,7 +141,7 @@ func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 	dockerLog := filepath.Join(t.TempDir(), "docker.log")
 	binDirectory := installFakeWrapperDocker(t, dockerLog)
 
-	command := exec.Command(wrapperPath(t), "build", "source.cpp")
+	command := exec.Command(wrapper, "build", "source.cpp")
 	command.Dir = project
 	command.Env = wrapperTestEnvironment(map[string]string{
 		"HOME": home,
@@ -142,6 +180,8 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			prefix := filepath.Join(t.TempDir(), "wrapper only")
+			wrapper := installWrapperAtPrefix(t, prefix)
 			home := t.TempDir()
 			hardRoot := filepath.Join(t.TempDir(), "hard data")
 			if err := os.MkdirAll(hardRoot, 0o755); err != nil {
@@ -154,7 +194,7 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 			dockerLog := filepath.Join(t.TempDir(), "docker.log")
 			binDirectory := installFakeWrapperDocker(t, dockerLog)
 
-			command := exec.Command(wrapperPath(t), tt.args...)
+			command := exec.Command(wrapper, tt.args...)
 			command.Dir = project
 			command.Env = wrapperTestEnvironment(map[string]string{
 				"HARD_CC":          "host-compiler-must-not-be-forwarded",
@@ -254,6 +294,20 @@ func TestWrapperRejectsInvalidTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func installWrapperAtPrefix(t *testing.T, prefix string) string {
+	t.Helper()
+	wrapper := filepath.Join(prefix, "bin", "hard")
+	if err := os.MkdirAll(filepath.Dir(wrapper), 0o755); err != nil {
+		t.Fatalf("create wrapper directory: %v", err)
+	}
+	contents, err := os.ReadFile(wrapperPath(t))
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+	writeWrapperExecutable(t, wrapper, string(contents))
+	return wrapper
 }
 
 func wrapperPath(t *testing.T) string {

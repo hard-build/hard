@@ -318,12 +318,15 @@ $HOME/.local/
 ```
 
 `hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host` and `linux.v1`
-targets. Without `--target`, it reads
-`$HOME/.local/libexec/hard/default-target`, falling back to `host` when the
-file is absent. Host mode prefixes the runtime's `bin` directory to `PATH`,
-uses `exec` on `$HOME/.local/libexec/hard/hard`, and passes the remaining
-argument vector with `"$@"`. Linux target mode removes the wrapper option and
-uses `exec docker run`. Empty, duplicate, and unknown targets are errors.
+targets. It resolves the installation prefix from its own path only when the
+target is absent or explicit host execution is selected. Without `--target`,
+it reads `<prefix>/libexec/hard/default-target`, falling back to `host` when
+the file is absent. Host mode prefixes the sibling runtime's `bin` directory
+to `PATH`, uses `exec` on `<prefix>/libexec/hard/hard`, and passes the
+remaining argument vector with `"$@"`. Linux target mode removes the wrapper
+option and uses `exec docker run`; the container image entrypoint runs its
+backend, and the wrapper does not resolve a host runtime. Empty, duplicate, and
+unknown targets are errors.
 Values after `--` remain untouched.
 
 The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
@@ -334,10 +337,10 @@ the current numeric UID:GID. No host `HARD_*` value is forwarded into the
 container. A relative host `HARD_ROOT` is made absolute below the current
 working directory. Only the working directory and persistent root are mounted.
 
-The default user-local prefix is the supported wrapper layout. Changing
-`PREFIX` does not rewrite the wrapper's explicit `$HOME/.local` backend path.
-`make install` remains host-only and neither invokes Docker nor installs image
-assets.
+Any prefix with sibling `bin/hard` and `libexec/hard` paths is a supported
+wrapper layout. Changing `PREFIX` or staging through `DESTDIR` preserves the
+relative lookup without rewriting the wrapper. `make install` remains
+host-only and neither invokes Docker nor installs image assets.
 
 `DESTDIR` prepends a staging root to every installed path but does not become
 part of the logical prefix. This permits packaging tests without writing into
@@ -351,9 +354,10 @@ stable release assets named `hard-linux-amd64.tar.gz` and
 `hard-linux-amd64.tar.gz.sha256`, smoke-tests them, uploads them as workflow
 artifacts, and creates or updates the matching GitHub release. The archive has
 one top-level `hard-linux-amd64` directory and a relocatable `bin/` plus
-`libexec/hard/` layout. Its runtime includes the Go backend, `hard.h`,
-`format.v1`, clang-format, libclang, LLVM resource headers, the required
-libtinfo compatibility library, licenses, and `VERSION`.
+`libexec/hard/` layout. The top-level `bin/hard` runs that sibling runtime
+directly after extraction without installation. Its runtime includes the Go
+backend, `hard.h`, `format.v1`, clang-format, libclang, LLVM resource headers,
+the required libtinfo compatibility library, licenses, and `VERSION`.
 
 `install.sh` is POSIX `sh` and supports an interactive terminal prompt or one
 noninteractive argument: `docker`, `host`, or `both`. Docker is the recommended
@@ -1616,21 +1620,25 @@ to leave the library unchanged for now.
 - Declarations owned by the canonical runtime support `hard.h` are excluded
   from source forwards, while the backend-managed force include remains.
 - The public installed command is `PREFIX/bin/hard`, a shell wrapper around
-  `PREFIX/libexec/hard/hard`; `hard.h` and formats are installed beside that
-  backend, while persistent source and caches remain in `PREFIX/share/hard` for
-  the default user-local prefix.
+  the sibling `PREFIX/libexec/hard/hard`; the wrapper derives `PREFIX` from
+  its own location. `hard.h` and formats are installed beside that backend,
+  while persistent source and caches remain in `PREFIX/share/hard` for the
+  default user-local prefix.
 - The wrapper supports `--target=linux.v1` by running the published GHCR image,
   with fixed container configuration and a bind-mounted persistent root. It
-  does not build images and `make install` remains host-only.
+  does not resolve the host runtime or build images; the image entrypoint starts
+  the container backend, and `make install` remains host-only.
 - `host` is an explicit wrapper target. A missing `default-target` means host;
   `make install` and installer host mode record host, while installer Docker
-  and both modes record `linux.v1`. Explicit `--target=host` performs direct
-  execution without an added diagnostic layer.
+  and both modes record `linux.v1`. Host runtime lookup is relative to the
+  wrapper with no `$HOME/.local` fallback. Explicit `--target=host` performs
+  direct execution without an added diagnostic layer.
 - Portable distribution uses one relocatable `linux/amd64` archive instead of
   native DEB/RPM packages. The release contract is glibc 2.27 or newer, built
   directly by GitHub Actions in a pinned Ubuntu 18.04 container and verified
-  on Ubuntu 18.04, 22.04, and 24.04. The archive carries the Go backend and its
-  LLVM runtime rather than requiring distro-specific libclang packages.
+  on Ubuntu 18.04, 22.04, and 24.04. Its wrapper runs the sibling runtime
+  immediately after extraction. The archive carries the Go backend and its LLVM
+  runtime rather than requiring distro-specific libclang packages.
 - `install.sh` offers host, Docker, and both dependency modes, recommends
   Docker, uses `sudo` automatically, and deliberately excludes optional
   external-library build systems from host mode.
@@ -2390,6 +2398,28 @@ passed ESLint, TypeScript compilation, and all 19 tests in a temporary Node.js
 container. Temporary negative configurations also confirmed rejection of
 duplicate YAML keys, unknown actions and fields, invalid field types, escaping
 paths, and a run action placed before a build action.
+
+## Last known verification of the relocatable release wrapper
+
+On 2026-08-25, the host wrapper stopped using a fixed
+`$HOME/.local/libexec/hard` path. Host execution and an installed default target
+now resolve from the wrapper's own installation prefix, with no home-directory
+fallback. Explicit Docker execution does not resolve that host runtime and
+continues to rely on the container image entrypoint.
+
+Uncached wrapper tests passed for an unpacked prefix whose path contained a
+space, explicit host execution with bundled tools, invocation through `PATH`,
+an installed Docker default, and an explicit Docker target with no sibling
+`libexec/hard` directory. A real `make install` into a temporary non-default
+`PREFIX` produced a working host wrapper without a Makefile change.
+
+The saved `v1.0` archive was extracted below a path containing a space and its
+wrapper was replaced with the current source. Running it without arguments
+reached the sibling backend's `a command is required` diagnostic; explicit host
+help and real formatting through the bundled clang-format both succeeded. The
+release workflow parsed as YAML. Clean gofmt output, uncached ordinary and race
+tests, vet, an out-of-tree backend build, module verification, and wrapper
+shell syntax checking all passed.
 
 ## Workspace safety snapshot
 
