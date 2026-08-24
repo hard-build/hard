@@ -19,9 +19,11 @@ python3 -m pip install -r unittest/requirements.txt
 ```
 
 Most C and C++ fixtures use only local and system headers. The
-`011.compiled_library_recipe` scenario downloads TinyXML2 from GitHub and
-requires CMake in addition to the configured C++ compiler. GoogleTest
-scenarios require `pkg-config` and `gtest_main`, as does `hard test` itself.
+`011.compiled_library_recipe` scenario downloads TinyXML2 from GitHub, while
+`012.well_known_recipe` first resolves its recipe through
+`github.com/hard-build/recipe`. Both require CMake in addition to the configured
+C++ compiler. GoogleTest scenarios require `pkg-config` and `gtest_main`, as
+does `hard test` itself.
 
 ## Running scenarios
 
@@ -189,7 +191,7 @@ Create one new immediate subdirectory with its sources and `test.yaml`:
 
 ```text
 unittest/
-└── 011.new_scenario/
+└── 013.new_scenario/
     ├── example.cpp
     └── test.yaml
 ```

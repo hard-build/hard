@@ -50,16 +50,21 @@ func TestGitHubRepositoriesFromDependencies(t *testing.T) {
 		"github.com/nlohmann/json/include/nlohmann/json.hpp",
 		"hard/application/application.h",
 		"hard/variable/variable.h",
+		"recipe/tinyxml2.hard.h",
+		"recipe/yaml-cpp.hard.h",
 		"/tmp/github.com/ignored/repository/header.h",
 		"/tmp/hard/ignored.h",
+		"/tmp/recipe/ignored.h",
 		"github.com/incomplete",
 		"github.com/../invalid/header.h",
 		"hard/",
+		"recipe/",
 	})
 	want := []githubRepository{
 		{owner: "nlohmann", name: "json"},
 		{owner: "google", name: "googletest"},
 		{owner: "hard-build", name: "library"},
+		{owner: "hard-build", name: "recipe"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("githubRepositoriesFromDependencies() = %#v, want %#v", got, want)
@@ -252,6 +257,64 @@ func TestGitHubSnapshotResolverCreatesWellKnownAlias(t *testing.T) {
 	wantHeader := filepath.Join(destination, "application", "application.h")
 	if resolvedHeader != wantHeader {
 		t.Fatalf("resolved well-known header = %q, want %q", resolvedHeader, wantHeader)
+	}
+
+	if err := resolver.ensure(repository); err != nil {
+		t.Fatalf("cached ensure() error = %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("request count = %d, want 1", got)
+	}
+}
+
+func TestGitHubSnapshotResolverCreatesRecipeWellKnownAlias(t *testing.T) {
+	root := t.TempDir()
+	archive := githubTestArchive(t, []githubTestArchiveEntry{
+		{name: "hard-build-recipe-sha/", typeflag: tar.TypeDir, mode: 0o755},
+		{
+			name:     "hard-build-recipe-sha/tinyxml2.hard.h",
+			typeflag: tar.TypeReg,
+			contents: "#pragma once\n",
+			mode:     0o644,
+		},
+	})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		if request.URL.Path != "/repos/hard-build/recipe/tarball" {
+			t.Errorf("request path = %q", request.URL.Path)
+		}
+		_, _ = response.Write(archive)
+	}))
+	defer server.Close()
+
+	resolver := newGitHubSnapshotResolverWithClient(root, server.Client(), server.URL, nil)
+	repository := githubRepository{owner: "hard-build", name: "recipe"}
+	if err := resolver.ensure(repository); err != nil {
+		t.Fatalf("ensure() error = %v", err)
+	}
+	destination, err := githubRepositoryDirectory(root, "hard-build", "recipe")
+	if err != nil {
+		t.Fatalf("githubRepositoryDirectory() error = %v", err)
+	}
+	alias := filepath.Join(root, "source", "recipe")
+	target, err := os.Readlink(alias)
+	if err != nil {
+		t.Fatalf("read recipe alias: %v", err)
+	}
+	if want := filepath.FromSlash("github.com/hard-build/recipe"); target != want {
+		t.Fatalf("recipe alias = %q, want %q", target, want)
+	}
+	resolvedHeader, err := realAbsolutePath(
+		filepath.Join(alias, "tinyxml2.hard.h"),
+		root,
+	)
+	if err != nil {
+		t.Fatalf("resolve recipe header: %v", err)
+	}
+	wantHeader := filepath.Join(destination, "tinyxml2.hard.h")
+	if resolvedHeader != wantHeader {
+		t.Fatalf("resolved recipe header = %q, want %q", resolvedHeader, wantHeader)
 	}
 
 	if err := resolver.ensure(repository); err != nil {

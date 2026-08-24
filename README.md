@@ -351,14 +351,16 @@ Well-known include prefixes map shorter public paths to canonical repositories.
 The current mapping is:
 
 ```text
-hard/<path> -> github.com/hard-build/library/<path>
+hard/<path>   -> github.com/hard-build/library/<path>
+recipe/<path> -> github.com/hard-build/recipe/<path>
 ```
 
 The repository is installed in the canonical GitHub cache, and `hard` creates
 a relative source alias:
 
 ```text
-HARD_ROOT/source/hard -> github.com/hard-build/library
+HARD_ROOT/source/hard   -> github.com/hard-build/library
+HARD_ROOT/source/recipe -> github.com/hard-build/recipe
 ```
 
 An existing alias must be a symbolic link resolving to the mapped repository;
@@ -476,15 +478,16 @@ builds intentionally do not receive `HARD_CFLAGS`, changing ABI-affecting
 project flags without also changing `HARD_ENV` can produce an incompatible
 project/package combination; use a distinct environment for such flag changes.
 
-The recipe is reusable like any other managed header. Another project may
-include the original header through the GitHub include namespace, for example:
+Reusable recipes are available through the `recipe/` well-known namespace. For
+example:
 
 ```cpp
-#include <github.com/hard-build/hard/unittest/011.compiled_library_recipe/tinyxml2.hard.h>
+#include <recipe/tinyxml2.hard.h>
 ```
 
-The existing GitHub resolver first downloads the repository containing that
-header, then discovers its active recipe and obtains TinyXML2.
+This maps to `github.com/hard-build/recipe/tinyxml2.hard.h`. The existing GitHub
+resolver first downloads the recipe repository, then discovers its active
+recipe and obtains TinyXML2.
 
 Each root or automatically discovered translation unit produces one
 source-context forward file from the declarations visible in its final
@@ -1207,6 +1210,7 @@ persistent layout:
 HARD_ROOT/
 ├── source/
 │   ├── hard -> github.com/hard-build/library
+│   ├── recipe -> github.com/hard-build/recipe
 │   └── github.com/
 │       └── <owner>/
 │           └── <repository>/

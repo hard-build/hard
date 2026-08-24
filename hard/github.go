@@ -39,6 +39,13 @@ var wellKnownGitHubRepositories = []wellKnownGitHubRepository{
 			name:  "library",
 		},
 	},
+	{
+		include: "recipe",
+		repository: githubRepository{
+			owner: "hard-build",
+			name:  "recipe",
+		},
+	},
 }
 
 func (repository githubRepository) key() string {

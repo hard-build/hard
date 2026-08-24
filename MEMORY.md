@@ -108,7 +108,7 @@ Implemented:
 - recursive GitHub snapshot fetching and persistent caching;
 - strict embedded `hard.recipe.v1` YAML recipes for content-addressed CMake
   builds of reachable static third-party libraries;
-- the well-known `hard/` repository mapping;
+- the well-known `hard/` library and `recipe/` recipe repository mappings;
 - one source-context forward-declaration file per compiled translation unit;
 - object compilation, dependency-object resolution, ordinary executable
   linking, atomic build delivery, and direct execution of internal binaries;
@@ -169,7 +169,7 @@ cache entries and are not refreshed automatically.
 | `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios |
 | `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
 | `unittest/README.md` | Documents the YAML schema, commands, variables, and new-scenario workflow |
-| Eleven `unittest/001.*` through `unittest/011.*` directories | Self-contained C and C++ source scenarios whose local `test.yaml` files own every command argument and expectation |
+| Twelve `unittest/001.*` through `unittest/012.*` directories | Self-contained C and C++ source scenarios whose local `test.yaml` files own every command argument and expectation |
 | `hard/go.mod`, `hard/go.sum` | Module identity, Go version, dependencies, and checksums |
 | `hard/main.go` | Process entry, dispatch, configuration loading, and shared search progress |
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
@@ -855,13 +855,15 @@ installed; there is no Git history. The cache path is:
 
     HARD_ROOT/source/github.com/<owner>/<repository>
 
-The current well-known mapping is:
+The current well-known mappings are:
 
     hard/<path> -> github.com/hard-build/library/<path>
+    recipe/<path> -> github.com/hard-build/recipe/<path>
 
-It also creates the relative alias:
+They create relative aliases:
 
     HARD_ROOT/source/hard -> github.com/hard-build/library
+    HARD_ROOT/source/recipe -> github.com/hard-build/recipe
 
 An existing alias is valid only when it is a symbolic link resolving to the
 mapped canonical repository. A conflicting file, directory, or symlink is an
@@ -1403,6 +1405,7 @@ The implemented installed host layout is:
     HARD_ROOT/
     ├── source/
     │   ├── hard -> github.com/hard-build/library
+    │   ├── recipe -> github.com/hard-build/recipe
     │   └── github.com/
     │       └── <owner>/
     │           └── <repository>/
@@ -1445,14 +1448,15 @@ reject an environment name that escapes `HARD_ROOT/env`.
 ## Integration fixtures and external examples
 
 The repository contains a self-contained positive integration suite below
-`unittest/`. It has eleven scenarios, fourteen application entry points, eight
+`unittest/`. It has twelve scenarios, fifteen application entry points, eight
 GoogleTest translation units, and fifteen GoogleTest cases. The scenarios cover
 a minimal application, multiple entries sharing an object, transitive
 implementation discovery, cyclic headers and implementation graphs, a
 header-only template, ordinary GoogleTest production dependencies, a compiled
-TinyXML2 package linked statically from an embedded recipe, an object shared by
-two test plans, all supported source extensions, equal binary basenames in
-different directories, and the force-included runtime support header.
+TinyXML2 package linked statically from an embedded recipe, the same package
+resolved through the well-known recipe repository, an object shared by two test
+plans, all supported source extensions, equal binary basenames in different
+directories, and the force-included runtime support header.
 
 The self-contained unit is one numbered scenario, not each individual
 GoogleTest `TEST` declaration. Every scenario directory owns one readable
@@ -1493,9 +1497,10 @@ logical CPUs through the public `hard` semantics. An empty `SCENARIO`
 discovers every YAML scenario; a name selects only that scenario. Direct
 runner invocation accepts zero or more scenario names. Most fixtures use only
 local and system headers. `011.compiled_library_recipe` downloads TinyXML2
-from GitHub and requires CMake; its downloaded snapshot remains shared below
-`HARD_ROOT/source`. Generated headers, objects, and test binaries remain below
-`HARD_ROOT`;
+from GitHub, while `012.well_known_recipe` first obtains its recipe from
+`github.com/hard-build/recipe`; both require CMake. Downloaded snapshots remain
+shared below `HARD_ROOT/source`. Generated headers, objects, and test binaries
+remain below `HARD_ROOT`;
 delivered application binaries remain below `OUTPUT/<scenario>`.
 
 The main example tree is:
@@ -1514,7 +1519,7 @@ Known scenarios:
   `github.com/nlohmann/json/single_include/nlohmann/json.hpp`; used to validate
   GitHub snapshots, safe forward filtering, cache reuse, compilation, linking,
   and execution with `example.json`;
-- `006.hardlib`: includes `hard/...`; used to validate the well-known mapping,
+- `007.hardlib`: includes `hard/...`; used to validate the well-known mapping,
   alias, managed external sources, external objects, source-forward generation,
   and canonical progress paths.
 
@@ -1594,6 +1599,8 @@ to leave the library unchanged for now.
   not a Git clone, below `HARD_ROOT/source`.
 - `hard/...` is the well-known alias for
   `github.com/hard-build/library/...`.
+- `recipe/...` is the well-known alias for
+  `github.com/hard-build/recipe/...`.
 - External repositories are managed source trees rather than opaque/system
   headers.
 - libclang was selected as the unified mechanism for header discovery,
@@ -1702,7 +1709,7 @@ to leave the library unchanged for now.
   expanded spellings, flag-controlled conditionals, definitions, macro/inline
   namespaces, templates, defaults, parameter packs, symlink deduplication, and
   system-header cache exclusion.
-- `hard/github_test.go`: GitHub/well-known mapping, alias
+- `hard/github_test.go`: GitHub and both well-known mappings, alias
   creation/reuse/conflicts, exact HTTP requests, safe extraction, PAX metadata,
   `.git` and traversal rejection, persistent cache, concurrency deduplication,
   live progress, transitive retries, and non-GitHub diagnostics.
@@ -1750,13 +1757,14 @@ to leave the library unchanged for now.
   helper signatures.
 - `hard/main_test.go`: normal, verbose, and silent search progress for every
   command while retaining command-specific selection.
-- `unittest/`: eleven declarative source-tree scenarios whose local `test.yaml`
-  files require fourteen applications to build and produce exact outputs,
+- `unittest/`: twelve declarative source-tree scenarios whose local `test.yaml`
+  files require fifteen applications to build and produce exact outputs,
   eight GoogleTest binaries with fifteen cases to run successfully, automatic
   dependency sources to be discovered, one TinyXML2 package to be built and
-  linked statically, and one shared production object to compile once; the
-  Python runner validates and executes ordered steps, while the top-level
-  Makefile only passes configuration.
+  linked statically from both an embedded and a well-known recipe, and one
+  shared production object to compile once; the Python runner validates and
+  executes ordered steps, while the top-level Makefile only passes
+  configuration.
 
 ## Required verification
 
@@ -1826,9 +1834,11 @@ Verify request, snapshot path, absence of `.git`, cache reuse, json forward,
 successful build/link/run, and `example.json` behavior.
 
 For well-known or managed-external changes, use a fresh isolated root with
-`006.hardlib`. Verify the relative hard alias, external forwards and objects,
+`007.hardlib`. Verify the relative hard alias, external forwards and objects,
 library implementation compilation/linking, canonical labels, actual verbose
-paths, runtime output, and cached reuse.
+paths, runtime output, and cached reuse. For the recipe mapping, additionally
+run `012.well_known_recipe` with a fresh root, verify the relative recipe alias,
+static package link and output, and repeat it with cache reads enabled.
 
 For fetch changes, use a fresh root and an external example. The first run must
 show search, parsing, and downloads and must not create an environment build
@@ -2138,8 +2148,9 @@ arguments, source-tree include directories for `fetch`, installed include
 directories, and installed archive paths. The source recipe stays with the
 source that consumes it and can be reused through the existing GitHub include
 namespace. The example is `unittest/011.compiled_library_recipe/tinyxml2.hard.h`;
-another repository can include that header as
-`github.com/hard-build/hard/unittest/011.compiled_library_recipe/tinyxml2.hard.h`.
+the reusable repository publishes an equivalent header as
+`recipe/tinyxml2.hard.h`, mapped to
+`github.com/hard-build/recipe/tinyxml2.hard.h`.
 
 Only the active libclang include graph activates a recipe. `fetch` downloads
 both the recipe source and vendor source, uses the declared source include
@@ -2185,7 +2196,9 @@ x86-64-v3 and generic tuning flags in `HARD_CFLAGS`, while the backend appends
 The approved YAML module is `go.yaml.in/yaml/v3 v3.0.5`. The
 `011.compiled_library_recipe` example builds TinyXML2 with tests, shared
 libraries, and pkg-config installation disabled, installs a static
-`libtinyxml2.a`, links it, and prints `answer=42`.
+`libtinyxml2.a`, links it, and prints `answer=42`. The
+`012.well_known_recipe` scenario exercises the equivalent published recipe
+through the short `recipe/tinyxml2.hard.h` include.
 
 The implementation passed clean gofmt output, ordinary and race tests, vet, an
 out-of-tree backend build, module verification, and repository diff checking.
@@ -2317,6 +2330,32 @@ reported cached package preparation, parsing, compilation, linking, and
 delivery, while one package fingerprint directory remained. The binary was an
 x86-64 ELF executable, linked the installed static `libyaml-cpp.a`, and printed
 `answer=42`.
+
+## Last known verification of the well-known recipe mapping
+
+On 2026-08-24, `recipe/<path>` was mapped to
+`github.com/hard-build/recipe/<path>`. Unit coverage passed for dependency
+classification, the exact `hard-build/recipe` snapshot request, canonical
+installation, relative alias creation, canonical resolution, persistent cache
+reuse, and the unchanged `hard/<path>` mapping.
+
+The real `012.well_known_recipe` scenario passed with an isolated runtime and a
+fresh `HARD_ROOT`. Its canonical recipe snapshot contained no `.git` directory,
+and `HARD_ROOT/source/recipe` resolved through the relative target
+`github.com/hard-build/recipe`. TinyXML2 was configured, built, installed as a
+static library, linked into the copied application, and produced `answer=42`.
+A second cache-enabled build reported cached package preparation, parsing,
+compilation, linking, and delivery.
+
+The existing `example/007.hardlib` mapping regression also passed from a fresh
+alias with its external implementation objects, expected lifecycle output, and
+cached repeat build. All 12 declarative integration scenarios then passed with
+the newly built backend.
+
+The complete required verification set passed: clean gofmt output, ordinary
+and race Go tests, vet, an out-of-tree backend build, module verification, and
+repository diff checking. The new C++ fixture also passed the repository's
+Clang 18 format check.
 
 ## Workspace safety snapshot
 

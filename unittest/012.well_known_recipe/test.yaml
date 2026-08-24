@@ -1,0 +1,14 @@
+description: Resolve a well-known recipe and statically link TinyXML2.
+
+steps:
+  - build:
+      sources:
+        - example.cpp
+      compiled_once:
+        - example.cpp
+
+  - run:
+      binary: example
+      exit_code: 0
+      stdout: |
+        answer=42
