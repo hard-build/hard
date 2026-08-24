@@ -69,6 +69,35 @@ func TestActionFingerprintIsStableAndContentBased(t *testing.T) {
 	}
 }
 
+func TestCompilerCacheWorkingDirectoryOnlyForRelativeArguments(t *testing.T) {
+	workingDirectory := filepath.Join(string(filepath.Separator), "project")
+	absoluteInclude := filepath.Join(string(filepath.Separator), "sdk", "include")
+	tests := []struct {
+		name      string
+		arguments []string
+		want      string
+	}{
+		{name: "ordinary flags", arguments: []string{"-std=c++20", "-O3", "-Wall"}},
+		{
+			name:      "absolute paths",
+			arguments: []string{"-I" + absoluteInclude, "-include", filepath.Join(absoluteInclude, "config.h")},
+		},
+		{name: "relative joined path", arguments: []string{"-Iinclude"}, want: workingDirectory},
+		{name: "relative separate path", arguments: []string{"-include", "config.h"}, want: workingDirectory},
+		{name: "response file", arguments: []string{"@options"}, want: workingDirectory},
+		{name: "opaque linker option", arguments: []string{"-Wl,--as-needed"}, want: workingDirectory},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := compilerCacheWorkingDirectory(tt.arguments, workingDirectory)
+			if got != tt.want {
+				t.Fatalf("compilerCacheWorkingDirectory() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestArtifactCacheVerifiesArtifactContent(t *testing.T) {
 	directory := t.TempDir()
 	artifact := filepath.Join(directory, "artifact")
@@ -189,6 +218,63 @@ func TestCompileSourceBatchCachesAndNoCacheRebuilds(t *testing.T) {
 	}
 	if got := cacheLogLineCount(t, log); got != 3 {
 		t.Fatalf("compiler runs after source change = %d, want 3", got)
+	}
+}
+
+func TestCompileCacheSeparatesRelativeFlagWorkingDirectories(t *testing.T) {
+	parent := t.TempDir()
+	project := filepath.Join(parent, "project")
+	writeBuildFile(t, project, "source.cpp", "")
+	source := filepath.Join(project, "source.cpp")
+	forward := filepath.Join(parent, "source.cpp.fwd.h")
+	writeBuildFile(t, parent, "source.cpp.fwd.h", "#pragma once\n")
+	object := filepath.Join(parent, "source.cpp.o")
+	compiler := filepath.Join(parent, "c++")
+	log := filepath.Join(parent, "compile.log")
+	t.Setenv("CACHE_LOG", log)
+	script := "#!/bin/sh\n" +
+		"printf 'compile\\n' >> \"$CACHE_LOG\"\n" +
+		"output=''\n" +
+		"previous=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"\tif [ \"$previous\" = '-o' ]; then output=$argument; fi\n" +
+		"\tprevious=$argument\n" +
+		"done\n" +
+		"printf 'object\\n' > \"$output\"\n"
+	if err := os.WriteFile(compiler, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake compiler: %v", err)
+	}
+
+	run := func(workingDirectory string) bool {
+		t.Helper()
+		fatal, cached, err := compileSourceWithCache(
+			newTestArtifactCache(t, true),
+			compiler,
+			[]string{"-I."},
+			[]string{forward},
+			nil,
+			source,
+			object,
+			workingDirectory,
+			io.Discard,
+		)
+		if err != nil || fatal {
+			t.Fatalf("compileSourceWithCache() = fatal %v, error %v", fatal, err)
+		}
+		return cached
+	}
+
+	if run(parent) {
+		t.Fatal("first parent compile was cached")
+	}
+	if run(project) {
+		t.Fatal("first project compile reused the parent working directory")
+	}
+	if !run(project) {
+		t.Fatal("second project compile was not cached")
+	}
+	if got := cacheLogLineCount(t, log); got != 2 {
+		t.Fatalf("compiler runs = %d, want 2", got)
 	}
 }
 
@@ -321,6 +407,78 @@ func TestBuildSourcesWithProgressCachesCompileLinkAndCopy(t *testing.T) {
 	}
 	if got := cacheLogLineCount(t, log); got != 4 {
 		t.Fatalf("compiler/linker runs after forced build = %d, want 4", got)
+	}
+}
+
+func TestBuildCacheReusesSourceAcrossWorkingDirectories(t *testing.T) {
+	root := t.TempDir()
+	runtimeRoot := t.TempDir()
+	parent := t.TempDir()
+	project := filepath.Join(parent, "project")
+	writeBuildFile(t, project, "application.cpp", "int main() { return 0; }\n")
+	compiler := filepath.Join(t.TempDir(), "c++")
+	log := filepath.Join(t.TempDir(), "build.log")
+	t.Setenv("CACHE_LOG", log)
+	script := "#!/bin/sh\n" +
+		"printf 'tool\\n' >> \"$CACHE_LOG\"\n" +
+		"output=''\n" +
+		"previous=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"\tif [ \"$previous\" = '-o' ]; then output=$argument; fi\n" +
+		"\tprevious=$argument\n" +
+		"done\n" +
+		"printf 'artifact\\n' > \"$output\"\n"
+	if err := os.WriteFile(compiler, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake build compiler: %v", err)
+	}
+	withWorkingDirectory(t, parent)
+
+	run := func(source string) string {
+		t.Helper()
+		var stdout bytes.Buffer
+		progress := newProgressBar(&stdout, -1, true, false, true)
+		err := buildSourcesWithProgress(
+			root,
+			runtimeRoot,
+			"host",
+			compiler,
+			nil,
+			nil,
+			[]string{"main"},
+			[]string{source},
+			"",
+			1,
+			true,
+			false,
+			progress,
+			io.Discard,
+			false,
+		)
+		if err != nil {
+			t.Fatalf("buildSourcesWithProgress() error = %v", err)
+		}
+		return stdout.String()
+	}
+
+	if first := run(filepath.Join("project", "application.cpp")); strings.Contains(first, "(CACHED)") {
+		t.Fatalf("first parent build output = %q, want cache miss", first)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatalf("change to project directory: %v", err)
+	}
+	second := run("application.cpp")
+	for _, want := range []string{
+		"Parsing application.cpp (CACHED)",
+		"Compiling application.cpp (CACHED)",
+		"Linking application (CACHED)",
+		"Copying application (CACHED)",
+	} {
+		if !strings.Contains(second, want) {
+			t.Fatalf("project build output = %q, want %q", second, want)
+		}
+	}
+	if got := cacheLogLineCount(t, log); got != 2 {
+		t.Fatalf("compiler/linker runs after cross-directory hit = %d, want 2", got)
 	}
 }
 

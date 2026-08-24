@@ -445,7 +445,10 @@ with the selected job count, and installs it into a content-addressed package
 directory. `hard` also owns `CMAKE_INSTALL_PREFIX`; recipes cannot override
 either managed CMake setting. Ambient `CXXFLAGS` are cleared for the configure
 process. `HARD_CFLAGS` and `HARD_LDFLAGS` are not passed to the external build;
-recipe-specific vendor options belong in `configure_arguments`.
+recipe-specific vendor options belong in `configure_arguments`. CMake always
+runs with the declared vendor source directory as its working directory, so
+relative configure-argument values and the package fingerprint do not depend
+on the directory from which `hard` was invoked.
 
 Installed include directories are appended only to translation units whose
 active libclang include graph reaches the recipe header. Installed archives
@@ -465,12 +468,13 @@ HARD_ROOT/env/HARD_ENV/library/
 
 The fingerprint includes the `hard` executable, recipe header and bytes, full
 downloaded source tree, CMake executable, resolved `HARD_CC` executable,
-recipe paths, and configure arguments. A manifest verifies the complete
-installed file tree before reuse. `--no-cache` rebuilds the package but does
-not refresh the downloaded GitHub snapshot. Because vendor builds intentionally
-do not receive `HARD_CFLAGS`, changing ABI-affecting project flags without also
-changing `HARD_ENV` can produce an incompatible project/package combination;
-use a distinct environment for such flag changes.
+recipe paths, configure arguments, and stable vendor source working directory.
+The invocation working directory is not part of this package key. A manifest
+verifies the complete installed file tree before reuse. `--no-cache` rebuilds
+the package but does not refresh the downloaded GitHub snapshot. Because vendor
+builds intentionally do not receive `HARD_CFLAGS`, changing ABI-affecting
+project flags without also changing `HARD_ENV` can produce an incompatible
+project/package combination; use a distinct environment for such flag changes.
 
 The recipe is reusable like any other managed header. Another project may
 include the original header through the GitHub include namespace, for example:
@@ -526,13 +530,17 @@ result. After the checksum is validated, a prospective hit restores the
 packages and package include flags named by those headers before its action
 fingerprint is validated against current inputs.
 
-A parse-cache key includes the `hard` executable digest, libclang version,
-working directory, the effective compiler flags (configured, hard-managed, and
-active-package flags), configured entry-point names when relevant,
-and the content of the input plus every active non-system dependency known
-from the previous successful analysis, including non-system force-included
-headers. System headers are represented by the selected `HARD_ENV` rather than
-individual content hashes. Missing, malformed, changed, or internally
+A parse-cache key includes the `hard` executable digest, libclang version, the
+effective compiler flags (configured, hard-managed, and active-package flags),
+configured entry-point names when relevant, and the content of the input plus
+every active non-system dependency known from the previous successful
+analysis, including non-system force-included headers. The invocation working
+directory participates only when a compiler argument can depend on it, such as
+a relative include, forced-include, toolchain, or response-file path, or an
+opaque forwarded driver argument. Sources using only cwd-independent flags can
+reuse parsing when selected from a parent directory and then from their own
+directory. System headers are represented by the selected `HARD_ENV` rather
+than individual content hashes. Missing, malformed, changed, or internally
 inconsistent records are misses. A hit skips libclang analysis, restores a
 missing generated source forward when needed, and reports
 `Parsing <path> (CACHED)`.
@@ -557,12 +565,15 @@ HARD_CC <HARD_CFLAGS...> \
   -include <runtime-root>/hard.h \
   <active-library-include-flags...> \
   -include <source.cpp.fwd.h> \
-  -c <source> -o <object>
+  -c <absolute-source> -o <object>
 ```
 
 The generated `-include` pair appears after `HARD_CFLAGS` and before `-c`.
 Even when no eligible declarations exist, the source forward is present and
-contains `#pragma once`, which keeps the compiler command shape uniform.
+contains `#pragma once`, which keeps the compiler command shape uniform. The
+compiler process retains the invocation working directory, preserving the
+meaning of relative user flags, while the source argument after `-c` is always
+the lexical absolute source path.
 
 The canonical target of `<runtime-root>/hard.h` is the one managed header
 exception. It is force-included by the backend independently of
@@ -583,12 +594,16 @@ as `file.c` and `file.cpp`:
 
 Each successful compilation stores an atomic cache record beside its object.
 The cache key includes the `hard` executable, compiler path and content,
-working directory, complete compiler argument vector, source content, every
-resolved active non-system include, and the generated source forward. System
-headers and other toolchain state are represented by `HARD_ENV`. A hit is
-accepted only when the object is still a regular file with the recorded
-content digest. Missing, changed, malformed, or non-regular artifacts and
-records are cache misses.
+complete compiler argument vector with the absolute source, source content,
+every resolved active non-system include, and the generated source forward.
+As with parsing, the invocation working directory is included only for
+relative or opaque cwd-dependent compiler arguments. Thus a source using
+cwd-independent flags can reuse its object across equivalent selections from
+different directories, while `HARD_CFLAGS=-I.` deliberately keeps those
+contexts separate. System headers and other toolchain state are represented by
+`HARD_ENV`. A hit is accepted only when the object is still a regular file
+with the recorded content digest. Missing, changed, malformed, or non-regular
+artifacts and records are cache misses.
 
 `--no-cache` disables build, run, and test cache reads for this invocation. It
 forces source analysis, source-forward generation, compilation, and linking;
@@ -651,8 +666,10 @@ HARD_CC <entry-and-dependency-objects...> \
 ```
 
 Successful links are cached from the compiler fingerprint, link argument
-vector, working directory, and the content of every linked object. The
-internal binary digest is verified before a hit is used.
+vector, and the content of every linked object. The invocation working
+directory participates only when a linker flag is relative or is an opaque
+forwarded argument. The internal binary digest is verified before a hit is
+used.
 
 `hard` does not add `-nostartfiles`, `-e`, or another custom startup option for
 non-`main` names. A configured entry point such as `_start` must therefore be

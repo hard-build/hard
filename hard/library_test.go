@@ -196,6 +196,7 @@ func TestLibraryManagerBuildsAndReusesCMakePackage(t *testing.T) {
 	cmake := filepath.Join(tools, "cmake")
 	cmakeScript := `#!/bin/sh
 printf 'CXXFLAGS=%s\n' "$CXXFLAGS" >> "$CMAKE_LOG"
+printf 'PWD=%s\n' "$PWD" >> "$CMAKE_LOG"
 printf 'cmake' >> "$CMAKE_LOG"
 for argument in "$@"; do printf ' %s' "$argument" >> "$CMAKE_LOG"; done
 printf '\n' >> "$CMAKE_LOG"
@@ -264,6 +265,7 @@ esac
 	}
 	for _, want := range []string{
 		"CXXFLAGS=\n",
+		"PWD=" + repositoryRoot + "\n",
 		"-DCMAKE_CXX_COMPILER=" + resolvedCompiler,
 		"--parallel 2",
 	} {
@@ -282,7 +284,7 @@ esac
 		2,
 		true,
 		false,
-		workingDirectory,
+		t.TempDir(),
 		newGitHubSnapshotResolver(root, nil),
 		cache,
 		nil,

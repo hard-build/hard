@@ -797,14 +797,18 @@ packages and per-source package include flags before its action fingerprint is
 validated against current inputs.
 
 The action fingerprint contains the current `hard` executable digest,
-`clang_getClangVersion()` value, working directory, ordered compiler flags,
-configured entry names where relevant, and content digests for the input plus
-every non-system dependency recorded by the prior successful analysis. Paths
-are canonicalized, deduplicated, and sorted by the common action-key code.
-Missing, malformed, version-mismatched, changed, or result-digest-mismatched
-records are misses. A missing dependency is also a miss and the real parser
-remains authoritative. System state is intentionally represented only by the
-environment-specific artifact tree.
+`clang_getClangVersion()` value, ordered compiler flags, configured entry names
+where relevant, and content digests for the input plus every non-system
+dependency recorded by the prior successful analysis. The invocation working
+directory is included only when the effective compiler arguments contain a
+relative path or an opaque driver argument whose semantics can depend on it.
+With cwd-independent arguments, one absolute source can reuse its parse result
+when selected first from a parent directory and then from its own directory.
+Paths are canonicalized, deduplicated, and sorted by the common action-key
+code. Missing, malformed, version-mismatched, changed, or
+result-digest-mismatched records are misses. A missing dependency is also a
+miss and the real parser remains authoritative. System state is intentionally
+represented only by the environment-specific artifact tree.
 
 On a source hit, dependency and entry analysis are both skipped and their
 stored semantic values continue graph discovery. The stored complete
@@ -1007,12 +1011,14 @@ The command shape is:
       -include <runtime-root>/hard.h \
       <active-library-include-flags...> \
       -include <source.cpp.fwd.h> \
-      -c <source> -o <object>
+      -c <absolute-source> -o <object>
 
 The generated forward `-include` pair follows the complete per-source effective
 flags and precedes `-c`. A source with no eligible declarations still gets an
 output containing `#pragma once`. The source-root and runtime-header includes
-are backend-managed rather than part of configured `HARD_CFLAGS`.
+are backend-managed rather than part of configured `HARD_CFLAGS`. The compiler
+retains the invocation working directory so relative user flags keep their
+existing meaning, but the source argument is always the lexical absolute path.
 
 Compilation uses up to the resolved job count and creates parent directories.
 Compiler exit failures are accumulated while independent jobs continue. A
@@ -1032,12 +1038,16 @@ collision between `file.c` and `file.cpp`:
 
 Successful compilation writes `<object>.hard-cache.json` atomically. Its input
 fingerprint contains the `hard` executable digest, resolved compiler path and
-digest, working directory, compiler arguments, source, every active resolved
-non-system include, and generated source forward. `HARD_ENV` represents the
-system headers and immutable toolchain state. Cache lookup verifies the sidecar
-and current regular object digest. Missing, malformed, changed, or non-regular
-records and artifacts are misses. `--no-cache` disables reads, invalidates the
-old record before compilation, and stores a fresh record only after success.
+digest, compiler arguments with the absolute source, source, every active
+resolved non-system include, and generated source forward. The invocation
+working directory participates only when compiler arguments are relative or
+opaque and therefore potentially cwd-dependent. For example, `-I.` deliberately
+keeps two invocation directories separate, while only absolute/default flags
+permit cross-directory reuse. `HARD_ENV` represents the system headers and
+immutable toolchain state. Cache lookup verifies the sidecar and current
+regular object digest. Missing, malformed, changed, or non-regular records and
+artifacts are misses. `--no-cache` disables reads, invalidates the old record
+before compilation, and stores a fresh record only after success.
 
 ### Entry-point detection
 
@@ -1104,10 +1114,11 @@ aggregated; a start failure stops new scheduling. Verbose mode prints the exact
 shell-escaped link command immediately after the relevant `Linking` entry.
 
 Successful links use the same sidecar suffix beside the internal binary. Their
-fingerprint contains the `hard` and compiler fingerprints, working directory,
-link arguments, and every object digest. The binary digest is verified on hit.
-A failed or forced link cannot retain an eligible older record because the
-sidecar is invalidated before the compiler is started.
+fingerprint contains the `hard` and compiler fingerprints, link arguments, and
+every object digest. The invocation working directory is retained only for
+relative or opaque cwd-dependent linker flags. The binary digest is verified
+on hit. A failed or forced link cannot retain an eligible older record because
+the sidecar is invalidated before the compiler is started.
 
 ### Binary delivery and `-o`
 
@@ -1697,7 +1708,8 @@ to leave the library unchanged for now.
   live progress, transitive retries, and non-GitHub diagnostics.
 - `hard/library_test.go`: strict YAML and marker validation, source/path rules,
   authoritative CMake compiler and install prefix, cleared `CXXFLAGS`, package
-  manifest reuse, fetch-only source includes, and reachable archive selection.
+  manifest reuse across invocation directories, stable vendor-source CMake
+  working directory, fetch-only source includes, and reachable archive selection.
 - `hard/forward_test.go`: physical-file extraction, namespace and template
   rendering, macro and inline namespaces, safe candidate filtering, exclusions,
   invalid syntax, source-context paths, translation-unit conditional isolation,
@@ -1710,8 +1722,8 @@ to leave the library unchanged for now.
   sources, cycles and ambiguity, support-header exception, per-source forwards,
   object paths and creation, link graphs, external managed sources, canonical
   display, entry exclusion, binary/output collisions, output destinations,
-  progress, commands, quoting, errors, parallel links, copy behavior, and real
-  executable integrations.
+  progress, absolute source compiler commands, quoting, errors, parallel links,
+  copy behavior, and real executable integrations.
 - `hard/run_test.go`: live streams and working directory, argument quoting,
   child exit propagation, single-entry validation before compilation,
   internal-only real C++ artifacts, cached rebuild reuse, unconditional child
@@ -1721,7 +1733,9 @@ to leave the library unchanged for now.
   input/flag `__has_include` suppression, cacheable dependencies containing the
   token, standard-library parse reuse, `HARD_ENV` handling of `-isystem` header
   changes, source-forward restoration, no-cache refresh,
-  compile/link/delivery reuse, build/run/test `Parsing ... (CACHED)` output,
+  compile/link/delivery reuse across invocation directories, separation for
+  relative or opaque working-directory-dependent compiler flags, build/run/test
+  `Parsing ... (CACHED)` output,
   and successful-only test-result reuse with selector-separated keys and uncached
   listing.
 - `hard/fetch_test.go`: empty no-op, search/parse progress, recursive repository
@@ -2139,7 +2153,10 @@ units, and append static archives only to reachable binary closures.
 Neither `HARD_CFLAGS` nor `HARD_LDFLAGS` is passed to the vendor build. Recipe
 configure arguments are the explicit place for vendor-specific options. This
 means ABI-affecting project flag changes require a distinct `HARD_ENV` when
-vendor compatibility could change.
+vendor compatibility could change. CMake configure, build, and install actions
+run from the declared vendor source directory, which is the stable package
+fingerprint working directory. Relative configure-argument values therefore do
+not depend on the directory from which `hard` was invoked.
 
 Packages use the content-addressed layout
 `HARD_ROOT/env/HARD_ENV/library/github.com/<owner>/<repository>/<fingerprint>`
@@ -2153,6 +2170,9 @@ action fingerprint against current inputs. If that preliminary restoration
 fails, the record is treated as a cache miss and current source analysis remains
 authoritative; this permits a removed recipe header to invalidate cleanly.
 `--no-cache` rebuilds packages but does not refresh downloaded GitHub snapshots.
+The invocation working directory is absent from the package key, so the same
+recipe and source snapshot reuse one package when a consuming source is
+selected from a parent directory or its own directory.
 
 At the same time, `-I<HARD_ROOT>/source` and
 `-include <runtime-root>/hard.h` moved out of configured `HARD_CFLAGS` into the
@@ -2277,6 +2297,26 @@ launch floor is not a native toolchain promise: that image has no C++20
 standard-library headers, and its packaged GCC 7 also rejects `-std=c++20`.
 No GitHub release, registry package, or image was published or changed during
 this verification.
+
+## Last known verification of cross-directory cache reuse
+
+On 2026-08-24, compiler source arguments were changed to lexical absolute
+paths while compiler processes retained the invocation working directory.
+Parse, compile, and link fingerprints omit that directory for cwd-independent
+flags and retain it for relative or opaque compiler-driver arguments. CMake
+recipe actions now run from and fingerprint the stable vendor source directory.
+
+The complete gofmt, ordinary test, uncached test, race test, vet, out-of-tree
+build, module verification, and repository diff-check set passed. All 11
+declarative integration scenarios passed with an isolated runtime and
+`HARD_ROOT`.
+
+The real `example/006.vendor_library` YAML-CPP example was first built from the
+parent example repository and then from its own directory. The second run
+reported cached package preparation, parsing, compilation, linking, and
+delivery, while one package fingerprint directory remained. The binary was an
+x86-64 ELF executable, linked the installed static `libyaml-cpp.a`, and printed
+`answer=42`.
 
 ## Workspace safety snapshot
 

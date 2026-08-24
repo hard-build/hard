@@ -34,6 +34,7 @@ type buildResult struct {
 type compileJob struct {
 	index             int
 	source            string
+	commandSource     string
 	display           string
 	object            string
 	forwards          []string
@@ -620,12 +621,17 @@ func inspectBuildSourceWithCache(
 		}
 		if cacheCandidateReady {
 			arguments := parseCacheArguments(result.cflags, configuredEntryPoints)
+			fingerprintWorkingDirectory := compilerCacheWorkingDirectory(
+				result.cflags,
+				workingDirectory,
+			)
 			record, cached, err := cache.parseHit(
 				recordPath,
 				"source-parse",
 				job.source,
 				arguments,
 				workingDirectory,
+				fingerprintWorkingDirectory,
 			)
 			if err != nil {
 				result.err = fmt.Errorf("read parse cache for %s: %w", job.source, err)
@@ -714,6 +720,10 @@ func inspectBuildSourceWithCache(
 		return result
 	}
 	arguments := parseCacheArguments(result.cflags, configuredEntryPoints)
+	fingerprintWorkingDirectory := compilerCacheWorkingDirectory(
+		result.cflags,
+		workingDirectory,
+	)
 	_, cacheError := cache.storeParse(
 		recordPath,
 		parseCacheRecord{
@@ -727,6 +737,7 @@ func inspectBuildSourceWithCache(
 		job.source,
 		arguments,
 		workingDirectory,
+		fingerprintWorkingDirectory,
 	)
 	if cacheError != nil {
 		result.err = fmt.Errorf("store parse cache for %s: %w", job.source, cacheError)
@@ -974,6 +985,10 @@ func compileSourceBatchWithConfiguration(
 	}
 	tasks := make([]compileJob, 0, len(sources))
 	for index, source := range sources {
+		commandSource, err := lexicalAbsolutePath(source, workingDirectory)
+		if err != nil {
+			return nil, fmt.Errorf("make compile source absolute %s: %w", source, err)
+		}
 		object, err := objectFilePath(root, environment, source)
 		if err != nil {
 			return nil, err
@@ -986,6 +1001,7 @@ func compileSourceBatchWithConfiguration(
 		tasks = append(tasks, compileJob{
 			index:             index,
 			source:            source,
+			commandSource:     commandSource,
 			display:           compileSourceDisplayPath(root, source, workingDirectory),
 			object:            object,
 			forwards:          []string{forward},
@@ -1049,7 +1065,7 @@ func compileSourceBatchWithConfiguration(
 							compiler,
 							job.cflags,
 							job.forwards,
-							job.source,
+							job.commandSource,
 							job.object,
 						)
 					}
@@ -1130,6 +1146,10 @@ func compileSourceWithCache(
 	workingDirectory string,
 	stderr io.Writer,
 ) (bool, bool, error) {
+	commandSource, err := lexicalAbsolutePath(source, workingDirectory)
+	if err != nil {
+		return true, false, fmt.Errorf("make compile source absolute %s: %w", source, err)
+	}
 	if cache == nil {
 		fatal, err := compileSource(
 			compiler,
@@ -1143,10 +1163,17 @@ func compileSourceWithCache(
 		return fatal, false, err
 	}
 
-	arguments := compileArguments(cflags, forwards, source, object)
-	inputs := append([]string{source}, cacheDependencies...)
+	arguments := compileArguments(cflags, forwards, commandSource, object)
+	inputs := append([]string{commandSource}, cacheDependencies...)
 	inputs = append(inputs, forwards...)
-	input, err := cache.actionFingerprint("compile", compiler, arguments, inputs, workingDirectory)
+	input, err := cache.actionFingerprintWithWorkingDirectory(
+		"compile",
+		compiler,
+		arguments,
+		inputs,
+		workingDirectory,
+		compilerCacheWorkingDirectory(cflags, workingDirectory),
+	)
 	if err != nil {
 		return true, false, fmt.Errorf("fingerprint compile %s: %w", source, err)
 	}
@@ -1190,7 +1217,11 @@ func compileSource(
 	if err := os.MkdirAll(filepath.Dir(object), 0o755); err != nil {
 		return true, fmt.Errorf("create object directory for %s: %w", source, err)
 	}
-	arguments := compileArguments(cflags, forwards, source, object)
+	commandSource, err := lexicalAbsolutePath(source, workingDirectory)
+	if err != nil {
+		return true, fmt.Errorf("make compile source absolute %s: %w", source, err)
+	}
+	arguments := compileArguments(cflags, forwards, commandSource, object)
 	command := exec.Command(compiler, arguments...)
 	command.Dir = workingDirectory
 	command.Stdout = stderr
@@ -1828,7 +1859,14 @@ func linkBinaryWithCache(
 	}
 
 	arguments := linkArguments(ldflags, objects, artifact)
-	input, err := cache.actionFingerprint("link", compiler, arguments, objects, workingDirectory)
+	input, err := cache.actionFingerprintWithWorkingDirectory(
+		"link",
+		compiler,
+		arguments,
+		objects,
+		workingDirectory,
+		compilerCacheWorkingDirectory(ldflags, workingDirectory),
+	)
 	if err != nil {
 		return true, false, fmt.Errorf("fingerprint link %s: %w", source, err)
 	}
@@ -2069,4 +2107,15 @@ func realAbsolutePath(path, workingDirectory string) (string, error) {
 		return "", err
 	}
 	return filepath.Abs(realPath)
+}
+
+func lexicalAbsolutePath(path, workingDirectory string) (string, error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workingDirectory, path)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
 }

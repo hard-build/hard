@@ -95,11 +95,29 @@ func (cache *artifactCache) actionFingerprint(
 	inputs []string,
 	workingDirectory string,
 ) (string, error) {
+	return cache.actionFingerprintWithWorkingDirectory(
+		kind,
+		tool,
+		arguments,
+		inputs,
+		workingDirectory,
+		workingDirectory,
+	)
+}
+
+func (cache *artifactCache) actionFingerprintWithWorkingDirectory(
+	kind string,
+	tool string,
+	arguments []string,
+	inputs []string,
+	workingDirectory string,
+	fingerprintWorkingDirectory string,
+) (string, error) {
 	action := cacheAction{
 		Version:          artifactCacheVersion,
 		Kind:             kind,
 		Hard:             cache.hard,
-		WorkingDirectory: workingDirectory,
+		WorkingDirectory: fingerprintWorkingDirectory,
 		Arguments:        append([]string(nil), arguments...),
 	}
 	if tool != "" {
@@ -137,6 +155,144 @@ func (cache *artifactCache) actionFingerprint(
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func compilerCacheWorkingDirectory(arguments []string, workingDirectory string) string {
+	if compilerArgumentsUseWorkingDirectory(arguments) {
+		return workingDirectory
+	}
+	return ""
+}
+
+func compilerArgumentsUseWorkingDirectory(arguments []string) bool {
+	pathOptions := map[string]bool{
+		"--gcc-toolchain":      true,
+		"--sysroot":            true,
+		"-B":                   true,
+		"-F":                   true,
+		"-I":                   true,
+		"-L":                   true,
+		"-MF":                  true,
+		"-fmodule-map-file":    true,
+		"-fmodules-cache-path": true,
+		"-fplugin":             true,
+		"-gcc-toolchain":       true,
+		"-idirafter":           true,
+		"-iframework":          true,
+		"-imacros":             true,
+		"-include":             true,
+		"-iprefix":             true,
+		"-iquote":              true,
+		"-isystem":             true,
+		"-isysroot":            true,
+		"-iwithprefix":         true,
+		"-iwithprefixbefore":   true,
+		"-o":                   true,
+		"-resource-dir":        true,
+		"-specs":               true,
+	}
+	valueOptions := map[string]bool{
+		"--std":    true,
+		"--target": true,
+		"-A":       true,
+		"-D":       true,
+		"-U":       true,
+		"-arch":    true,
+		"-e":       true,
+		"-l":       true,
+		"-mabi":    true,
+		"-march":   true,
+		"-mcpu":    true,
+		"-mtune":   true,
+		"-std":     true,
+		"-target":  true,
+		"-u":       true,
+		"-x":       true,
+	}
+
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if pathOptions[argument] {
+			index++
+			if index >= len(arguments) || !filepath.IsAbs(arguments[index]) {
+				return true
+			}
+			continue
+		}
+		if valueOptions[argument] {
+			index++
+			continue
+		}
+		if argument == "" || argument == "--" || strings.HasPrefix(argument, "@") {
+			return true
+		}
+		if strings.HasPrefix(argument, "-Wl,") ||
+			strings.HasPrefix(argument, "-Wa,") ||
+			strings.HasPrefix(argument, "-Wp,") ||
+			argument == "-Xassembler" ||
+			argument == "-Xclang" ||
+			argument == "-Xlinker" ||
+			argument == "-Xpreprocessor" ||
+			argument == "-mllvm" ||
+			argument == "-wrapper" ||
+			argument == "-save-temps" ||
+			strings.HasPrefix(argument, "-save-temps=") ||
+			argument == "-fprofile-generate" ||
+			argument == "-fprofile-use" ||
+			strings.HasPrefix(argument, "-fplugin-arg-") {
+			return true
+		}
+		if path, ok := joinedCompilerPath(argument); ok && !filepath.IsAbs(path) {
+			return true
+		}
+		if !strings.HasPrefix(argument, "-") && !filepath.IsAbs(argument) {
+			return true
+		}
+	}
+	return false
+}
+
+func joinedCompilerPath(argument string) (string, bool) {
+	for _, prefix := range []string{
+		"--gcc-toolchain=",
+		"--sysroot=",
+		"-fauto-profile=",
+		"-fmodule-map-file=",
+		"-fmodules-cache-path=",
+		"-fplugin=",
+		"-fprofile-dir=",
+		"-fprofile-generate=",
+		"-fprofile-sample-use=",
+		"-fprofile-use=",
+		"-gcc-toolchain=",
+		"-resource-dir=",
+		"-specs=",
+	} {
+		if strings.HasPrefix(argument, prefix) {
+			return strings.TrimPrefix(argument, prefix), true
+		}
+	}
+	for _, prefix := range []string{
+		"-iwithprefixbefore",
+		"-iwithprefix",
+		"-idirafter",
+		"-iframework",
+		"-imacros",
+		"-iprefix",
+		"-iquote",
+		"-isystem",
+		"-isysroot",
+		"-MF",
+		"-B",
+		"-F",
+		"-I",
+		"-L",
+	} {
+		if strings.HasPrefix(argument, prefix) && len(argument) > len(prefix) {
+			return strings.TrimPrefix(argument, prefix), true
+		}
+	}
+	return "", false
 }
 
 func (cache *artifactCache) inputFingerprint(
@@ -287,6 +443,7 @@ func (cache *artifactCache) parseHit(
 	source string,
 	arguments []string,
 	workingDirectory string,
+	fingerprintWorkingDirectory string,
 ) (parseCacheRecord, bool, error) {
 	if !cache.read {
 		return parseCacheRecord{}, false, nil
@@ -296,7 +453,14 @@ func (cache *artifactCache) parseHit(
 		return parseCacheRecord{}, false, err
 	}
 	inputs := append([]string{source}, record.Dependencies...)
-	input, err := cache.actionFingerprint(kind, "", arguments, inputs, workingDirectory)
+	input, err := cache.actionFingerprintWithWorkingDirectory(
+		kind,
+		"",
+		arguments,
+		inputs,
+		workingDirectory,
+		fingerprintWorkingDirectory,
+	)
 	if err != nil || input != record.Input {
 		return parseCacheRecord{}, false, nil
 	}
@@ -321,6 +485,7 @@ func (cache *artifactCache) storeParse(
 	source string,
 	arguments []string,
 	workingDirectory string,
+	fingerprintWorkingDirectory string,
 ) (bool, error) {
 	unsafe, err := parseCacheInputContainsHasInclude(source, arguments, workingDirectory)
 	if err != nil {
@@ -330,7 +495,14 @@ func (cache *artifactCache) storeParse(
 		return false, nil
 	}
 	inputs := append([]string{source}, record.Dependencies...)
-	input, err := cache.actionFingerprint(record.Kind, "", arguments, inputs, workingDirectory)
+	input, err := cache.actionFingerprintWithWorkingDirectory(
+		record.Kind,
+		"",
+		arguments,
+		inputs,
+		workingDirectory,
+		fingerprintWorkingDirectory,
+	)
 	if err != nil {
 		return false, err
 	}

@@ -236,12 +236,13 @@ func (manager *libraryManager) buildRecipe(
 	for _, library := range recipe.StaticLibraries {
 		arguments = append(arguments, "archive:"+library)
 	}
-	input, err := manager.cache.actionFingerprint(
+	input, err := manager.cache.actionFingerprintWithWorkingDirectory(
 		"library-cmake-v1",
 		cmake,
 		arguments,
 		inputs,
 		manager.workingDirectory,
+		sourceDirectory,
 	)
 	if err != nil {
 		return libraryArtifact{}, fmt.Errorf("fingerprint library %s: %w", recipe.Source, err)
@@ -279,13 +280,19 @@ func (manager *libraryManager) buildRecipe(
 		"-DCMAKE_INSTALL_PREFIX=" + installDirectory,
 	}
 	configure = append(configure, recipe.ConfigureArguments...)
-	if err := manager.runCMake(cmake, "Configuring "+recipe.Source, configure); err != nil {
+	if err := manager.runCMake(
+		cmake,
+		"Configuring "+recipe.Source,
+		configure,
+		sourceDirectory,
+	); err != nil {
 		return libraryArtifact{}, err
 	}
 	if err := manager.runCMake(
 		cmake,
 		"Building "+recipe.Source,
 		[]string{"--build", buildDirectory, "--parallel", fmt.Sprintf("%d", manager.jobs)},
+		sourceDirectory,
 	); err != nil {
 		return libraryArtifact{}, err
 	}
@@ -293,6 +300,7 @@ func (manager *libraryManager) buildRecipe(
 		cmake,
 		"Installing "+recipe.Source,
 		[]string{"--install", buildDirectory},
+		sourceDirectory,
 	); err != nil {
 		return libraryArtifact{}, err
 	}
@@ -315,12 +323,17 @@ func (manager *libraryManager) buildRecipe(
 	return artifact, nil
 }
 
-func (manager *libraryManager) runCMake(cmake, step string, arguments []string) error {
+func (manager *libraryManager) runCMake(
+	cmake string,
+	step string,
+	arguments []string,
+	workingDirectory string,
+) error {
 	if manager.progress != nil {
 		manager.progress.updateStep(step)
 	}
 	command := exec.Command(cmake, arguments...)
-	command.Dir = manager.workingDirectory
+	command.Dir = workingDirectory
 	command.Env = environmentWithoutVariable(os.Environ(), "CXXFLAGS")
 	command.Env = append(command.Env, "CXXFLAGS=")
 	var diagnostics bytes.Buffer

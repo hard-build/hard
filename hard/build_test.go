@@ -152,7 +152,7 @@ func TestCompileSourceUsesCompilerAndCFlags(t *testing.T) {
 		"-include",
 		forwards[1],
 		"-c",
-		"src/source.cpp",
+		filepath.Join(project, "src", "source.cpp"),
 		"-o",
 		object,
 		"",
@@ -332,7 +332,7 @@ func TestCompileSourceBatchDisplaysCanonicalGitHubPath(t *testing.T) {
 	if !strings.HasPrefix(output, wantProgress) {
 		t.Fatalf("compile progress = %q, want prefix %q", output, wantProgress)
 	}
-	if wantCommandSource := "-c " + source + " "; !strings.Contains(output, wantCommandSource) {
+	if wantCommandSource := "-c " + external + " "; !strings.Contains(output, wantCommandSource) {
 		t.Fatalf("compile command does not contain %q: %q", wantCommandSource, output)
 	}
 }
@@ -352,10 +352,11 @@ func TestCompileSourceBatchReturnsPerSourceResults(t *testing.T) {
 		"\tif [ \"$previous\" = '-o' ]; then output=$argument; fi\n" +
 		"\tprevious=$argument\n" +
 		"done\n" +
-		"if [ \"$source\" = broken.cpp ]; then\n" +
+		"case \"$source\" in */broken.cpp | broken.cpp)\n" +
 		"\tprintf 'broken diagnostic\\n' >&2\n" +
 		"\texit 7\n" +
-		"fi\n" +
+		"\t;;\n" +
+		"esac\n" +
 		"printf 'object\\n' > \"$output\"\n"
 	if err := os.WriteFile(compiler, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake compiler: %v", err)
@@ -538,7 +539,13 @@ func TestBuildSourcesOutputModes(t *testing.T) {
 				if got := readTestFile(t, forward); got != "#pragma once\n" {
 					t.Fatalf("generated forward header for %s = %q", source, got)
 				}
-				command := string(renderCompileCommand(compiler, cflags, []string{forward}, source, object))
+				command := string(renderCompileCommand(
+					compiler,
+					cflags,
+					[]string{forward},
+					filepath.Join(root, source),
+					object,
+				))
 				if tt.verbose && !tt.silent {
 					if !strings.Contains(output, source+"\n"+command) {
 						t.Errorf("buildSources() output does not contain command after %q: %q", source, output)
@@ -613,7 +620,7 @@ func TestBuildSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 		compiler,
 		cflags,
 		[]string{sourceForward},
-		"source.cpp",
+		filepath.Join(project, "source.cpp"),
 		object,
 	))
 	for _, want := range []string{"Compiling source.cpp\n" + wantCommand} {

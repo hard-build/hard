@@ -169,7 +169,7 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 			compiler,
 			[]string{"-DHARD=1", "-DGTEST=1"},
 			[]string{forward},
-			"pass_test.cpp",
+			filepath.Join(project, "pass_test.cpp"),
 			passObject,
 		)),
 		"Linking pass_test\n" + string(renderLinkCommand(
@@ -463,7 +463,7 @@ func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 		compiler,
 		[]string{"-include", runtimeHeader, "-DGTEST=1"},
 		[]string{sourceForward},
-		"pass_test.cpp",
+		filepath.Join(project, "pass_test.cpp"),
 		object,
 	))
 	for _, want := range []string{"Compiling pass_test.cpp\n" + wantCommand} {
@@ -954,10 +954,11 @@ func installTestTools(t *testing.T) (string, string) {
 		"\tprevious=$argument\n" +
 		"done\n" +
 		"if [ \"$mode\" = compile ]; then\n" +
-		"\tif [ \"$source\" = broken_test.cpp ]; then\n" +
+		"\tcase \"$source\" in */broken_test.cpp | broken_test.cpp)\n" +
 		"\t\tprintf 'compile failed for broken_test.cpp\\n' >&2\n" +
 		"\t\texit 9\n" +
-		"\tfi\n" +
+		"\t\t;;\n" +
+		"\tesac\n" +
 		"\tprintf 'object\\n' > \"$output\"\n" +
 		"\texit 0\n" +
 		"fi\n" +
