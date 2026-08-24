@@ -13,7 +13,7 @@ steps:
 
   - test:
       sources:
-        - hashable_test.cpp
+        - hashable.test.cpp
       binaries:
-        hashable_test:
+        hashable.test:
           passed: 1

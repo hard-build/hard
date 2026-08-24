@@ -44,7 +44,7 @@ func TestResolveRuntimeRootRejectsMissingExecutable(t *testing.T) {
 func TestDiscoverSourcesReportsSearchActivity(t *testing.T) {
 	project := t.TempDir()
 	writeBuildFile(t, project, "source.cpp", "")
-	writeBuildFile(t, project, "source_test.cpp", "")
+	writeBuildFile(t, project, "source.test.cpp", "")
 	writeBuildFile(t, project, "header.h", "")
 	withWorkingDirectory(t, project)
 
@@ -53,10 +53,10 @@ func TestDiscoverSourcesReportsSearchActivity(t *testing.T) {
 		sources []string
 	}{
 		{name: "build", sources: []string{"source.cpp"}},
-		{name: "fetch", sources: []string{"source.cpp", "source_test.cpp"}},
+		{name: "fetch", sources: []string{"source.cpp", "source.test.cpp"}},
 		{name: "run", sources: []string{"source.cpp"}},
-		{name: "format", sources: []string{"header.h", "source.cpp", "source_test.cpp"}},
-		{name: "test", sources: []string{"source_test.cpp"}},
+		{name: "format", sources: []string{"header.h", "source.cpp", "source.test.cpp"}},
+		{name: "test", sources: []string{"source.test.cpp"}},
 	}
 	modes := []struct {
 		name    string

@@ -162,7 +162,7 @@ func matchesSource(command, path string) (bool, error) {
 	extension := strings.ToLower(filepath.Ext(path))
 	base := strings.ToLower(filepath.Base(path))
 	stem := strings.TrimSuffix(base, extension)
-	isTest := strings.HasSuffix(stem, "_test")
+	isTest := strings.HasSuffix(stem, ".test") || strings.HasSuffix(stem, "_test")
 
 	switch command {
 	case "build", "run":

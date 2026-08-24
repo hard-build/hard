@@ -156,6 +156,9 @@ The `test` action runs the equivalent of:
 hard test --no-cache -v --no-color --jobs=<JOBS> <sources...>
 ```
 
+The preferred test-source names are `*.test.c`, `*.test.cc`, `*.test.cpp`,
+and `*.test.c++`. Legacy `*_test.*` names remain supported.
+
 Fields:
 
 - `sources` is a required non-empty list of explicit test source or directory
@@ -174,9 +177,9 @@ Example:
       compiled_once:
         - counter.cpp
       binaries:
-        increment_test:
+        increment.test:
           passed: 3
-        reset_test:
+        reset.test:
           passed: 2
 ```
 

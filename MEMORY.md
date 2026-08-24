@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-24.
+Last updated: 2026-08-25.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -610,9 +610,10 @@ Recognized files:
 | `format` | build extensions plus `.h`, `.hh`, `.hpp`, `.h++` |
 | `test` | test sources using `.c`, `.cc`, `.cpp`, or `.c++` |
 
-Extensions are case-insensitive. A test source has a stem ending in `_test`,
-also case-insensitive. `source_TeSt.CPP` is therefore a test, excluded by
-`build` and `run` and included by `fetch`, `format`, and `test`.
+Extensions are case-insensitive. A test source has a stem ending in `.test`
+or legacy `_test`, also case-insensitive. Both `source.TeSt.CPP` and
+`source_TeSt.CPP` are therefore tests, excluded by `build` and `run` and
+included by `fetch`, `format`, and `test`.
 
 Not recognized unless a future requirement changes the set:
 
@@ -967,8 +968,8 @@ excluded from every source forward. Other project or external headers named
 
 ## `hard build`
 
-Build root selection excludes `*_test.*`. For a non-empty selection, the
-implemented pipeline is:
+Build root selection excludes `*.test.*` and legacy `*_test.*`. For a
+non-empty selection, the implemented pipeline is:
 
 1. discover dependencies, prepare active compiled-library packages, and detect
    configured entry definitions;
@@ -1170,9 +1171,9 @@ process was started; an identical delivery is `Copying <binary> (CACHED)`.
 
 ## `hard run`
 
-Run root selection is identical to build and excludes `*_test.*`. It reuses
-the build analyzer, recursive same-stem source closure, source forwards, object
-compilation, dependency-object traversal, content fingerprints, and ordinary
+Run root selection is identical to build and excludes `*.test.*` and legacy
+`*_test.*`. It reuses the build analyzer, recursive same-stem source closure,
+source forwards, object compilation, dependency-object traversal, content fingerprints, and ordinary
 compiler-driver linking.
 
 Exactly one originally selected root must define a configured entry function.
@@ -1216,9 +1217,9 @@ status 1. Process-start failures and all build failures use the ordinary
 Fetch never reads or writes the environment-backed persistent parse-result
 cache; its parsing behavior and absence of `HARD_ROOT/env` artifacts remain
 unchanged.
-Fetch selects all supported translation units, including `*_test.*`, then uses
-the same backend-effective base compiler flags, libclang analysis, recursive
-same-stem source closure, GitHub recovery, well-known mapping, cache, and worker
+Fetch selects all supported translation units, including `*.test.*` and
+legacy `*_test.*`, then uses the same backend-effective base compiler flags,
+libclang analysis, recursive same-stem source closure, GitHub recovery, well-known mapping, cache, and worker
 limit as build. Active recipes add their declared source-tree include
 directories for analysis only.
 
@@ -1248,8 +1249,9 @@ fetch still reports search and parsing but no Downloading activity.
 
 ## `hard test`
 
-Test root selection includes only case-insensitive `*_test.c`, `*_test.cc`,
-`*_test.cpp`, and `*_test.c++`.
+Test root selection includes case-insensitive `*.test.c`, `*.test.cc`,
+`*.test.cpp`, and `*.test.c++`. Legacy `*_test.*` names with the same source
+extensions remain supported.
 
 The command owns its selection syntax:
 
@@ -1304,7 +1306,8 @@ For each selected test root:
 
 1. compute the recursive production dependency closure with entry detection
    disabled;
-2. exclude other `*_test.*` sources from automatic implementation discovery;
+2. exclude other `*.test.*` and legacy `*_test.*` sources from automatic
+   implementation discovery;
 3. use one shared GitHub resolver across every test plan;
 4. generate one source-context forward per translation unit while excluding
    declarations from the canonical runtime support header;
@@ -1511,7 +1514,7 @@ Known scenarios:
 
 - `001.helloworld`: one simple C++ application;
 - `002.internal_library`: application sources and a shared internal object;
-- `003.unittest`: ordinary and `_test` sources plus `random.h`;
+- `003.unittest`: ordinary and `.test` sources plus `random.h`;
 - `004.circular_dependency`: mutually dependent component/container headers
   and implementations; used to validate recursive source discovery, forward
   headers, cyclic graph suppression, linking, and execution;
@@ -1558,8 +1561,9 @@ to leave the library unchanged for now.
   progress paths use canonical `github.com/...` spelling.
 - Directory symlinks are recursively traversed as ordinary directories, with
   canonical visited-directory cycle prevention.
-- Build and run exclude case-insensitive `_test`; test selects it; format
-  includes headers; fetch includes ordinary and test translation units.
+- Build and run exclude case-insensitive `.test` and legacy `_test` sources;
+  test selects both; format includes headers; fetch includes ordinary and test
+  translation units.
 - Format has no preliminary source list, uses `[N/M]` rather than a bar,
   supports silent and verbose output, and uses internal Go unified diffs.
 - Verbose format prints each diff immediately after that file completes.
@@ -2356,6 +2360,36 @@ The complete required verification set passed: clean gofmt output, ordinary
 and race Go tests, vet, an out-of-tree backend build, module verification, and
 repository diff checking. The new C++ fixture also passed the repository's
 Clang 18 format check.
+
+## Test source filename convention
+
+On 2026-08-25, the preferred C and C++ test-source names became
+`*.test.c`, `*.test.cc`, `*.test.cpp`, and `*.test.c++`. The legacy
+`*_test.*` convention remains fully supported for backward compatibility.
+Both forms are case-insensitive, are excluded from `build` and `run`, are
+included by `fetch` and `format`, and are selected by `test`. Binary names
+continue to follow the source stem naturally, so `name.test.cpp` produces
+`name.test` and legacy `name_test.cpp` produces `name_test`.
+
+All current C and C++ test files in the local `hard`, `example`, `library`,
+and `recipe` repositories were migrated to the preferred form. Go
+`*_test.go` files remain unchanged. The VS Code extension now uses both forms
+in its classifier, Test Explorer default glob, current-file menu condition, and
+user-facing diagnostic.
+
+The complete required Go verification passed: clean gofmt output, ordinary and
+race tests, vet, an out-of-tree backend build, and module verification. All 12
+declarative integration scenarios passed individually and again through Make
+autodiscovery with a fresh runtime, `HARD_ROOT`, environment, and output tree.
+The runner used Python 3.12.3 and PyYAML 6.0.1. A separate real
+`calculator_test.cpp` build and five-test execution verified the legacy
+convention end to end. The renamed
+example test passed; all four library binaries passed 78 tests; and both recipe
+tests passed after static TinyXML2 and YAML-CPP builds. The VS Code extension
+passed ESLint, TypeScript compilation, and all 19 tests in a temporary Node.js
+container. Temporary negative configurations also confirmed rejection of
+duplicate YAML keys, unknown actions and fields, invalid field types, escaping
+paths, and a run action placed before a build action.
 
 ## Workspace safety snapshot
 

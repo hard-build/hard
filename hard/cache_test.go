@@ -575,7 +575,7 @@ func TestBuildCacheTreatsSystemHeadersAsHardEnvironment(t *testing.T) {
 
 func TestRunTestsCachesOnlySuccessfulResults(t *testing.T) {
 	directory := t.TempDir()
-	binary := filepath.Join(directory, "pass_test")
+	binary := filepath.Join(directory, "pass.test")
 	log := filepath.Join(directory, "test.log")
 	t.Setenv("CACHE_LOG", log)
 	writeTestBinary := func(exit int) {
@@ -588,7 +588,7 @@ func TestRunTestsCachesOnlySuccessfulResults(t *testing.T) {
 		}
 	}
 	writeTestBinary(0)
-	task := testRunJob{source: "pass_test.cpp", binary: binary}
+	task := testRunJob{source: "pass.test.cpp", binary: binary}
 
 	run := func(read bool) (string, error) {
 		t.Helper()
@@ -616,7 +616,7 @@ func TestRunTestsCachesOnlySuccessfulResults(t *testing.T) {
 	if output, err := run(true); err != nil || strings.Contains(output, "(CACHED)") {
 		t.Fatalf("first run output = %q, error = %v", output, err)
 	}
-	if output, err := run(true); err != nil || !strings.Contains(output, "Testing pass_test (CACHED)") {
+	if output, err := run(true); err != nil || !strings.Contains(output, "Testing pass.test (CACHED)") {
 		t.Fatalf("cached run output = %q, error = %v", output, err)
 	}
 	if got := cacheLogLineCount(t, log); got != 1 {
@@ -649,7 +649,7 @@ func TestRunTestsCachesOnlySuccessfulResults(t *testing.T) {
 
 func TestRunTestsCacheSeparatesSelectorsAndNeverCachesListing(t *testing.T) {
 	directory := t.TempDir()
-	binary := filepath.Join(directory, "pass_test")
+	binary := filepath.Join(directory, "pass.test")
 	log := filepath.Join(directory, "test.log")
 	t.Setenv("CACHE_LOG", log)
 	script := "#!/bin/sh\n" +
@@ -657,7 +657,7 @@ func TestRunTestsCacheSeparatesSelectorsAndNeverCachesListing(t *testing.T) {
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake test binary: %v", err)
 	}
-	task := testRunJob{source: "pass_test.cpp", binary: binary}
+	task := testRunJob{source: "pass.test.cpp", binary: binary}
 
 	run := func(arguments []string, cache *artifactCache, action string) string {
 		t.Helper()
@@ -1090,7 +1090,7 @@ func TestSourceParseCacheRestoresForwardAndTracksDependencies(t *testing.T) {
 func TestTestSourcesReportsCachedParsing(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
-	writeBuildFile(t, project, "pass_test.cpp", "")
+	writeBuildFile(t, project, "pass.test.cpp", "")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -1105,7 +1105,7 @@ func TestTestSourcesReportsCachedParsing(t *testing.T) {
 			compiler,
 			nil,
 			nil,
-			[]string{"pass_test.cpp"},
+			[]string{"pass.test.cpp"},
 			1,
 			true,
 			false,
@@ -1126,10 +1126,10 @@ func TestTestSourcesReportsCachedParsing(t *testing.T) {
 	}
 	second := run(false)
 	for _, want := range []string{
-		"Parsing pass_test.cpp (CACHED)",
-		"Compiling pass_test.cpp (CACHED)",
-		"Linking pass_test (CACHED)",
-		"Testing pass_test (CACHED)",
+		"Parsing pass.test.cpp (CACHED)",
+		"Compiling pass.test.cpp (CACHED)",
+		"Linking pass.test (CACHED)",
+		"Testing pass.test (CACHED)",
 	} {
 		if !strings.Contains(second, want) {
 			t.Fatalf("second test output = %q, want %q", second, want)

@@ -161,13 +161,13 @@ func TestParseArguments(t *testing.T) {
 			args: []string{
 				"test",
 				"--test=Random.Returns*",
-				"tests/random_test.cpp",
+				"tests/random.test.cpp",
 				"--test",
 				"Parser.Test?",
 			},
 			want: arguments{
 				command:       "test",
-				paths:         []string{"tests/random_test.cpp"},
+				paths:         []string{"tests/random.test.cpp"},
 				testSelectors: []string{"Random.Returns*", "Parser.Test?"},
 			},
 		},

@@ -7,7 +7,7 @@ steps:
       compiled_once:
         - counter.cpp
       binaries:
-        increment_test:
+        increment.test:
           passed: 3
-        reset_test:
+        reset.test:
           passed: 2

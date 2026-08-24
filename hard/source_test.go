@@ -21,31 +21,40 @@ func TestMatchesSource(t *testing.T) {
 		{name: "build cpp", command: "build", path: "source.cpp", want: true},
 		{name: "build c++", command: "build", path: "source.c++", want: true},
 		{name: "build uppercase extension", command: "build", path: "source.CPP", want: true},
-		{name: "build excludes test", command: "build", path: "source_test.cpp"},
-		{name: "build excludes uppercase test", command: "build", path: "source_TEST.CPP"},
+		{name: "build excludes preferred test", command: "build", path: "source.test.cpp"},
+		{name: "build excludes uppercase preferred test", command: "build", path: "source.TEST.CPP"},
+		{name: "build excludes legacy test", command: "build", path: "source_test.cpp"},
 		{name: "build excludes header", command: "build", path: "source.hpp"},
 		{name: "build excludes cxx", command: "build", path: "source.cxx"},
 		{name: "run source", command: "run", path: "source.cpp", want: true},
-		{name: "run excludes test", command: "run", path: "source_test.cpp"},
+		{name: "run excludes preferred test", command: "run", path: "source.test.cpp"},
+		{name: "run excludes legacy test", command: "run", path: "source_test.cpp"},
 		{name: "run excludes header", command: "run", path: "source.hpp"},
 		{name: "fetch source", command: "fetch", path: "source.cpp", want: true},
-		{name: "fetch test source", command: "fetch", path: "source_TEST.CPP", want: true},
+		{name: "fetch preferred test source", command: "fetch", path: "source.TEST.CPP", want: true},
+		{name: "fetch legacy test source", command: "fetch", path: "source_TEST.CPP", want: true},
 		{name: "fetch excludes header", command: "fetch", path: "source.hpp"},
 		{name: "fetch excludes cxx", command: "fetch", path: "source.cxx"},
 		{name: "format source", command: "format", path: "source.cpp", want: true},
-		{name: "format test source", command: "format", path: "source_TEST.CPP", want: true},
+		{name: "format preferred test source", command: "format", path: "source.TEST.CPP", want: true},
+		{name: "format legacy test source", command: "format", path: "source_TEST.CPP", want: true},
 		{name: "format h", command: "format", path: "source.h", want: true},
 		{name: "format hh", command: "format", path: "source.hh", want: true},
 		{name: "format hpp", command: "format", path: "source.hpp", want: true},
 		{name: "format h++", command: "format", path: "source.h++", want: true},
 		{name: "format uppercase header", command: "format", path: "source.HPP", want: true},
 		{name: "format excludes hxx", command: "format", path: "source.hxx"},
-		{name: "test lowercase suffix", command: "test", path: "source_test.cpp", want: true},
-		{name: "test uppercase suffix", command: "test", path: "source_TEST.cpp", want: true},
-		{name: "test mixed-case suffix and extension", command: "test", path: "source_TeSt.CPP", want: true},
+		{name: "test preferred lowercase suffix", command: "test", path: "source.test.cpp", want: true},
+		{name: "test preferred uppercase suffix", command: "test", path: "source.TEST.cpp", want: true},
+		{name: "test preferred mixed-case suffix and extension", command: "test", path: "source.TeSt.CPP", want: true},
+		{name: "test legacy lowercase suffix", command: "test", path: "source_test.cpp", want: true},
+		{name: "test legacy uppercase suffix", command: "test", path: "source_TEST.cpp", want: true},
+		{name: "test legacy mixed-case suffix and extension", command: "test", path: "source_TeSt.CPP", want: true},
 		{name: "test excludes source", command: "test", path: "source.cpp"},
-		{name: "test excludes header", command: "test", path: "source_test.hpp"},
-		{name: "test excludes cxx", command: "test", path: "source_test.cxx"},
+		{name: "test excludes preferred header", command: "test", path: "source.test.hpp"},
+		{name: "test excludes preferred cxx", command: "test", path: "source.test.cxx"},
+		{name: "test excludes legacy header", command: "test", path: "source_test.hpp"},
+		{name: "test excludes legacy cxx", command: "test", path: "source_test.cxx"},
 		{name: "unknown command", command: "unknown", path: "source.cpp", wantErr: true},
 	}
 
@@ -69,8 +78,8 @@ func TestDiscoverSourcesRecursively(t *testing.T) {
 		"02.cc",
 		"03.cpp",
 		"04.c++",
-		"05_test.cpp",
-		"06_TEST.CC",
+		"05.test.cpp",
+		"06.TeSt.CC",
 		"07.h",
 		"08.hh",
 		"09.hpp",
@@ -78,9 +87,10 @@ func TestDiscoverSourcesRecursively(t *testing.T) {
 		"11.cxx",
 		"12.hxx",
 		"nested/13.cpp",
-		"nested/14_TeSt.c++",
+		"nested/14.TeSt.c++",
 		"nested/15.hpp",
 		"nested/16.txt",
+		"nested/17_test.cpp",
 	)
 
 	tests := []struct {
@@ -102,21 +112,23 @@ func TestDiscoverSourcesRecursively(t *testing.T) {
 		{
 			command: "fetch",
 			want: []string{
-				"01.c", "02.cc", "03.cpp", "04.c++", "05_test.cpp",
-				"06_TEST.CC", "nested/13.cpp", "nested/14_TeSt.c++",
+				"01.c", "02.cc", "03.cpp", "04.c++", "05.test.cpp",
+				"06.TeSt.CC", "nested/13.cpp", "nested/14.TeSt.c++",
+				"nested/17_test.cpp",
 			},
 		},
 		{
 			command: "format",
 			want: []string{
-				"01.c", "02.cc", "03.cpp", "04.c++", "05_test.cpp",
-				"06_TEST.CC", "07.h", "08.hh", "09.hpp", "10.h++",
-				"nested/13.cpp", "nested/14_TeSt.c++", "nested/15.hpp",
+				"01.c", "02.cc", "03.cpp", "04.c++", "05.test.cpp",
+				"06.TeSt.CC", "07.h", "08.hh", "09.hpp", "10.h++",
+				"nested/13.cpp", "nested/14.TeSt.c++", "nested/15.hpp",
+				"nested/17_test.cpp",
 			},
 		},
 		{
 			command: "test",
-			want:    []string{"05_test.cpp", "06_TEST.CC", "nested/14_TeSt.c++"},
+			want:    []string{"05.test.cpp", "06.TeSt.CC", "nested/14.TeSt.c++", "nested/17_test.cpp"},
 		},
 	}
 
@@ -140,7 +152,7 @@ func TestDiscoverSourcesUsesOnlyExplicitPaths(t *testing.T) {
 		"ignored.cpp",
 		"group/01.cpp",
 		"group/02.h",
-		"group/03_test.cpp",
+		"group/03.test.cpp",
 		"outside/not-selected.cpp",
 		"note.txt",
 	)
@@ -157,7 +169,7 @@ func TestDiscoverSourcesUsesOnlyExplicitPaths(t *testing.T) {
 		"selected.cpp",
 		"group/01.cpp",
 		"group/02.h",
-		"group/03_test.cpp",
+		"group/03.test.cpp",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("discoverSourcesFrom() = %#v, want %#v", got, want)
@@ -284,7 +296,7 @@ func TestDiscoverSourcesRejectsMissingPath(t *testing.T) {
 
 func TestDiscoverSourcesReturnsEmptyResult(t *testing.T) {
 	root := t.TempDir()
-	writeSourceFiles(t, root, "README.md", "source.cxx", "source_test.hpp")
+	writeSourceFiles(t, root, "README.md", "source.cxx", "source.test.hpp")
 
 	got, err := discoverSourcesFrom("build", nil, root)
 	if err != nil {

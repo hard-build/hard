@@ -33,11 +33,11 @@ steps:
       sources:
         - .
       binaries:
-        c_test:
+        c.test:
           passed: 1
-        cc_test:
+        cc.test:
           passed: 1
-        cpp_test:
+        cpp.test:
           passed: 1
-        plus_test:
+        plus.test:
           passed: 1

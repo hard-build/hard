@@ -83,8 +83,8 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	project := t.TempDir()
 	writeBuildFile(t, project, "shared.h", "#pragma once\nint answer();\n")
 	writeBuildFile(t, project, "shared.cpp", "#include \"shared.h\"\nint answer() { return 42; }\n")
-	writeBuildFile(t, project, "pass_test.cpp", "#include \"shared.h\"\n")
-	writeBuildFile(t, project, "fail_test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "pass.test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "fail.test.cpp", "#include \"shared.h\"\n")
 	compiler, log := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -97,7 +97,7 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 		compiler,
 		[]string{"-DHARD=1"},
 		[]string{"-Wl,hard"},
-		[]string{"pass_test.cpp", "fail_test.cpp"},
+		[]string{"pass.test.cpp", "fail.test.cpp"},
 		2,
 		true,
 		false,
@@ -108,26 +108,26 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 	if err == nil {
 		t.Fatal("testSources() error = nil")
 	}
-	if !strings.Contains(err.Error(), "test fail_test.cpp: exit status 7") {
+	if !strings.Contains(err.Error(), "test fail.test.cpp: exit status 7") {
 		t.Fatalf("testSources() error = %q", err)
 	}
 
 	output := stdout.String()
 	for _, want := range []string{
-		"Parsing pass_test.cpp\n",
-		"Parsing fail_test.cpp\n",
-		"Linking pass_test\n",
-		"Testing pass_test\n",
-		"ran pass_test --gtest_color=no\n",
-		"Linking fail_test\n",
-		"Testing fail_test\n",
-		"ran fail_test --gtest_color=no\n",
+		"Parsing pass.test.cpp\n",
+		"Parsing fail.test.cpp\n",
+		"Linking pass.test\n",
+		"Testing pass.test\n",
+		"ran pass.test --gtest_color=no\n",
+		"Linking fail.test\n",
+		"Testing fail.test\n",
+		"ran fail.test --gtest_color=no\n",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("testSources() output does not contain %q: %q", want, output)
 		}
 	}
-	for _, source := range []string{"pass_test.cpp", "fail_test.cpp", "shared.cpp"} {
+	for _, source := range []string{"pass.test.cpp", "fail.test.cpp", "shared.cpp"} {
 		object, err := objectFilePath(root, "host", source)
 		if err != nil {
 			t.Fatalf("objectFilePath(%q) error = %v", source, err)
@@ -136,7 +136,7 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 			t.Errorf("stat object for %s: %v", source, err)
 		}
 	}
-	for _, source := range []string{"pass_test.cpp", "fail_test.cpp"} {
+	for _, source := range []string{"pass.test.cpp", "fail.test.cpp"} {
 		artifact, err := binaryArtifactPath(root, "host", source)
 		if err != nil {
 			t.Fatalf("binaryArtifactPath(%q) error = %v", source, err)
@@ -148,42 +148,42 @@ func TestTestSourcesBuildsAndRunsEveryTest(t *testing.T) {
 			t.Errorf("test binary was copied into project for %s: %v", source, err)
 		}
 	}
-	passObject, err := objectFilePath(root, "host", "pass_test.cpp")
+	passObject, err := objectFilePath(root, "host", "pass.test.cpp")
 	if err != nil {
-		t.Fatalf("objectFilePath(pass_test.cpp) error = %v", err)
+		t.Fatalf("objectFilePath(pass.test.cpp) error = %v", err)
 	}
 	sharedObject, err := objectFilePath(root, "host", "shared.cpp")
 	if err != nil {
 		t.Fatalf("objectFilePath(shared.cpp) error = %v", err)
 	}
-	forward, err := sourceForwardHeaderPath(root, "host", "pass_test.cpp")
+	forward, err := sourceForwardHeaderPath(root, "host", "pass.test.cpp")
 	if err != nil {
-		t.Fatalf("sourceForwardHeaderPath(pass_test.cpp) error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath(pass.test.cpp) error = %v", err)
 	}
-	passArtifact, err := binaryArtifactPath(root, "host", "pass_test.cpp")
+	passArtifact, err := binaryArtifactPath(root, "host", "pass.test.cpp")
 	if err != nil {
-		t.Fatalf("binaryArtifactPath(pass_test.cpp) error = %v", err)
+		t.Fatalf("binaryArtifactPath(pass.test.cpp) error = %v", err)
 	}
 	for _, want := range []string{
-		"Compiling pass_test.cpp\n" + string(renderCompileCommand(
+		"Compiling pass.test.cpp\n" + string(renderCompileCommand(
 			compiler,
 			[]string{"-DHARD=1", "-DGTEST=1"},
 			[]string{forward},
-			filepath.Join(project, "pass_test.cpp"),
+			filepath.Join(project, "pass.test.cpp"),
 			passObject,
 		)),
-		"Linking pass_test\n" + string(renderLinkCommand(
+		"Linking pass.test\n" + string(renderLinkCommand(
 			compiler,
 			[]string{"-Wl,hard", "-lgtest_main", "-lgtest"},
 			[]string{passObject, sharedObject},
 			passArtifact,
 		)),
-		"Testing pass_test\n" +
+		"Testing pass.test\n" +
 			string(renderTestCommand(
 				passArtifact,
 				[]string{"--gtest_color=no"},
 			)) +
-			"ran pass_test --gtest_color=no\n",
+			"ran pass.test --gtest_color=no\n",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("testSources() verbose output does not contain %q: %q", want, output)
@@ -258,7 +258,7 @@ func TestTestSourcesRejectsSelectorsWithoutTestSources(t *testing.T) {
 func TestTestSourcesListsTestsEveryTime(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
-	writeBuildFile(t, project, "pass_test.cpp", "")
+	writeBuildFile(t, project, "pass.test.cpp", "")
 	compiler, log := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -273,7 +273,7 @@ func TestTestSourcesListsTestsEveryTime(t *testing.T) {
 			compiler,
 			nil,
 			nil,
-			[]string{"pass_test.cpp"},
+			[]string{"pass.test.cpp"},
 			1,
 			false,
 			true,
@@ -309,7 +309,7 @@ func TestTestSourcesListsTestsEveryTime(t *testing.T) {
 func TestTestSourcesRunsMatchingSelectors(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
-	writeBuildFile(t, project, "pass_test.cpp", "")
+	writeBuildFile(t, project, "pass.test.cpp", "")
 	compiler, log := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -323,7 +323,7 @@ func TestTestSourcesRunsMatchingSelectors(t *testing.T) {
 		compiler,
 		nil,
 		nil,
-		[]string{"pass_test.cpp"},
+		[]string{"pass.test.cpp"},
 		1,
 		true,
 		false,
@@ -340,10 +340,10 @@ func TestTestSourcesRunsMatchingSelectors(t *testing.T) {
 
 	output := stdout.String()
 	for _, want := range []string{
-		"Listing pass_test\n",
-		"Testing pass_test\n",
+		"Listing pass.test\n",
+		"Testing pass.test\n",
 		"--gtest_filter=Random.Returns*:Parser.Test?",
-		"ran pass_test --gtest_filter=Random.Returns*:Parser.Test? --gtest_color=no\n",
+		"ran pass.test --gtest_filter=Random.Returns*:Parser.Test? --gtest_color=no\n",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("selector test output does not contain %q: %q", want, output)
@@ -363,7 +363,7 @@ func TestTestSourcesRunsMatchingSelectors(t *testing.T) {
 func TestTestSourcesRejectsUnmatchedSelector(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
-	writeBuildFile(t, project, "pass_test.cpp", "")
+	writeBuildFile(t, project, "pass.test.cpp", "")
 	compiler, log := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -376,7 +376,7 @@ func TestTestSourcesRejectsUnmatchedSelector(t *testing.T) {
 		compiler,
 		nil,
 		nil,
-		[]string{"pass_test.cpp"},
+		[]string{"pass.test.cpp"},
 		1,
 		true,
 		false,
@@ -394,10 +394,10 @@ func TestTestSourcesRejectsUnmatchedSelector(t *testing.T) {
 	if !strings.Contains(err.Error(), `test selector "Missing.*" matched no tests`) {
 		t.Fatalf("testSourcesWithProgressSelection() error = %q", err)
 	}
-	if !strings.Contains(stdout.String(), "Listing pass_test") {
+	if !strings.Contains(stdout.String(), "Listing pass.test") {
 		t.Fatalf("unmatched selector did not list tests: %q", stdout.String())
 	}
-	if strings.Contains(stdout.String(), "Testing pass_test") {
+	if strings.Contains(stdout.String(), "Testing pass.test") {
 		t.Fatalf("unmatched selector ran test: %q", stdout.String())
 	}
 	toolLog := readTestFile(t, log)
@@ -418,7 +418,7 @@ func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 		t.Fatalf("create runtime support-header symlink: %v", err)
 	}
 	writeBuildFile(t, project, "hard.h", "#pragma once\nstruct project_type {};\n")
-	writeBuildFile(t, project, "pass_test.cpp", "#include \"hard.h\"\n")
+	writeBuildFile(t, project, "pass.test.cpp", "#include \"hard.h\"\n")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -431,7 +431,7 @@ func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 		compiler,
 		cflags,
 		nil,
-		[]string{"pass_test.cpp"},
+		[]string{"pass.test.cpp"},
 		1,
 		true,
 		false,
@@ -442,9 +442,9 @@ func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 		t.Fatalf("testSources() error = %v", err)
 	}
 
-	sourceForward, err := sourceForwardHeaderPath(root, "host", "pass_test.cpp")
+	sourceForward, err := sourceForwardHeaderPath(root, "host", "pass.test.cpp")
 	if err != nil {
-		t.Fatalf("sourceForwardHeaderPath(pass_test.cpp) error = %v", err)
+		t.Fatalf("sourceForwardHeaderPath(pass.test.cpp) error = %v", err)
 	}
 	forwardContents := readTestFile(t, sourceForward)
 	if !strings.Contains(forwardContents, "struct project_type;") {
@@ -454,19 +454,19 @@ func TestTestSourcesExcludesEnvironmentSupportFromSourceForward(t *testing.T) {
 		t.Fatalf("source forward header = %q, want no hard_support", forwardContents)
 	}
 
-	object, err := objectFilePath(root, "host", "pass_test.cpp")
+	object, err := objectFilePath(root, "host", "pass.test.cpp")
 	if err != nil {
-		t.Fatalf("objectFilePath(pass_test.cpp) error = %v", err)
+		t.Fatalf("objectFilePath(pass.test.cpp) error = %v", err)
 	}
 	output := stdout.String()
 	wantCommand := string(renderCompileCommand(
 		compiler,
 		[]string{"-include", runtimeHeader, "-DGTEST=1"},
 		[]string{sourceForward},
-		filepath.Join(project, "pass_test.cpp"),
+		filepath.Join(project, "pass.test.cpp"),
 		object,
 	))
-	for _, want := range []string{"Compiling pass_test.cpp\n" + wantCommand} {
+	for _, want := range []string{"Compiling pass.test.cpp\n" + wantCommand} {
 		if !strings.Contains(output, want) {
 			t.Errorf("testSources() output does not contain %q: %q", want, output)
 		}
@@ -486,8 +486,8 @@ func TestTestSourcesContinuesAfterCompileFailure(t *testing.T) {
 	project := t.TempDir()
 	writeBuildFile(t, project, "shared.h", "#pragma once\n")
 	writeBuildFile(t, project, "shared.cpp", "")
-	writeBuildFile(t, project, "broken_test.cpp", "#include \"shared.h\"\n")
-	writeBuildFile(t, project, "pass_test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "broken.test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "pass.test.cpp", "#include \"shared.h\"\n")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -500,7 +500,7 @@ func TestTestSourcesContinuesAfterCompileFailure(t *testing.T) {
 		compiler,
 		nil,
 		nil,
-		[]string{"broken_test.cpp", "pass_test.cpp"},
+		[]string{"broken.test.cpp", "pass.test.cpp"},
 		1,
 		false,
 		false,
@@ -511,19 +511,19 @@ func TestTestSourcesContinuesAfterCompileFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("testSources() error = nil")
 	}
-	if !strings.Contains(err.Error(), "compile broken_test.cpp: exit status 9") {
+	if !strings.Contains(err.Error(), "compile broken.test.cpp: exit status 9") {
 		t.Fatalf("testSources() error = %q", err)
 	}
-	if strings.Contains(stdout.String(), "Testing broken_test") {
+	if strings.Contains(stdout.String(), "Testing broken.test") {
 		t.Fatalf("failed test was executed: %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "[6/8] Testing pass_test") {
+	if !strings.Contains(stdout.String(), "[6/8] Testing pass.test") {
 		t.Fatalf("later test was not executed: %q", stdout.String())
 	}
-	if strings.Contains(stdout.String(), "ran pass_test") || strings.Contains(stderr.String(), "ran pass_test") {
+	if strings.Contains(stdout.String(), "ran pass.test") || strings.Contains(stderr.String(), "ran pass.test") {
 		t.Fatalf("successful test output was printed: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	if got := stderr.String(); got != "compile failed for broken_test.cpp\n" {
+	if got := stderr.String(); got != "compile failed for broken.test.cpp\n" {
 		t.Fatalf("testSources() stderr = %q", got)
 	}
 }
@@ -533,8 +533,8 @@ func TestTestSourcesNormalOutputHidesSuccessAndReportsFailure(t *testing.T) {
 	project := t.TempDir()
 	writeBuildFile(t, project, "shared.h", "#pragma once\n")
 	writeBuildFile(t, project, "shared.cpp", "")
-	writeBuildFile(t, project, "pass_test.cpp", "#include \"shared.h\"\n")
-	writeBuildFile(t, project, "fail_test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "pass.test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "fail.test.cpp", "#include \"shared.h\"\n")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -547,7 +547,7 @@ func TestTestSourcesNormalOutputHidesSuccessAndReportsFailure(t *testing.T) {
 		compiler,
 		nil,
 		nil,
-		[]string{"pass_test.cpp", "fail_test.cpp"},
+		[]string{"pass.test.cpp", "fail.test.cpp"},
 		1,
 		false,
 		false,
@@ -558,16 +558,16 @@ func TestTestSourcesNormalOutputHidesSuccessAndReportsFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("testSources() error = nil")
 	}
-	if !strings.Contains(err.Error(), "test fail_test.cpp: exit status 7") {
+	if !strings.Contains(err.Error(), "test fail.test.cpp: exit status 7") {
 		t.Fatalf("testSources() error = %q", err)
 	}
-	if !strings.Contains(stdout.String(), "\r[8/8] Testing fail_test\n") {
+	if !strings.Contains(stdout.String(), "\r[8/8] Testing fail.test\n") {
 		t.Fatalf("testSources() common progress = %q", stdout.String())
 	}
-	if strings.Contains(stdout.String(), "ran pass_test") || strings.Contains(stderr.String(), "ran pass_test") {
+	if strings.Contains(stdout.String(), "ran pass.test") || strings.Contains(stderr.String(), "ran pass.test") {
 		t.Fatalf("successful test output was printed: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "\nran fail_test --gtest_color=no\n") {
+	if !strings.Contains(stdout.String(), "\nran fail.test --gtest_color=no\n") {
 		t.Fatalf("testSources() failed output = %q", stdout.String())
 	}
 	if got := stderr.String(); got != "" {
@@ -578,7 +578,7 @@ func TestTestSourcesNormalOutputHidesSuccessAndReportsFailure(t *testing.T) {
 func TestTestSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 	root := t.TempDir()
 	project := t.TempDir()
-	writeBuildFile(t, project, "pass_test.cpp", "")
+	writeBuildFile(t, project, "pass.test.cpp", "")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -592,7 +592,7 @@ func TestTestSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 		compiler,
 		nil,
 		nil,
-		[]string{"pass_test.cpp"},
+		[]string{"pass.test.cpp"},
 		1,
 		true,
 		false,
@@ -608,10 +608,10 @@ func TestTestSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 	output := stdout.String()
 	wants := []string{
 		"[1/?] Searching source files\n",
-		"[1/?] Parsing pass_test.cpp\n",
-		"[2/4] Compiling pass_test.cpp\n",
-		"[3/4] Linking pass_test\n",
-		"[4/4] Testing pass_test\n",
+		"[1/?] Parsing pass.test.cpp\n",
+		"[2/4] Compiling pass.test.cpp\n",
+		"[3/4] Linking pass.test\n",
+		"[4/4] Testing pass.test\n",
 	}
 	previous := -1
 	for _, want := range wants {
@@ -631,8 +631,8 @@ func TestTestSourcesSilentOutputOnlyReportsFailures(t *testing.T) {
 	project := t.TempDir()
 	writeBuildFile(t, project, "shared.h", "#pragma once\n")
 	writeBuildFile(t, project, "shared.cpp", "")
-	writeBuildFile(t, project, "pass_test.cpp", "#include \"shared.h\"\n")
-	writeBuildFile(t, project, "fail_test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "pass.test.cpp", "#include \"shared.h\"\n")
+	writeBuildFile(t, project, "fail.test.cpp", "#include \"shared.h\"\n")
 	compiler, _ := installTestTools(t)
 	withWorkingDirectory(t, project)
 
@@ -645,7 +645,7 @@ func TestTestSourcesSilentOutputOnlyReportsFailures(t *testing.T) {
 		compiler,
 		nil,
 		nil,
-		[]string{"pass_test.cpp", "fail_test.cpp"},
+		[]string{"pass.test.cpp", "fail.test.cpp"},
 		1,
 		true,
 		true,
@@ -659,7 +659,7 @@ func TestTestSourcesSilentOutputOnlyReportsFailures(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("testSources() stdout = %q, want empty output", stdout.String())
 	}
-	if got := stderr.String(); got != "ran fail_test --gtest_color=no\n" {
+	if got := stderr.String(); got != "ran fail.test --gtest_color=no\n" {
 		t.Fatalf("testSources() stderr = %q", got)
 	}
 }
@@ -679,10 +679,10 @@ func TestTestSourcesUsesJobsAcrossTestFiles(t *testing.T) {
 			root := t.TempDir()
 			project := t.TempDir()
 			sources := []string{
-				"first_test.cpp",
-				"second_test.cpp",
-				"third_test.cpp",
-				"fourth_test.cpp",
+				"first.test.cpp",
+				"second.test.cpp",
+				"third.test.cpp",
+				"fourth.test.cpp",
 			}
 			for _, source := range sources {
 				writeBuildFile(t, project, source, "")
@@ -801,7 +801,7 @@ func TestParseGoogleTestList(t *testing.T) {
 
 func TestRunTestsForcesAndPreservesGoogleTestColor(t *testing.T) {
 	directory := t.TempDir()
-	binary := filepath.Join(directory, "color_test")
+	binary := filepath.Join(directory, "color.test")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" != '--gtest_color=yes' ]; then exit 8; fi\n" +
 		"printf '\\033[31mfailed test output\\033[0m\\n'\n" +
@@ -813,7 +813,7 @@ func TestRunTestsForcesAndPreservesGoogleTestColor(t *testing.T) {
 	var stdout bytes.Buffer
 	progress := newProgressBar(&stdout, 1, true, false, true)
 	results := runTests(
-		[]testRunJob{{source: "color_test.cpp", binary: binary}},
+		[]testRunJob{{source: "color.test.cpp", binary: binary}},
 		1,
 		true,
 		false,
@@ -954,8 +954,8 @@ func installTestTools(t *testing.T) (string, string) {
 		"\tprevious=$argument\n" +
 		"done\n" +
 		"if [ \"$mode\" = compile ]; then\n" +
-		"\tcase \"$source\" in */broken_test.cpp | broken_test.cpp)\n" +
-		"\t\tprintf 'compile failed for broken_test.cpp\\n' >&2\n" +
+		"\tcase \"$source\" in */broken.test.cpp | broken.test.cpp)\n" +
+		"\t\tprintf 'compile failed for broken.test.cpp\\n' >&2\n" +
 		"\t\texit 9\n" +
 		"\t\t;;\n" +
 		"\tesac\n" +
@@ -974,7 +974,7 @@ func installTestTools(t *testing.T) (string, string) {
 		"printf '%s\\n' '  esac' >> \"$output\"\n" +
 		"printf '%s\\n' 'done' >> \"$output\"\n" +
 		"printf '%s\\n' 'printf \"ran %s %s\\n\" \"$name\" \"$*\"' >> \"$output\"\n" +
-		"printf '%s\\n' 'case \"$name\" in fail_test) exit 7 ;; esac' >> \"$output\"\n" +
+		"printf '%s\\n' 'case \"$name\" in fail.test) exit 7 ;; esac' >> \"$output\"\n" +
 		"/bin/chmod 755 \"$output\"\n"
 	if err := os.WriteFile(compiler, []byte(compilerScript), 0o755); err != nil {
 		t.Fatalf("write fake compiler: %v", err)

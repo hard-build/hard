@@ -245,13 +245,14 @@ headers may additionally be discovered as dependencies of those roots. `build`,
 
 | Command | Selected files |
 | --- | --- |
-| `build` | `*.c`, `*.cc`, `*.cpp`, `*.c++`, excluding `*_test.*` |
+| `build` | `*.c`, `*.cc`, `*.cpp`, `*.c++`, excluding `*.test.*` and legacy `*_test.*` |
 | `run` | Same as `build` |
-| `fetch` | `*.c`, `*.cc`, `*.cpp`, `*.c++`, including `*_test.*` |
+| `fetch` | `*.c`, `*.cc`, `*.cpp`, `*.c++`, including `*.test.*` and legacy `*_test.*` |
 | `format` | Build extensions plus `*.h`, `*.hh`, `*.hpp`, `*.h++` |
-| `test` | `*_test.c`, `*_test.cc`, `*_test.cpp`, `*_test.c++` |
+| `test` | `*.test.c`, `*.test.cc`, `*.test.cpp`, `*.test.c++`; legacy `*_test.*` is also supported |
 
-Extensions and the `_test` suffix are matched without regard to case.
+Extensions and the `.test` and `_test` suffixes are matched without regard to
+case.
 Unsupported explicitly named files are ignored. Missing or inaccessible paths
 are errors. Finding no matching files is a successful no-op except for `run`,
 which requires exactly one root entry source.
@@ -826,8 +827,9 @@ hard fetch [-s|--silent] [path...]
 `fetch` downloads the external GitHub dependencies required by the selected C
 and C++ translation units without building them. This includes repositories
 named by active `hard.recipe.v1` recipe headers. Unlike `build`, its default
-recursive selection includes both ordinary and `*_test.*` translation units.
-Explicit files and directories use the common path-selection rules.
+recursive selection includes ordinary, `*.test.*`, and legacy `*_test.*`
+translation units. Explicit files and directories use the common path-selection
+rules.
 
 Dependency analysis uses libclang 18 with the effective compiler flags,
 follows active project headers, and recursively discovers same-stem
@@ -882,11 +884,11 @@ For multiple selected sources, each list is grouped below the lexical source
 path:
 
 ```text
-tests/random_test.cpp:
+tests/random.test.cpp:
   Random.ReturnsValue
   Random.RejectsInvalidRange
 
-tests/parser_test.cpp:
+tests/parser.test.cpp:
   Parser.AcceptsValidInput
   Parser.RejectsInvalidInput
 ```
@@ -896,9 +898,9 @@ A selector without wildcards is exact. `*` matches any number of characters,
 including zero, and `?` matches exactly one character:
 
 ```bash
-hard test --test=Random.ReturnsValue tests/random_test.cpp
-hard test --test='Random.*' tests/random_test.cpp
-hard test --test='Parser.Test?' tests/parser_test.cpp
+hard test --test=Random.ReturnsValue tests/random.test.cpp
+hard test --test='Random.*' tests/random.test.cpp
+hard test --test='Parser.Test?' tests/parser.test.cpp
 hard test \
   --test='Random.Returns*' \
   --test='Parser.Test?' \
@@ -940,9 +942,9 @@ before any test is built. An empty selection succeeds without requiring
 
 For each test source, `hard` uses the build dependency analyzer to recursively
 find same-stem, non-test implementation sources required by its non-system
-headers. Other `*_test.*` sources are never added automatically. It prepares
-one source-context forward for every test and production translation unit,
-then compiles them with the combined compiler flags. Dependency closures for
+headers. Other `*.test.*` and legacy `*_test.*` sources are never added
+automatically. It prepares one source-context forward for every test and
+production translation unit, then compiles them with the combined compiler flags. Dependency closures for
 different test roots are prepared concurrently. An object output shared by
 several test plans is compiled only once, and every source forward belongs only
 to its translation unit. The shared object is then reused by every test that
@@ -981,8 +983,8 @@ HARD_CC <test-and-dependency-objects...> \
 The internal binary follows the same mirrored path rule as a build binary:
 
 ```text
-/home/user/project/tests/random_test.cpp
-  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/tests/random_test
+/home/user/project/tests/random.test.cpp
+  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/tests/random.test
 ```
 
 Test binaries remain in the environment build tree and are not copied into
@@ -1042,15 +1044,15 @@ Four header-only tests without selectors use one continuous counter:
 
 ```text
 [1/?] Searching source files
-[1/?] Parsing first_test.cpp
+[1/?] Parsing first.test.cpp
 ...
-[2/13] Compiling first_test.cpp
+[2/13] Compiling first.test.cpp
 ...
-[6/13] Linking first_test
+[6/13] Linking first.test
 ...
-[10/13] Testing first_test
+[10/13] Testing first.test
 ...
-[13/13] Testing fourth_test
+[13/13] Testing fourth.test
 ```
 
 Within a phase, entries appear in completion order and may therefore differ

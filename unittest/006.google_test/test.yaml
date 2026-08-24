@@ -3,9 +3,9 @@ description: Discover a production calculator and run five GoogleTest cases.
 steps:
   - test:
       sources:
-        - calculator_test.cpp
+        - calculator.test.cpp
       compiled_once:
         - calculator.cpp
       binaries:
-        calculator_test:
+        calculator.test:
           passed: 5
