@@ -32,50 +32,45 @@ On Linux x86-64, run the installer from a terminal:
 curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | sh
 ```
 
-The installer explains and prompts for one of three modes:
+The installer accepts no arguments. It resolves the latest `vX.Y` GitHub
+release, downloads its
+`hard-vX.Y.tar.gz` archive and SHA-256 file, verifies the archive, and then
+installs its relocatable `bin/` and `libexec/hard/` layout below `~/.local`.
+It does not invoke `sudo`, a distribution package manager, or a Docker service.
 
-| Mode | System dependencies | Default target |
+The installer adds `~/.local/bin` to its process `PATH` when necessary and
+records the path for new shells according to `$SHELL`:
+
+| Shell | Startup file | Added entry |
 | --- | --- | --- |
-| `docker` (recommended) | Docker | `linux.v1` |
-| `host` | Native C++ compiler, pkg-config, and GoogleTest development files | `host` |
-| `both` | Both dependency sets | `linux.v1` |
+| Bash | `~/.bashrc` | `export PATH="$HOME/.local/bin:$PATH"` |
+| Zsh | `~/.zshrc` | `export PATH="$HOME/.local/bin:$PATH"` |
+| Fish | `~/.config/fish/config.fish` | `fish_add_path "$HOME/.local/bin"` |
+| Other | `~/.profile` | `export PATH="$HOME/.local/bin:$PATH"` |
 
-For unattended installation, pass the mode explicitly:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | sh -s -- docker
-```
-
-The script downloads `hard-linux-amd64.tar.gz` and its SHA-256 file from the
-latest GitHub release, verifies the archive before changing the system, and
-installs it below `~/.local`. It detects Debian/Ubuntu, Arch/CachyOS/Manjaro,
-Fedora, RHEL/Rocky/Alma/CentOS, and openSUSE/SLES families. System packages are
-installed through `sudo` when the current user is not root. Docker mode starts
-and enables the Docker service and adds the current user to the `docker` group
-when needed; a new login is then required, and membership in that group grants
-root-level access.
+An existing equivalent path entry is not duplicated. Because a piped `sh`
+process cannot modify its parent shell, the installer prints the same command
+to run when the current shell did not already contain `~/.local/bin`; opening
+a new shell reads the saved startup entry automatically.
 
 The release archive can also be unpacked and used without installation:
 
 ```bash
-tar -xzf hard-linux-amd64.tar.gz
+tar -xzf hard-v1.0.tar.gz
 ./hard-linux-amd64/bin/hard --target=host --help
 ```
 
 The archive wrapper derives its installation prefix from its own location and
 executes the sibling `libexec/hard/hard` backend for `host`. Because an
-unpacked archive has no `default-target`, its default is `host`.
+unpacked archive and the installed runtime have no `default-target`, their
+default is `host`.
 
-Host mode enables EPEL to obtain GoogleTest on RHEL, Rocky, AlmaLinux, and
-CentOS. Docker installation on RHEL-family systems uses Docker's official RHEL
-repository; other supported families use their distribution Docker package.
-
-Host mode deliberately does not install GNU Make, CMake, Meson/Ninja,
-Autoconf, Automake, or Libtool. Install the particular tool separately when a
-reachable external-library recipe needs it. Docker mode already includes
-those tools in `linux.v1`. Docker-only installations still contain the host
-backend, so `--target=host` is accepted, but it will naturally fail if its
-native compiler or test dependencies are absent.
+The installer does not install native compilers, GoogleTest, pkg-config, GNU
+Make, CMake, Meson/Ninja, Autoconf, Automake, Libtool, or Docker. Install the
+particular host tools required by the commands and reachable recipes you use.
+The `linux.v1` image already contains those build tools, but selecting it with
+`--target=linux.v1` requires Docker to have been installed and started
+separately.
 
 ## Requirements
 
@@ -90,7 +85,7 @@ That glibc floor covers launching the bundled backend and formatter. Native
 dependency analysis, compilation, linking, and tests still require C++20
 standard-library headers and a compiler that accepts the configured flags.
 Ubuntu 18.04's default GCC 7 does not meet that toolchain contract; use the
-recommended `linux.v1` target there unless a suitable host toolchain is
+`linux.v1` target there unless a suitable host toolchain is
 configured explicitly.
 
 Building the Go module in `hard/` requires:
@@ -167,9 +162,9 @@ hard run --target=linux.v1 src/application.cpp -- --mode=check
 
 Without `--target`, the wrapper uses the choice recorded in the sibling
 `libexec/hard/default-target` file.
-`make install` and installer host mode select `host`; installer Docker and both
-modes select `linux.v1`. An unpacked archive has no default-target file and
-therefore selects `host`. An explicit target always overrides that default,
+`make install` writes `host` to that file. The portable installer and an
+unpacked archive leave the file absent, which also selects `host`. An explicit
+target always overrides that default,
 and no compatibility diagnostics are added to host execution.
 
 A target-looking value after the `run` separator belongs to the program and
@@ -246,10 +241,10 @@ publication, a maintainer must make the GitHub package public once; public
 images can then be pulled without authentication.
 
 A separate release workflow runs for `vX.Y` release tags and attaches the
-stable `hard-linux-amd64.tar.gz` portable archive plus its SHA-256 file to the
-GitHub release. It does not build or publish container images. The host backend
-is built directly by that workflow inside its pinned Ubuntu 18.04 container;
-there is no host-target Dockerfile.
+versioned `hard-vX.Y.tar.gz` portable archive plus its SHA-256 file to the
+matching GitHub release. It does not build or publish container images. The
+host backend is built directly by that workflow inside its pinned Ubuntu 18.04
+container; there is no host-target Dockerfile.
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
@@ -1212,9 +1207,9 @@ or install target images or container assets, and it writes `host` to
 The portable archive extends the runtime bundle with the host backend's shared
 libraries, LLVM resource headers, `bin/clang-format`, license records, and a
 version file. Its top-level `bin/hard` can execute that bundle in place
-immediately after extraction. The installer writes the selected default target
-while placing that complete bundle below `~/.local/libexec/hard`. It does not
-put runtime assets below `HARD_ROOT`.
+immediately after extraction. The installer places that complete bundle below
+`~/.local/libexec/hard` without a `default-target`, so host remains the default.
+It does not put runtime assets below `HARD_ROOT`.
 
 The backend, support header, and format files form an immutable runtime bundle:
 

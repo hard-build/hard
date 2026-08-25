@@ -2,9 +2,11 @@
 
 set -eu
 
-release_base_url=https://github.com/hard-build/hard/releases/latest/download
-archive_name=hard-linux-amd64.tar.gz
-checksum_name=$archive_name.sha256
+release_base_url=https://github.com/hard-build/hard/releases
+release_tag=
+release_download_url=
+archive_name=
+checksum_name=
 download_directory=
 install_stage=
 install_complete=0
@@ -44,239 +46,40 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-usage() {
-	cat <<'EOF'
-Usage: install.sh [docker|host|both]
-
-Installation modes:
-  docker  Recommended. Installs Docker and uses the reproducible linux.v1
-          container by default. Native C++ build dependencies are not installed.
-  host    Installs the native compiler, pkg-config, and GoogleTest development
-          files. Builds run directly on this system by default. Optional external
-          library build tools are not installed.
-  both    Installs both dependency sets. linux.v1 remains the default; pass
-          --target=host to run a native build.
-EOF
-}
-
-choose_mode() {
-	if [ "$#" -gt 1 ]; then
-		usage >&2
-		fail "expected at most one installation mode"
-	fi
-	if [ "$#" -eq 1 ]; then
-		case "$1" in
-			docker | host | both)
-				mode=$1
-				return
-				;;
-			-h | --help)
-				usage
-				exit 0
-				;;
-			*)
-				usage >&2
-				fail "unknown installation mode: $1"
-				;;
-		esac
-	fi
-
-	if [ ! -r /dev/tty ]; then
-		fail "no terminal is available; use: sh -s -- docker"
-	fi
-	usage >/dev/tty
-	printf '\nSelect a mode [docker]: ' >/dev/tty
-	if ! IFS= read -r mode </dev/tty; then
-		fail "cannot read installation mode"
-	fi
-	if [ -z "$mode" ]; then
-		mode=docker
-	fi
-	case "$mode" in
-		1 | docker) mode=docker ;;
-		2 | host) mode=host ;;
-		3 | both) mode=both ;;
-		*) fail "unknown installation mode: $mode" ;;
-	esac
-}
-
 require_command() {
 	command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
-as_root() {
-	if [ "$(id -u)" -eq 0 ]; then
-		"$@"
-	else
-		sudo "$@"
+resolve_release() {
+	if ! resolved_release_url=$(curl --fail --silent --show-error --location --retry 3 \
+		--output /dev/null \
+		--write-out '%{url_effective}' \
+		"$release_base_url/latest"); then
+		fail "cannot resolve latest release"
 	fi
-}
 
-prepare_root_access() {
-	if [ "$(id -u)" -ne 0 ]; then
-		require_command sudo
-		printf 'hard installer: administrative access is required to install system packages.\n'
-		sudo -v
-	fi
-}
-
-distribution_matches() {
-	case " $distribution_id $distribution_like " in
-		*" $1 "*) return 0 ;;
-		*) return 1 ;;
+	release_tag=${resolved_release_url##*/}
+	case "$release_tag" in
+		v*) release_version=${release_tag#v} ;;
+		*) fail "latest release has an invalid tag: $release_tag" ;;
 	esac
-}
-
-detect_distribution() {
-	[ -r /etc/os-release ] || fail "cannot identify this Linux distribution"
-	ID=
-	ID_LIKE=
-	VERSION_ID=
-	# /etc/os-release is the system-provided shell-compatible distribution record.
-	. /etc/os-release
-	distribution_id=${ID:-}
-	distribution_like=${ID_LIKE:-}
-	distribution_version=${VERSION_ID:-}
-
-	case "$distribution_id" in
-		ubuntu | debian | linuxmint | pop | elementary)
-			package_family=apt
+	case "$release_version" in
+		*.*)
+			release_major=${release_version%%.*}
+			release_minor=${release_version#*.}
 			;;
-		arch | cachyos | manjaro)
-			package_family=pacman
-			;;
-		fedora)
-			package_family=fedora
-			;;
-		rhel | rocky | almalinux | centos)
-			package_family=rhel
-			;;
-		opensuse-leap | opensuse-tumbleweed | sles)
-			package_family=zypper
-			;;
-		*)
-			if distribution_matches debian; then
-				package_family=apt
-			elif distribution_matches arch; then
-				package_family=pacman
-			elif distribution_matches rhel; then
-				package_family=rhel
-			elif distribution_matches fedora; then
-				package_family=fedora
-			elif distribution_matches suse; then
-				package_family=zypper
-			else
-				fail "unsupported Linux distribution: ${distribution_id:-unknown}"
-			fi
-			;;
+		*) fail "latest release has an invalid tag: $release_tag" ;;
 	esac
-}
-
-install_host_dependencies() {
-	printf 'hard installer: installing native host build dependencies.\n'
-	case "$package_family" in
-		apt)
-			as_root apt-get update
-			as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-				g++ libgtest-dev pkg-config
-			;;
-		pacman)
-			as_root pacman -S --noconfirm --needed gcc gtest pkgconf
-			;;
-		fedora | rhel)
-			if [ "$package_family" = rhel ]; then
-				case "$distribution_id" in
-					rocky | almalinux | centos)
-						as_root dnf -y install epel-release
-						;;
-					rhel)
-						rhel_major=${distribution_version%%.*}
-						case "$rhel_major" in
-							8 | 9 | 10) ;;
-							*) fail "unsupported RHEL version: ${distribution_version:-unknown}" ;;
-						esac
-						as_root dnf -y install \
-							"https://dl.fedoraproject.org/pub/epel/epel-release-latest-${rhel_major}.noarch.rpm"
-						;;
-				esac
-			fi
-			as_root dnf -y install gcc-c++ gtest-devel pkgconf-pkg-config
-			;;
-		zypper)
-			as_root zypper --non-interactive install gcc-c++ gtest pkgconf-pkg-config
-			;;
+	if [ -z "$release_major" ] || [ -z "$release_minor" ]; then
+		fail "latest release has an invalid tag: $release_tag"
+	fi
+	case "$release_major$release_minor" in
+		*[!0-9]*) fail "latest release has an invalid tag: $release_tag" ;;
 	esac
-}
 
-start_docker() {
-	if command -v systemctl >/dev/null 2>&1; then
-		as_root systemctl enable --now docker
-	elif command -v service >/dev/null 2>&1; then
-		as_root service docker start
-	else
-		fail "Docker is installed, but no supported service manager was found"
-	fi
-}
-
-install_docker_dependencies() {
-	docker_ready=0
-	docker_user_ready=0
-	if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-		docker_ready=1
-		docker_user_ready=1
-	elif command -v docker >/dev/null 2>&1 && as_root docker info >/dev/null 2>&1; then
-		docker_ready=1
-	fi
-	if [ "$docker_ready" -eq 1 ]; then
-		printf 'hard installer: Docker is already installed and running.\n'
-	else
-		printf 'hard installer: installing Docker.\n'
-		case "$package_family" in
-			apt)
-				as_root apt-get update
-				as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io
-				;;
-			pacman)
-				as_root pacman -S --noconfirm --needed docker
-				;;
-			fedora)
-				as_root dnf -y install moby-engine
-				;;
-			rhel)
-				as_root dnf -y install dnf-plugins-core
-				as_root dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
-				as_root dnf -y install \
-					docker-ce \
-					docker-ce-cli \
-					containerd.io \
-					docker-buildx-plugin \
-					docker-compose-plugin
-				;;
-			zypper)
-				as_root zypper --non-interactive install docker
-				;;
-		esac
-
-		start_docker
-		if ! as_root docker info >/dev/null 2>&1; then
-			fail "Docker was installed, but its daemon is not available"
-		fi
-		if docker info >/dev/null 2>&1; then
-			docker_user_ready=1
-		fi
-	fi
-
-	if [ "$(id -u)" -ne 0 ] && [ "$docker_user_ready" -eq 0 ]; then
-		install_user=$(id -un)
-		user_groups=$(id -nG "$install_user")
-		case " $user_groups " in
-			*" docker "*) docker_group_changed=1 ;;
-			*)
-				as_root usermod -aG docker "$install_user"
-				docker_group_changed=1
-				;;
-		esac
-	fi
+	release_download_url=$release_base_url/download/$release_tag
+	archive_name=hard-$release_tag.tar.gz
+	checksum_name=$archive_name.sha256
 }
 
 download_release() {
@@ -284,10 +87,10 @@ download_release() {
 	printf 'hard installer: downloading the portable Linux archive.\n'
 	curl --fail --location --retry 3 \
 		--output "$download_directory/$archive_name" \
-		"$release_base_url/$archive_name"
+		"$release_download_url/$archive_name"
 	curl --fail --location --retry 3 \
 		--output "$download_directory/$checksum_name" \
-		"$release_base_url/$checksum_name"
+		"$release_download_url/$checksum_name"
 	(
 		cd "$download_directory"
 		sha256sum --check "$checksum_name"
@@ -323,8 +126,6 @@ install_release() {
 	cp -a "$archive_root/libexec/hard" "$install_stage/runtime"
 	cp "$archive_root/bin/hard" "$install_stage/wrapper"
 	chmod 0755 "$install_stage/wrapper"
-	printf '%s\n' "$default_target" > "$install_stage/runtime/default-target"
-	chmod 0644 "$install_stage/runtime/default-target"
 
 	if ! mv "$install_stage/wrapper" "$wrapper"; then
 		fail "cannot install wrapper into $wrapper"
@@ -342,6 +143,69 @@ install_release() {
 	install_complete=1
 }
 
+configure_path() {
+	path_added_to_environment=0
+	case ":${PATH:-}:" in
+		*":$local_bin:"*) ;;
+		*)
+			PATH=$local_bin${PATH:+:$PATH}
+			export PATH
+			path_added_to_environment=1
+			;;
+	esac
+
+	shell_name=${SHELL:-}
+	shell_name=${shell_name##*/}
+	case "$shell_name" in
+		bash)
+			shell_config=$HOME/.bashrc
+			path_entry='export PATH="$HOME/.local/bin:$PATH"'
+			;;
+		zsh)
+			shell_config=$HOME/.zshrc
+			path_entry='export PATH="$HOME/.local/bin:$PATH"'
+			;;
+		fish)
+			shell_config=$HOME/.config/fish/config.fish
+			path_entry='fish_add_path "$HOME/.local/bin"'
+			;;
+		*)
+			shell_name=${shell_name:-sh}
+			shell_config=$HOME/.profile
+			path_entry='export PATH="$HOME/.local/bin:$PATH"'
+			;;
+	esac
+
+	if [ -e "$shell_config" ] || [ -L "$shell_config" ]; then
+		[ -f "$shell_config" ] || fail "shell configuration is not a regular file: $shell_config"
+	fi
+	mkdir -p "${shell_config%/*}"
+	path_already_configured=0
+	if [ -f "$shell_config" ]; then
+		while IFS= read -r line || [ -n "$line" ]; do
+			case "$line" in
+				\#*) continue ;;
+				*'$HOME/.local/bin'* | *'~/.local/bin'* | *"$local_bin"*)
+					path_already_configured=1
+					break
+					;;
+			esac
+		done < "$shell_config"
+	fi
+	if [ "$path_already_configured" -eq 0 ]; then
+		if [ -s "$shell_config" ]; then
+			printf '\n' >> "$shell_config"
+		fi
+		printf '%s\n' "$path_entry" >> "$shell_config"
+		printf 'hard installer: added %s to %s.\n' "$local_bin" "$shell_config"
+	else
+		printf 'hard installer: %s is already configured in %s.\n' "$local_bin" "$shell_config"
+	fi
+}
+
+if [ "$#" -ne 0 ]; then
+	fail "no arguments are accepted"
+fi
 case "$(uname -s)" in
 	Linux) ;;
 	*) fail "the portable archive currently supports Linux only" ;;
@@ -352,45 +216,18 @@ case "$(uname -m)" in
 esac
 [ -n "${HOME:-}" ] || fail "HOME is not set"
 
-choose_mode "$@"
 require_command curl
 require_command tar
 require_command sha256sum
 require_command mktemp
-detect_distribution
+resolve_release
 download_release
-prepare_root_access
-
-docker_group_changed=0
-case "$mode" in
-	host)
-		install_host_dependencies
-		default_target=host
-		;;
-	docker)
-		install_docker_dependencies
-		default_target=linux.v1
-		;;
-	both)
-		install_host_dependencies
-		install_docker_dependencies
-		default_target=linux.v1
-		;;
-esac
-
 install_release
+configure_path
 
-printf '\nhard was installed in %s.\n' "$HOME/.local"
-printf 'Default execution target: %s\n' "$default_target"
-case ":${PATH:-}:" in
-	*":$HOME/.local/bin:"*) ;;
-	*) printf 'Add %s to PATH before running hard.\n' "$HOME/.local/bin" ;;
-esac
-if [ "$docker_group_changed" -eq 1 ]; then
-	printf 'Sign out and back in before using Docker without sudo; membership in the docker group grants root-level access.\n'
-fi
-if [ "$mode" = both ]; then
-	printf 'Use --target=host for native builds; linux.v1 is the default.\n'
-elif [ "$mode" = docker ]; then
-	printf 'Use --target=host only if you install the native host build dependencies separately.\n'
+printf '\nhard %s was installed in %s.\n' "$release_tag" "$HOME/.local"
+if [ "$path_added_to_environment" -eq 1 ]; then
+	printf 'To use hard in the current %s shell, run:\n  %s\n' "$shell_name" "$path_entry"
+else
+	printf '%s is already present in PATH.\n' "$local_bin"
 fi

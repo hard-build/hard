@@ -10,58 +10,44 @@ import (
 	"testing"
 )
 
-func TestInstallScriptModes(t *testing.T) {
+func TestInstallScriptInstallsReleaseAndConfiguresShell(t *testing.T) {
 	tests := []struct {
-		name            string
-		mode            string
-		wantDefault     string
-		wantPackages    []string
-		unwantedPackage []string
-		wantDocker      bool
+		name       string
+		shell      string
+		configPath string
+		pathEntry  string
 	}{
 		{
-			name:            "host",
-			mode:            "host",
-			wantDefault:     "host\n",
-			wantPackages:    []string{"g++", "libgtest-dev", "pkg-config"},
-			unwantedPackage: []string{"docker.io"},
+			name:       "bash",
+			shell:      "/bin/bash",
+			configPath: ".bashrc",
+			pathEntry:  `export PATH="$HOME/.local/bin:$PATH"`,
 		},
 		{
-			name:            "docker",
-			mode:            "docker",
-			wantDefault:     "linux.v1\n",
-			wantPackages:    []string{"docker.io"},
-			unwantedPackage: []string{"g++", "libgtest-dev", "pkg-config"},
-			wantDocker:      true,
+			name:       "zsh",
+			shell:      "/usr/bin/zsh",
+			configPath: ".zshrc",
+			pathEntry:  `export PATH="$HOME/.local/bin:$PATH"`,
 		},
 		{
-			name:         "both",
-			mode:         "both",
-			wantDefault:  "linux.v1\n",
-			wantPackages: []string{"g++", "libgtest-dev", "pkg-config", "docker.io"},
-			wantDocker:   true,
+			name:       "fish",
+			shell:      "/usr/bin/fish",
+			configPath: filepath.Join(".config", "fish", "config.fish"),
+			pathEntry:  `fish_add_path "$HOME/.local/bin"`,
+		},
+		{
+			name:       "posix fallback",
+			shell:      "/bin/dash",
+			configPath: ".profile",
+			pathEntry:  `export PATH="$HOME/.local/bin:$PATH"`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := runInstallScript(t, tt.mode, false, false)
+			result := runInstallScript(t, installScriptOptions{shell: tt.shell})
 			if result.err != nil {
 				t.Fatalf("install error = %v, output = %q", result.err, result.output)
-			}
-
-			defaultTarget, err := os.ReadFile(filepath.Join(
-				result.home,
-				".local",
-				"libexec",
-				"hard",
-				"default-target",
-			))
-			if err != nil {
-				t.Fatalf("read default target: %v", err)
-			}
-			if got := string(defaultTarget); got != tt.wantDefault {
-				t.Fatalf("default target = %q, want %q", got, tt.wantDefault)
 			}
 
 			assertInstallFileMode(t, filepath.Join(result.home, ".local", "bin", "hard"), 0o755)
@@ -69,11 +55,6 @@ func TestInstallScriptModes(t *testing.T) {
 				t,
 				filepath.Join(result.home, ".local", "libexec", "hard", "hard"),
 				0o755,
-			)
-			assertInstallFileMode(
-				t,
-				filepath.Join(result.home, ".local", "libexec", "hard", "default-target"),
-				0o644,
 			)
 			libclang, err := os.Lstat(filepath.Join(
 				result.home,
@@ -89,48 +70,92 @@ func TestInstallScriptModes(t *testing.T) {
 			if libclang.Mode()&os.ModeSymlink == 0 {
 				t.Fatalf("libclang mode = %v, want symlink", libclang.Mode())
 			}
+			if _, err := os.Stat(filepath.Join(
+				result.home,
+				".local",
+				"libexec",
+				"hard",
+				"default-target",
+			)); !os.IsNotExist(err) {
+				t.Fatalf("default target error = %v, want not exist", err)
+			}
 			if info, err := os.Stat(filepath.Join(result.home, ".local", "share", "hard")); err != nil {
 				t.Fatalf("stat data root: %v", err)
 			} else if !info.IsDir() {
 				t.Fatal("data root is not a directory")
 			}
 
-			packageFields := strings.Fields(result.packageLog)
-			for _, want := range tt.wantPackages {
-				if !containsInstallField(packageFields, want) {
-					t.Errorf("package log = %q, want package %q", result.packageLog, want)
-				}
+			config, err := os.ReadFile(filepath.Join(result.home, tt.configPath))
+			if err != nil {
+				t.Fatalf("read shell config: %v", err)
 			}
-			for _, unwanted := range tt.unwantedPackage {
-				if containsInstallField(packageFields, unwanted) {
-					t.Errorf("package log = %q, unwanted package %q", result.packageLog, unwanted)
-				}
+			if got, want := string(config), tt.pathEntry+"\n"; got != want {
+				t.Fatalf("shell config = %q, want %q", got, want)
 			}
-			for _, optional := range []string{
-				"make",
-				"cmake",
-				"meson",
-				"ninja",
-				"autoconf",
-				"automake",
-				"libtool",
-			} {
-				if containsInstallField(packageFields, optional) {
-					t.Errorf("package log = %q, optional package %q must not be installed", result.packageLog, optional)
-				}
+			if !strings.Contains(result.output, tt.pathEntry) {
+				t.Fatalf("install output = %q, want current-shell command %q", result.output, tt.pathEntry)
 			}
-			if tt.wantDocker && !strings.Contains(result.serviceLog, "enable --now docker") {
-				t.Errorf("service log = %q, want Docker service start", result.serviceLog)
+			if result.packageLog != "" {
+				t.Errorf("package log = %q, want no package-manager calls", result.packageLog)
 			}
-			if !tt.wantDocker && result.serviceLog != "" {
-				t.Errorf("service log = %q, want no Docker service changes", result.serviceLog)
+			if result.serviceLog != "" {
+				t.Errorf("service log = %q, want no service changes", result.serviceLog)
+			}
+		})
+	}
+}
+
+func TestInstallScriptDoesNotDuplicateConfiguredPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		options installScriptOptions
+	}{
+		{
+			name: "repeated installation",
+			options: installScriptOptions{
+				shell:       "/bin/bash",
+				repetitions: 2,
+			},
+		},
+		{
+			name: "equivalent existing entry",
+			options: installScriptOptions{
+				shell:               "/bin/bash",
+				shellConfigContents: `export PATH="$PATH:$HOME/.local/bin"` + "\n",
+			},
+		},
+		{
+			name: "path already active",
+			options: installScriptOptions{
+				shell:                   "/bin/bash",
+				includeInstallBinInPath: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runInstallScript(t, tt.options)
+			if result.err != nil {
+				t.Fatalf("install error = %v, output = %q", result.err, result.output)
+			}
+			config, err := os.ReadFile(filepath.Join(result.home, ".bashrc"))
+			if err != nil {
+				t.Fatalf("read shell config: %v", err)
+			}
+			if count := strings.Count(string(config), ".local/bin"); count != 1 {
+				t.Fatalf("shell config = %q, path occurrences = %d, want 1", config, count)
+			}
+			if tt.options.includeInstallBinInPath &&
+				!strings.Contains(result.output, "is already present in PATH") {
+				t.Fatalf("install output = %q, want existing PATH message", result.output)
 			}
 		})
 	}
 }
 
 func TestInstallScriptStopsOnChecksumMismatch(t *testing.T) {
-	result := runInstallScript(t, "host", true, false)
+	result := runInstallScript(t, installScriptOptions{badChecksum: true})
 	if result.err == nil {
 		t.Fatalf("install error = nil, output = %q", result.output)
 	}
@@ -142,8 +167,50 @@ func TestInstallScriptStopsOnChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestInstallScriptAcceptsMultiDigitReleaseTag(t *testing.T) {
+	result := runInstallScript(t, installScriptOptions{
+		releaseTag: "v12.34",
+		shell:      "/bin/bash",
+	})
+	if result.err != nil {
+		t.Fatalf("install error = %v, output = %q", result.err, result.output)
+	}
+}
+
+func TestInstallScriptRejectsInvalidLatestReleaseTag(t *testing.T) {
+	result := runInstallScript(t, installScriptOptions{
+		releaseTag: "v1.0.0",
+		shell:      "/bin/bash",
+	})
+	if result.err == nil {
+		t.Fatalf("install error = nil, output = %q", result.output)
+	}
+	if !strings.Contains(result.output, "latest release has an invalid tag: v1.0.0") {
+		t.Fatalf("install output = %q, want invalid release tag error", result.output)
+	}
+	if result.packageLog != "" {
+		t.Fatalf("package log = %q, want no system package changes", result.packageLog)
+	}
+	if _, err := os.Stat(filepath.Join(result.home, ".local")); !os.IsNotExist(err) {
+		t.Fatalf("installation directory error = %v, want not exist", err)
+	}
+}
+
+func TestInstallScriptRejectsArguments(t *testing.T) {
+	result := runInstallScript(t, installScriptOptions{arguments: []string{"docker"}})
+	if result.err == nil {
+		t.Fatalf("install error = nil, output = %q", result.output)
+	}
+	if !strings.Contains(result.output, "no arguments are accepted") {
+		t.Fatalf("install output = %q, want argument error", result.output)
+	}
+	if _, err := os.Stat(filepath.Join(result.home, ".local")); !os.IsNotExist(err) {
+		t.Fatalf("installation directory error = %v, want not exist", err)
+	}
+}
+
 func TestInstallScriptRestoresPreviousRuntime(t *testing.T) {
-	result := runInstallScript(t, "host", false, true)
+	result := runInstallScript(t, installScriptOptions{failRuntimeMove: true})
 	if result.err == nil {
 		t.Fatalf("install error = nil, output = %q", result.output)
 	}
@@ -174,6 +241,17 @@ func TestInstallScriptRestoresPreviousRuntime(t *testing.T) {
 	}
 }
 
+type installScriptOptions struct {
+	arguments               []string
+	badChecksum             bool
+	failRuntimeMove         bool
+	includeInstallBinInPath bool
+	releaseTag              string
+	repetitions             int
+	shell                   string
+	shellConfigContents     string
+}
+
 type installScriptResult struct {
 	home       string
 	output     string
@@ -182,14 +260,23 @@ type installScriptResult struct {
 	err        error
 }
 
-func runInstallScript(t *testing.T, mode string, badChecksum, failRuntimeMove bool) installScriptResult {
+func runInstallScript(t *testing.T, options installScriptOptions) installScriptResult {
 	t.Helper()
+	if options.releaseTag == "" {
+		options.releaseTag = "v1.0"
+	}
+	if options.repetitions == 0 {
+		options.repetitions = 1
+	}
+	if options.shell == "" {
+		options.shell = "/bin/bash"
+	}
 	temporaryDirectory := t.TempDir()
 	home := filepath.Join(temporaryDirectory, "home")
 	if err := os.Mkdir(home, 0o755); err != nil {
 		t.Fatalf("create home: %v", err)
 	}
-	if failRuntimeMove {
+	if options.failRuntimeMove {
 		previousRuntime := filepath.Join(home, ".local", "libexec", "hard")
 		if err := os.MkdirAll(previousRuntime, 0o755); err != nil {
 			t.Fatalf("create previous runtime: %v", err)
@@ -202,7 +289,22 @@ func runInstallScript(t *testing.T, mode string, badChecksum, failRuntimeMove bo
 			t.Fatalf("write previous runtime marker: %v", err)
 		}
 	}
-	archive, checksum := createInstallArchive(t, temporaryDirectory, badChecksum)
+	if options.shellConfigContents != "" {
+		shellConfig := installTestShellConfig(home, options.shell)
+		if err := os.MkdirAll(filepath.Dir(shellConfig), 0o755); err != nil {
+			t.Fatalf("create shell config directory: %v", err)
+		}
+		if err := os.WriteFile(
+			shellConfig,
+			[]byte(options.shellConfigContents),
+			0o644,
+		); err != nil {
+			t.Fatalf("write shell config: %v", err)
+		}
+	}
+	archive, checksum := createInstallArchive(
+		t, temporaryDirectory, options.badChecksum, options.releaseTag,
+	)
 	fakeBin := filepath.Join(temporaryDirectory, "bin")
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatalf("create fake bin: %v", err)
@@ -220,6 +322,9 @@ while [ "$#" -gt 0 ]; do
 			output=$2
 			shift 2
 			;;
+		--write-out)
+			shift 2
+			;;
 		https://*)
 			url=$1
 			shift
@@ -228,8 +333,16 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 case "$url" in
-	*.sha256) cp "$INSTALL_TEST_CHECKSUM" "$output" ;;
-	*) cp "$INSTALL_TEST_ARCHIVE" "$output" ;;
+	https://github.com/hard-build/hard/releases/latest)
+		printf 'https://github.com/hard-build/hard/releases/tag/%s' "$INSTALL_TEST_RELEASE_TAG"
+		;;
+	"https://github.com/hard-build/hard/releases/download/$INSTALL_TEST_RELEASE_TAG/hard-$INSTALL_TEST_RELEASE_TAG.tar.gz")
+		cp "$INSTALL_TEST_ARCHIVE" "$output"
+		;;
+	"https://github.com/hard-build/hard/releases/download/$INSTALL_TEST_RELEASE_TAG/hard-$INSTALL_TEST_RELEASE_TAG.tar.gz.sha256")
+		cp "$INSTALL_TEST_CHECKSUM" "$output"
+		;;
+	*) exit 1 ;;
 esac
 `)
 	writeInstallTestExecutable(t, filepath.Join(fakeBin, "sudo"), `#!/bin/sh
@@ -271,27 +384,59 @@ exec "$INSTALL_TEST_REAL_MV" "$@"
 		t.Fatalf("find mv: %v", err)
 	}
 
-	command := exec.Command("/bin/sh", installScriptPath(t), mode)
-	command.Env = append(os.Environ(),
-		"HOME="+home,
-		"INSTALL_TEST_ARCHIVE="+archive,
-		"INSTALL_TEST_CHECKSUM="+checksum,
-		"INSTALL_TEST_DOCKER_STATE="+dockerState,
-		"INSTALL_TEST_FAIL_RUNTIME_MOVE="+fmt.Sprintf("%d", boolInstallTestValue(failRuntimeMove)),
-		"INSTALL_TEST_PACKAGE_LOG="+packageLog,
-		"INSTALL_TEST_REAL_MV="+realMove,
-		"INSTALL_TEST_SERVICE_LOG="+serviceLog,
-		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"TMPDIR="+temporaryDirectory,
-	)
-	output, err := command.CombinedOutput()
+	path := fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")
+	if options.includeInstallBinInPath {
+		path = fakeBin + string(os.PathListSeparator) +
+			filepath.Join(home, ".local", "bin") + string(os.PathListSeparator) +
+			os.Getenv("PATH")
+	}
+	var output strings.Builder
+	var installError error
+	for run := 0; run < options.repetitions; run++ {
+		command := exec.Command("/bin/sh", append(
+			[]string{installScriptPath(t)}, options.arguments...,
+		)...)
+		command.Env = append(os.Environ(),
+			"HOME="+home,
+			"INSTALL_TEST_ARCHIVE="+archive,
+			"INSTALL_TEST_RELEASE_TAG="+options.releaseTag,
+			"INSTALL_TEST_CHECKSUM="+checksum,
+			"INSTALL_TEST_DOCKER_STATE="+dockerState,
+			"INSTALL_TEST_FAIL_RUNTIME_MOVE="+fmt.Sprintf("%d", boolInstallTestValue(options.failRuntimeMove)),
+			"INSTALL_TEST_PACKAGE_LOG="+packageLog,
+			"INSTALL_TEST_REAL_MV="+realMove,
+			"INSTALL_TEST_SERVICE_LOG="+serviceLog,
+			"PATH="+path,
+			"SHELL="+options.shell,
+			"TMPDIR="+temporaryDirectory,
+		)
+		runOutput, err := command.CombinedOutput()
+		output.Write(runOutput)
+		if err != nil {
+			installError = err
+			break
+		}
+	}
 
 	return installScriptResult{
 		home:       home,
-		output:     string(output),
+		output:     output.String(),
 		packageLog: readInstallTestFile(t, packageLog),
 		serviceLog: readInstallTestFile(t, serviceLog),
-		err:        err,
+		err:        installError,
+	}
+}
+
+func installTestShellConfig(home, shell string) string {
+	switch filepath.Base(shell) {
+	case "bash":
+		return filepath.Join(home, ".bashrc")
+	case "zsh":
+		return filepath.Join(home, ".zshrc")
+	case "fish":
+		return filepath.Join(home, ".config", "fish", "config.fish")
+	default:
+		return filepath.Join(home, ".profile")
 	}
 }
 
@@ -302,7 +447,12 @@ func boolInstallTestValue(value bool) int {
 	return 0
 }
 
-func createInstallArchive(t *testing.T, directory string, badChecksum bool) (string, string) {
+func createInstallArchive(
+	t *testing.T,
+	directory string,
+	badChecksum bool,
+	releaseTag string,
+) (string, string) {
 	t.Helper()
 	archiveRoot := filepath.Join(directory, "fixture", "hard-linux-amd64")
 	for _, path := range []string{
@@ -361,7 +511,7 @@ func createInstallArchive(t *testing.T, directory string, badChecksum bool) (str
 	checksum := filepath.Join(directory, "fixture.sha256")
 	if err := os.WriteFile(
 		checksum,
-		[]byte(digest+"  hard-linux-amd64.tar.gz\n"),
+		[]byte(digest+"  hard-"+releaseTag+".tar.gz\n"),
 		0o644,
 	); err != nil {
 		t.Fatalf("write checksum: %v", err)
@@ -397,15 +547,6 @@ func assertInstallFileMode(t *testing.T, path string, want os.FileMode) {
 	if got := info.Mode().Perm(); got != want {
 		t.Fatalf("mode of %s = %v, want %v", path, got, want)
 	}
-}
-
-func containsInstallField(fields []string, want string) bool {
-	for _, field := range fields {
-		if field == want {
-			return true
-		}
-	}
-	return false
 }
 
 func installScriptPath(t *testing.T) string {

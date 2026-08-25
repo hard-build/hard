@@ -124,8 +124,9 @@ Implemented:
 - a `run` command that builds exactly one root entry target without delivery,
   forwards program arguments and live streams, and propagates its exit status;
 - a POSIX command wrapper and Make-based user-local build and installation;
-- an interactive or unattended `curl | sh` installer for a checksum-verified
-  portable `linux/amd64` release, with host, Docker, and combined modes;
+- a no-argument `curl | sh` installer for the latest checksum-verified portable
+  `linux/amd64` release, with user-local staged replacement and idempotent Bash,
+  Zsh, Fish, or POSIX-shell `PATH` startup configuration;
 - an optional wrapper-owned `linux.v1` Docker target whose image is pulled from
   GHCR and whose persistent source/cache root is bind-mounted from the host;
 - separate executable-relative runtime bundles for the host and container,
@@ -158,7 +159,7 @@ cache entries and are not refreshed automatically.
 | `README.md` | English user-facing description of the current system |
 | `LICENSE` | MIT license |
 | `Makefile` | Builds the Go backend and installs the host wrapper and runtime bundle |
-| `install.sh` | Portable-release installer with host, Docker, and combined dependency modes |
+| `install.sh` | Latest portable-release installer and shell `PATH` startup configuration |
 | `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or `docker run` for `linux.v1` |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
@@ -175,7 +176,7 @@ cache entries and are not refreshed automatically.
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
 | `hard/cli.go` | Cobra command tree, flags, positional paths, run arguments, test selectors, and job normalization |
 | `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, test selection, and job forms |
-| `hard/install_test.go` | Isolated portable installer modes, dependencies, layout, file modes, and checksum failure |
+| `hard/install_test.go` | Isolated portable installation, shell startup files, idempotence, rollback, and failures |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
 | `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
@@ -350,39 +351,39 @@ the user's home or a system directory. There are intentionally no `clean` or
 ### Portable host release and installer
 
 A release Git tag `vX.Y` runs `.github/workflows/release.yml`. It creates
-stable release assets named `hard-linux-amd64.tar.gz` and
-`hard-linux-amd64.tar.gz.sha256`, smoke-tests them, uploads them as workflow
-artifacts, and creates or updates the matching GitHub release. The archive has
-one top-level `hard-linux-amd64` directory and a relocatable `bin/` plus
-`libexec/hard/` layout. The top-level `bin/hard` runs that sibling runtime
-directly after extraction without installation. Its runtime includes the Go
-backend, `hard.h`, `format.v1`, clang-format, libclang, LLVM resource headers,
-the required libtinfo compatibility library, licenses, and `VERSION`.
+versioned release assets named `hard-vX.Y.tar.gz` and
+`hard-vX.Y.tar.gz.sha256`, smoke-tests them, uploads them as workflow artifacts,
+and creates or updates the matching GitHub release. The installer resolves the
+latest redirect to its strict `vX.Y` tag and downloads assets from that exact
+release. The archive has one top-level `hard-linux-amd64` directory and a
+relocatable `bin/` plus `libexec/hard/` layout. The top-level `bin/hard` runs
+that sibling runtime directly after extraction without installation. Its
+runtime includes the Go backend, `hard.h`, `format.v1`, clang-format, libclang,
+LLVM resource headers, the required libtinfo compatibility library, licenses,
+and `VERSION`.
 
-`install.sh` is POSIX `sh` and supports an interactive terminal prompt or one
-noninteractive argument: `docker`, `host`, or `both`. Docker is the recommended
-and empty-input choice. The installer supports Linux x86-64 only, downloads the
-latest stable archive and checksum from GitHub Releases, verifies the checksum
-before package-manager changes, and stages replacement of the runtime below
-`$HOME/.local`. It creates `$HOME/.local/share/hard` but keeps every runtime
-asset under `$HOME/.local/libexec/hard`.
+`install.sh` is POSIX `sh`, accepts no arguments, and supports Linux x86-64
+only. It downloads the latest stable archive and checksum from GitHub Releases,
+verifies the checksum before changing the installation, and stages replacement
+of the wrapper and runtime below `$HOME/.local`. A failed runtime replacement
+restores the previous runtime. The installer creates `$HOME/.local/share/hard`
+but keeps every runtime asset under `$HOME/.local/libexec/hard`. It leaves
+`default-target` absent, so wrapper fallback selects `host`.
 
-The installer recognizes Debian/Ubuntu, Arch/CachyOS/Manjaro, Fedora,
-RHEL/Rocky/Alma/CentOS, and openSUSE/SLES package families. It obtains
-administrative access with `sudo -v` for a non-root user. Host mode installs
-only a native C++ compiler, pkg-config, and GoogleTest development files; it
-deliberately omits Make, CMake, Meson/Ninja, Autoconf, Automake, and Libtool.
-Docker mode installs, enables, and starts Docker when needed and adds the
-current user to the `docker` group when needed. RHEL-family Docker installation
-uses Docker's official RHEL package repository; other supported families use
-their distribution package. RHEL, Rocky, AlmaLinux, and CentOS host mode enables
-EPEL for GoogleTest. The openSUSE package set uses `gtest` and
-`pkgconf-pkg-config`; Fedora/RHEL use `gtest-devel` and
-`pkgconf-pkg-config`; Arch uses `gtest` and `pkgconf`. Docker and both modes
-record `linux.v1` as the default; host mode records `host`. An explicit
-`--target=host` always dispatches directly without compatibility diagnostics,
-even after a Docker-only install whose host compilation dependencies may be
-absent.
+The installer does not inspect the distribution, invoke `sudo`, install system
+packages, start Docker, or change group membership. Native compiler, testing,
+recipe-build, and Docker prerequisites remain the user's responsibility.
+Explicit `--target=linux.v1` remains available when Docker is installed.
+
+After installation, the script prepends `$HOME/.local/bin` to its own `PATH`
+when absent. According to the basename of `$SHELL`, it idempotently records the
+same path in `$HOME/.bashrc`, `$HOME/.zshrc`,
+`$HOME/.config/fish/config.fish`, or the fallback `$HOME/.profile`. Bash, Zsh,
+and POSIX entries use `export PATH="$HOME/.local/bin:$PATH"`; Fish uses
+`fish_add_path "$HOME/.local/bin"`. Existing literal, tilde-based, or expanded
+entries are not duplicated. A piped shell cannot change its parent process, so
+the installer prints the appropriate command when the invoking environment did
+not already contain the path.
 
 ### Container image and publication
 
@@ -1629,19 +1630,19 @@ to leave the library unchanged for now.
   does not resolve the host runtime or build images; the image entrypoint starts
   the container backend, and `make install` remains host-only.
 - `host` is an explicit wrapper target. A missing `default-target` means host;
-  `make install` and installer host mode record host, while installer Docker
-  and both modes record `linux.v1`. Host runtime lookup is relative to the
-  wrapper with no `$HOME/.local` fallback. Explicit `--target=host` performs
-  direct execution without an added diagnostic layer.
+  `make install` records host, while the portable installer leaves the file
+  absent. Host runtime lookup is relative to the wrapper with no
+  `$HOME/.local` fallback. Explicit `--target=host` performs direct execution
+  without an added diagnostic layer.
 - Portable distribution uses one relocatable `linux/amd64` archive instead of
   native DEB/RPM packages. The release contract is glibc 2.27 or newer, built
   directly by GitHub Actions in a pinned Ubuntu 18.04 container and verified
   on Ubuntu 18.04, 22.04, and 24.04. Its wrapper runs the sibling runtime
   immediately after extraction. The archive carries the Go backend and its LLVM
   runtime rather than requiring distro-specific libclang packages.
-- `install.sh` offers host, Docker, and both dependency modes, recommends
-  Docker, uses `sudo` automatically, and deliberately excludes optional
-  external-library build systems from host mode.
+- `install.sh` accepts no arguments, installs no system dependencies, stages
+  the latest verified portable release below `$HOME/.local`, leaves host as the
+  wrapper fallback, and configures `$HOME/.local/bin` for the user's shell.
 - Before its first external publication, `linux.v1` was rebaselined from the
   provisional Ubuntu 24.04 image to Ubuntu 22.04. The finalized target keeps
   GCC 11 and glibc 2.35 from Jammy while preserving libclang and clang-format
@@ -1702,10 +1703,12 @@ to leave the library unchanged for now.
   installed target defaults, bundled host tool lookup, exact Docker arguments
   and mounts, default persistent root, argument preservation, no host `HARD_*`
   forwarding, and invalid target diagnostics.
-- `hard/install_test.go`: checksum-gated installation, all three installer
-  modes, Ubuntu package selection, default targets, portable runtime file
-  modes and symlinks, Docker service activation, failed-update runtime
-  restoration, and omission of optional host build systems.
+- `hard/install_test.go`: checksum-gated installation, portable runtime file
+  modes and symlinks, absent installed `default-target`, strict `vX.Y` release
+  resolution and exact versioned asset URLs, Bash, Zsh, Fish, and POSIX startup
+  configuration, active and existing path handling, repeated-install
+  idempotence, rejected arguments, checksum failure, failed-update runtime
+  restoration, and absence of package-manager or service changes.
 - `hard/source_test.go`: accepted and rejected extensions, case-insensitive test
   suffix, recursion/order, explicit paths, relative display, canonical
   deduplication, file and directory symlinks, cycles, missing paths, and empty

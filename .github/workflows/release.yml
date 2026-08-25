@@ -14,6 +14,8 @@ env:
   HOST_BUILD_IMAGE: ubuntu:18.04@sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98
   LLVM_VERSION: 18.1.8
   LLVM_SHA256: 54ec30358afcc9fb8aa74307db3046f5187f9fb89fb37064cdde906e062ebf36
+  ARCHIVE_NAME: hard-${{ github.ref_name }}.tar.gz
+  CHECKSUM_NAME: hard-${{ github.ref_name }}.tar.gz.sha256
 
 jobs:
   linux-amd64:
@@ -48,6 +50,8 @@ jobs:
           source_date_epoch=$(git show -s --format=%ct HEAD)
 
           docker run --rm --platform linux/amd64 \
+            --env ARCHIVE_NAME \
+            --env CHECKSUM_NAME \
             --env GO_SHA256 \
             --env GO_VERSION \
             --env LLVM_VERSION \
@@ -160,9 +164,9 @@ jobs:
                 --owner=0 \
                 --sort=name \
                 hard-linux-amd64 \
-                | gzip -n > /out/hard-linux-amd64.tar.gz
+                | gzip -n > "/out/$ARCHIVE_NAME"
               cd /out
-              sha256sum hard-linux-amd64.tar.gz > hard-linux-amd64.tar.gz.sha256
+              sha256sum "$ARCHIVE_NAME" > "$CHECKSUM_NAME"
             '
 
       - name: Smoke-test supported glibc baselines
@@ -170,7 +174,7 @@ jobs:
           set -euo pipefail
           for image in ubuntu:18.04 ubuntu:22.04 ubuntu:24.04; do
             docker run --rm --platform linux/amd64 \
-              --volume "$RUNNER_TEMP/release/hard-linux-amd64.tar.gz:/tmp/hard.tar.gz:ro" \
+              --volume "$RUNNER_TEMP/release/$ARCHIVE_NAME:/tmp/hard.tar.gz:ro" \
               "$image" \
               sh -euxc '
                 mkdir -p /tmp/home /tmp/project /tmp/release
@@ -186,10 +190,10 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hard-linux-amd64
+          name: hard-${{ github.ref_name }}
           path: |
-            ${{ runner.temp }}/release/hard-linux-amd64.tar.gz
-            ${{ runner.temp }}/release/hard-linux-amd64.tar.gz.sha256
+            ${{ runner.temp }}/release/${{ env.ARCHIVE_NAME }}
+            ${{ runner.temp }}/release/${{ env.CHECKSUM_NAME }}
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -200,12 +204,12 @@ jobs:
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" --clobber \
-              "$RUNNER_TEMP/release/hard-linux-amd64.tar.gz" \
-              "$RUNNER_TEMP/release/hard-linux-amd64.tar.gz.sha256"
+              "$RUNNER_TEMP/release/$ARCHIVE_NAME" \
+              "$RUNNER_TEMP/release/$CHECKSUM_NAME"
           else
             gh release create "$RELEASE_TAG" \
               --generate-notes \
               --title "$RELEASE_TAG" \
-              "$RUNNER_TEMP/release/hard-linux-amd64.tar.gz" \
-              "$RUNNER_TEMP/release/hard-linux-amd64.tar.gz.sha256"
+              "$RUNNER_TEMP/release/$ARCHIVE_NAME" \
+              "$RUNNER_TEMP/release/$CHECKSUM_NAME"
           fi
