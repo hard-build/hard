@@ -157,6 +157,7 @@ cache entries and are not refreshed automatically.
 | `AGENTS.md` | Concise repository working rules and required checks |
 | `MEMORY.md` | This self-contained project-memory snapshot |
 | `README.md` | English user-facing description of the current system |
+| `assets/hard-build.svg` | Hard Build logo used by the README onboarding |
 | `LICENSE` | MIT license |
 | `Makefile` | Builds the Go backend and installs the host wrapper and runtime bundle |
 | `install.sh` | Latest portable-release installer and shell `PATH` startup configuration |
@@ -1554,6 +1555,11 @@ to leave the library unchanged for now.
 - The Go rewrite was initially developed in `v1.0` while the old version
   remained at the root. The user later deleted the old version and renamed
   `v1.0` to `hard`; the repository now contains only the Go generation.
+- README begins with the Hard Build logo and a newcomer-oriented walkthrough
+  before the complete technical reference. The walkthrough starts with the
+  no-sudo `curl | sh` installation, links to `hard-build/example`, and uses
+  compact normalized `-v` transcripts for every demonstrated build. It also
+  shows delivered-binary `ldd` output and actual program output.
 - MIT was selected, with the current copyright identity.
 - README is English and exposes only `format`, `fetch`, `build`, `run`, and
   `test`.

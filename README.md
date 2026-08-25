@@ -1,9 +1,55 @@
-# hard
+<p align="center">
+  <img src="assets/hard-build.svg" alt="Hard Build" width="760">
+</p>
 
-`hard` is a convention-based build tool for C and C++ projects. It derives its
-work from the source tree instead of requiring project-specific build files,
-keeps generated artifacts outside the project, and provides one interface for
-formatting, dependency fetching, building, running, and testing.
+# Hard Build
+
+`hard` is a convention-based build tool for C and C++ projects. It treats the
+source tree and active `#include` relationships as the build description, so
+project code does not need a hand-written `CMakeLists.txt` or another
+project-specific build file.
+
+Use `hard` to format, fetch dependencies, build, run, and test a project through
+one command-line interface. It discovers implementation files from headers,
+downloads public GitHub dependencies referenced by includes, builds compiled
+third-party libraries from recipes, and keeps generated files and caches outside
+the source tree.
+
+This repository contains the hard implementation and its complete reference documentation.
+
+## Installation
+
+On Linux x86-64, install the latest release with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | sh
+```
+
+The installer places `hard` below `~/.local` without `sudo`. Open a new shell
+after installation, or follow the printed `PATH` instruction, then check the
+installation:
+
+```bash
+hard --help
+```
+
+The host target requires a C++20 compiler. Individual recipes may also require
+tools such as CMake. The optional `linux.v1` target provides a reproducible
+toolchain in Docker.
+
+## Example repository
+
+The complete examples are available in
+[hard-build/example](https://github.com/hard-build/example):
+
+```bash
+git clone https://github.com/hard-build/example.git
+cd example
+```
+
+Each numbered directory contains its own README with the source layout, a verbose build transcript, and the expected program or test output. Start with `001.helloworld` and continue in numeric order.
+
+The remainder of this document is the complete behavior, configuration, installation, and implementation reference.
 
 > [!IMPORTANT]
 > The current implementation is the Go module in `hard/`. Root-level files
@@ -24,7 +70,7 @@ formatting, dependency fetching, building, running, and testing.
 - Expose only formatting, dependency fetching, building, running, and testing
   as public operations.
 
-## Installation
+## Installation details
 
 On Linux x86-64, run the installer from a terminal:
 

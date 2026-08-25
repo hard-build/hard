@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 240" role="img" aria-labelledby="title desc">
+  <title id="title">Hard Build Compact Cut</title>
+  <desc id="desc">Two steel layers support a compact amber block with an inset H mark.</desc>
+  <rect width="960" height="240" rx="30" fill="#12181d"/>
+  <g aria-hidden="true">
+    <rect x="44" y="40" width="128" height="128" rx="24" fill="#596872"/>
+    <rect x="70" y="55" width="128" height="128" rx="24" fill="#a8b2b8"/>
+    <rect x="96" y="69" width="128" height="128" rx="24" fill="#f2a900"/>
+    <path d="M128 99H150V125H170V99H192V167H170V141H150V167H128Z"
+          fill="#12181d"/>
+    <circle cx="199" cy="94" r="7" fill="#12181d"/>
+  </g>
+  <g font-family="DejaVu Sans, Liberation Sans, sans-serif">
+    <text x="280" y="137" fill="#f4f5f3" font-size="76" font-weight="800"
+          letter-spacing="2">HARD</text>
+    <text x="522" y="137" fill="#f2a900" font-size="76" font-weight="800"
+          letter-spacing="2">BUILD</text>
+    <text x="285" y="174" fill="#87939a" font-size="15" font-weight="700"
+          letter-spacing="4">C/C++ BUILDS MADE SIMPLE</text>
+  </g>
+  <path d="M285 193H875" stroke="#35434b" stroke-width="2"/>
+  <path d="M285 193H455" stroke="#f2a900" stroke-width="5"/>
+</svg>

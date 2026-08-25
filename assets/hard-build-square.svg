@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Hard Build Compact Cut square mark</title>
+  <desc id="desc">Two steel layers behind a compact amber block with an inset H mark.</desc>
+  <rect width="512" height="512" rx="84" fill="#12181d"/>
+  <rect x="93" y="93" width="268" height="268" rx="54" fill="#596872"/>
+  <rect x="122" y="122" width="268" height="268" rx="54" fill="#a8b2b8"/>
+  <rect x="151" y="151" width="268" height="268" rx="54" fill="#f2a900"/>
+  <path d="M221 215H265V269H305V215H349V355H305V301H265V355H221Z"
+        fill="#12181d"/>
+  <circle cx="365" cy="205" r="14" fill="#12181d"/>
+</svg>
