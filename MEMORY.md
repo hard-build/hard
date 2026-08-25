@@ -24,15 +24,16 @@ no legacy generation in this repository to extend or preserve.
 - `AGENTS.md` is the concise repository rule document. `MEMORY.md` is the
   broader self-contained project-memory snapshot. They must not contradict one
   another.
-- [README.md](README.md) is English user-facing documentation for the current
-  system. It explicitly identifies known future work; use tests and code to
-  confirm implementation status.
+- [README.md](README.md) is the English newcomer overview and quick start.
+  [docs/reference.md](docs/reference.md) is the complete public behavior
+  reference. Use tests and code to confirm implementation status.
 - When sources disagree, use this precedence:
   1. the newest explicit user instruction;
   2. repository rules in `AGENTS.md`;
   3. current tests and implementation in `hard/`;
   4. this memory snapshot;
-  5. user-facing behavior in `README.md`.
+  5. public behavior in `docs/reference.md`;
+  6. the newcomer overview in `README.md`.
 - Build verification executables under a unique `/tmp` path. A default
   `go build` from the module directory would create `hard/hard`; do not create
   or overwrite that path during routine verification.
@@ -156,7 +157,8 @@ cache entries and are not refreshed automatically.
 | --- | --- |
 | `AGENTS.md` | Concise repository working rules and required checks |
 | `MEMORY.md` | This self-contained project-memory snapshot |
-| `README.md` | English user-facing description of the current system |
+| `README.md` | English newcomer overview, quick start, and concise command guide |
+| `docs/reference.md` | Complete English public command and behavior reference |
 | `assets/hard-build.svg` | Hard Build logo used by the README onboarding |
 | `LICENSE` | MIT license |
 | `Makefile` | Builds the Go backend and installs the host wrapper and runtime bundle |
@@ -1555,11 +1557,14 @@ to leave the library unchanged for now.
 - The Go rewrite was initially developed in `v1.0` while the old version
   remained at the root. The user later deleted the old version and renamed
   `v1.0` to `hard`; the repository now contains only the Go generation.
-- README begins with the Hard Build logo and a newcomer-oriented walkthrough
-  before the complete technical reference. The walkthrough starts with the
-  no-sudo `curl | sh` installation, links to `hard-build/example`, and uses
-  compact normalized `-v` transcripts for every demonstrated build. It also
-  shows delivered-binary `ldd` output and actual program output.
+- README is a concise newcomer document rather than the complete technical
+  specification. It begins with the Hard Build logo and `Quick Start`, shows a
+  local hello-world run, and links directly to
+  `hard-build/example/tree/main/001.helloworld` for further introduction.
+  That example is expected to own its separate README; creating that file in
+  the example repository remains separate future work. The complete public
+  contract lives in `docs/reference.md`; maintainer and implementation history
+  remains in this memory.
 - MIT was selected, with the current copyright identity.
 - README is English and exposes only `format`, `fetch`, `build`, `run`, and
   `test`.
@@ -1837,7 +1842,8 @@ From the repository root:
     git diff --check
 
 For documentation work, reread `README.md`, `AGENTS.md`, and `MEMORY.md`
-completely; verify English language, five-command public scope, local links,
+completely, plus `docs/reference.md` when it is affected; verify English
+language, five-command public scope, local links,
 versions, flags, paths, defaults, implemented/target distinctions, and known
 gaps.
 
@@ -2450,7 +2456,8 @@ When resuming work:
 5. for multi-edit work, present a file/change/check plan and wait for approval;
 6. implement only the confirmed scope;
 7. update `MEMORY.md` with every new requirement or material state change,
-   update `README.md` with user-facing contract changes, and update `AGENTS.md`
+   update `README.md` and `docs/reference.md` with their respective
+   user-facing contract changes, and update `AGENTS.md`
    when repository working rules change;
 8. run the required unit, race, static, build, module, diff, and applicable
    integration checks;
