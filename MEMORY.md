@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-25.
+Last updated: 2026-08-26.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -1593,7 +1593,8 @@ to leave the library unchanged for now.
   `v1.0` to `hard`; the repository now contains only the Go generation.
 - README is a concise newcomer document rather than the complete technical
   specification. It begins with the Hard Build logo and `Quick Start`, shows a
-  local hello-world run, and links directly to
+  local hello-world build followed by direct execution of the produced binary,
+  and links directly to
   `hard-build/example/tree/main/001.helloworld` for further introduction.
   That example is expected to own its separate README; creating that file in
   the example repository remains separate future work. The complete public

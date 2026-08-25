@@ -41,10 +41,11 @@ int main()
 }
 ```
 
-Build and run it:
+Build it, then run the produced binary:
 
 ```bash
-hard run example.cpp
+hard build example.cpp
+./example
 ```
 
 The expected output is:
@@ -54,7 +55,7 @@ Hello, hard!
 ```
 
 Further introduction to `hard` continues in the
-[`001.helloworld` example](https://github.com/hard-build/example/tree/main/001.helloworld).
+[example](https://github.com/hard-build/example/tree/main/001.helloworld).
 That example will have its own `README.md` with the source layout, build
 transcript, and expected output.
 
