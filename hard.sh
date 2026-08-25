@@ -24,6 +24,16 @@ resolve_installation_root() {
 		fail "cannot determine installation root"
 }
 
+case "${1:-}" in
+	__complete | __completeNoDesc)
+		resolve_installation_root
+		runtime_root=$installation_root/libexec/hard
+		PATH=$runtime_root/bin${PATH:+:$PATH}
+		export PATH
+		exec "$runtime_root/hard" "$@"
+		;;
+esac
+
 target=
 target_seen=0
 parse_target=1

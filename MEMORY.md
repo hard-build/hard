@@ -128,6 +128,8 @@ Implemented:
 - a no-argument `curl | sh` installer for the latest checksum-verified portable
   `linux/amd64` release, with user-local staged replacement and idempotent Bash,
   Zsh, Fish, or POSIX-shell `PATH` startup configuration;
+- generated Bash, Zsh, and Fish completion files, including wrapper target
+  values and host-only dynamic completion dispatch;
 - an optional wrapper-owned `linux.v1` Docker target whose image is pulled from
   GHCR and whose persistent source/cache root is bind-mounted from the host;
 - separate executable-relative runtime bundles for the host and container,
@@ -161,9 +163,9 @@ cache entries and are not refreshed automatically.
 | `docs/reference.md` | Complete English public command and behavior reference |
 | `assets/hard-build.svg` | Hard Build logo used by the README onboarding |
 | `LICENSE` | MIT license |
-| `Makefile` | Builds the Go backend and installs the host wrapper and runtime bundle |
-| `install.sh` | Latest portable-release installer and shell `PATH` startup configuration |
-| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or `docker run` for `linux.v1` |
+| `Makefile` | Builds the Go backend and installs the host wrapper, runtime bundle, and shell completions |
+| `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
+| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or `docker run` for `linux.v1`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
 | `target/linux.v1.Dockerfile` | Self-contained Ubuntu 22.04 `linux/amd64` target image definition |
@@ -177,9 +179,9 @@ cache entries and are not refreshed automatically.
 | `hard/go.mod`, `hard/go.sum` | Module identity, Go version, dependencies, and checksums |
 | `hard/main.go` | Process entry, dispatch, configuration loading, and shared search progress |
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
-| `hard/cli.go` | Cobra command tree, flags, positional paths, run arguments, test selectors, and job normalization |
-| `hard/cli_test.go` | CLI defaults, validation, help, interspersed flags, test selection, and job forms |
-| `hard/install_test.go` | Isolated portable installation, shell startup files, idempotence, rollback, and failures |
+| `hard/cli.go` | Cobra command tree, flags, positional paths, run arguments, test selectors, job normalization, and hidden completion generation |
+| `hard/cli_test.go` | CLI defaults, validation, help, completion, interspersed flags, test selection, and job forms |
+| `hard/install_test.go` | Isolated portable installation, shell startup and completion files, idempotence, rollback, and failures |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
 | `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
@@ -318,7 +320,13 @@ $HOME/.local/
 │   ├── hard                         mode 0755, Go backend
 │   ├── hard.h                       mode 0644
 │   └── format/format.v1             mode 0644
-└── share/hard/                      persistent state root
+└── share/
+    ├── bash-completion/completions/hard
+    │                                  mode 0644
+    ├── zsh/site-functions/_hard       mode 0644
+    ├── fish/vendor_completions.d/hard.fish
+    │                                  mode 0644
+    └── hard/                          persistent state root
 ```
 
 `hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host` and `linux.v1`
@@ -333,6 +341,12 @@ backend, and the wrapper does not resolve a host runtime. Empty, duplicate, and
 unknown targets are errors.
 Values after `--` remain untouched.
 
+The private Cobra `__complete` and `__completeNoDesc` protocols are routed
+directly to the sibling host backend before target parsing. Their argument
+vectors, including partial `--target` values, remain intact. Completion
+therefore never starts or pulls Docker even when `default-target` selects
+`linux.v1`.
+
 The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
 source of a bind mount targeting `/hard`. The physical current working
 directory is mounted at the same absolute container path and becomes the
@@ -345,6 +359,10 @@ Any prefix with sibling `bin/hard` and `libexec/hard` paths is a supported
 wrapper layout. Changing `PREFIX` or staging through `DESTDIR` preserves the
 relative lookup without rewriting the wrapper. `make install` remains
 host-only and neither invokes Docker nor installs image assets.
+
+`make install` generates Bash, Zsh, and Fish completion files from the built
+backend and installs them into their standard `PREFIX/share` directories
+shown above.
 
 `DESTDIR` prepends a staging root to every installed path but does not become
 part of the logical prefix. This permits packaging tests without writing into
@@ -359,11 +377,12 @@ versioned release assets named `hard-vX.Y.tar.gz` and
 and creates or updates the matching GitHub release. The installer resolves the
 latest redirect to its strict `vX.Y` tag and downloads assets from that exact
 release. The archive has one top-level `hard-linux-amd64` directory and a
-relocatable `bin/` plus `libexec/hard/` layout. The top-level `bin/hard` runs
-that sibling runtime directly after extraction without installation. Its
-runtime includes the Go backend, `hard.h`, `format.v1`, clang-format, libclang,
-LLVM resource headers, the required libtinfo compatibility library, licenses,
-and `VERSION`.
+relocatable `bin/`, `libexec/hard/`, and `share/` layout. The top-level
+`bin/hard` runs that sibling runtime directly after extraction without
+installation. Its runtime includes the Go backend, `hard.h`, `format.v1`,
+clang-format, libclang, LLVM resource headers, the required libtinfo
+compatibility library, licenses, and `VERSION`. The `share/` tree contains
+the generated Bash, Zsh, and Fish completion files.
 
 `install.sh` is POSIX `sh`, accepts no arguments, and supports Linux x86-64
 only. It downloads the latest stable archive and checksum from GitHub Releases,
@@ -387,6 +406,15 @@ and POSIX entries use `export PATH="$HOME/.local/bin:$PATH"`; Fish uses
 entries are not duplicated. A piped shell cannot change its parent process, so
 the installer prints the appropriate command when the invoking environment did
 not already contain the path.
+
+The archive and installer place completions at the standard
+`share/bash-completion/completions/hard`,
+`share/zsh/site-functions/_hard`, and
+`share/fish/vendor_completions.d/hard.fish` paths. For the shell named by
+`$SHELL`, the installer idempotently sources the Bash script from `.bashrc`
+or initializes Zsh completion and sources `_hard` from `.zshrc`. Fish
+discovers its vendor file automatically. The POSIX fallback receives only the
+`PATH` configuration; PowerShell is outside the current scope.
 
 ### Container image and publication
 
@@ -476,7 +504,13 @@ Other CLI decisions:
   argument vector unchanged, and no preceding path still defaults to `.`;
 - invoking no command is an error: `a command is required`;
 - unknown commands and flags are errors;
-- Cobra completion is disabled;
+- Cobra's `completion` generator is hidden from help but can generate Bash,
+  Zsh, and Fish scripts for installation and release packaging;
+- dynamic completion lists only the five public commands and filters Cobra's
+  private `_help` suggestion;
+- completion supplies fixed `host` and `linux.v1` values for `--target`,
+  `format.v1` for `--format`, flag names, and default filesystem-path
+  completion for positional arguments;
 - the normal `help` command is not public; `help` and `_help` are rejected;
 - root and command `--help` succeed without configuration loading or source
   discovery;
@@ -1654,6 +1688,12 @@ to leave the library unchanged for now.
 - `install.sh` accepts no arguments, installs no system dependencies, stages
   the latest verified portable release below `$HOME/.local`, leaves host as the
   wrapper fallback, and configures `$HOME/.local/bin` for the user's shell.
+- Bash, Zsh, and Fish completion scripts are generated from the same Cobra
+  command tree during installation and release packaging. They are data files
+  below standard `share/` paths, not a sixth public command. Wrapper target
+  completion is present, but all dynamic completion requests bypass target
+  selection and use the installed host backend so interactive completion cannot
+  start Docker.
 - Before its first external publication, `linux.v1` was rebaselined from the
   provisional Ubuntu 24.04 image to Ubuntu 22.04. The finalized target keeps
   GCC 11 and glibc 2.35 from Jammy while preserving libclang and clang-format
@@ -1706,20 +1746,22 @@ to leave the library unchanged for now.
 ## Test inventory
 
 - `hard/cli_test.go`: command defaults, paths, interspersed and no-cache flags,
-  silent options, all job syntaxes, invalid input, help, and hidden commands.
+  silent options, all job syntaxes, invalid input, help, hidden commands,
+  completion values and directives, and Bash/Zsh/Fish script generation.
 - `hard/config_test.go`: all defaults and overrides, environment choice, default
   source include and runtime support include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
 - `hard/wrapper_test.go`: host passthrough, both target spellings and positions,
   installed target defaults, bundled host tool lookup, exact Docker arguments
   and mounts, default persistent root, argument preservation, no host `HARD_*`
-  forwarding, and invalid target diagnostics.
+  forwarding, host-only completion dispatch, and invalid target diagnostics.
 - `hard/install_test.go`: checksum-gated installation, portable runtime file
-  modes and symlinks, absent installed `default-target`, strict `vX.Y` release
-  resolution and exact versioned asset URLs, Bash, Zsh, Fish, and POSIX startup
-  configuration, active and existing path handling, repeated-install
-  idempotence, rejected arguments, checksum failure, failed-update runtime
-  restoration, and absence of package-manager or service changes.
+  modes, symlinks, and completion data files, absent installed `default-target`,
+  strict `vX.Y` release resolution and exact versioned asset URLs, Bash, Zsh,
+  Fish, and POSIX startup configuration, Bash/Zsh completion activation,
+  active and existing path handling, repeated-install idempotence, rejected
+  arguments, checksum failure, failed-update runtime restoration, and absence
+  of package-manager or service changes.
 - `hard/source_test.go`: accepted and rejected extensions, case-insensitive test
   suffix, recursion/order, explicit paths, relative display, canonical
   deduplication, file and directory symlinks, cycles, missing paths, and empty
@@ -1813,8 +1855,11 @@ For wrapper or installation changes, also run:
 
 Inspect the staged paths, file modes, and file types, and invoke the staged
 public wrapper. Verify that the backend, `hard.h`, and format file work after
-staging or relocating the complete runtime bundle. Do not install into the real
-home or system tree during routine verification.
+staging or relocating the complete runtime bundle. When completions change,
+also check all three staged completion paths and modes, validate the Bash script
+with `bash -n`, source it in a clean Bash process, and confirm that target
+completion through the staged wrapper does not invoke Docker. Do not install
+into the real home or system tree during routine verification.
 
 For portable release changes, validate the release workflow syntax, pinned
 download checksums and builder image, archive paths and modes, executable
@@ -2435,6 +2480,28 @@ help and real formatting through the bundled clang-format both succeeded. The
 release workflow parsed as YAML. Clean gofmt output, uncached ordinary and race
 tests, vet, an out-of-tree backend build, module verification, and wrapper
 shell syntax checking all passed.
+
+## Last known verification of shell completions
+
+On 2026-08-25, Bash, Zsh, and Fish completion generation, fixed target and
+format values, public-command filtering, filesystem directives, bare-job flag
+handling, wrapper host-only dispatch, installer placement, startup activation,
+and repeated-install idempotence passed their Go tests. The complete required
+Go verification also passed: clean gofmt output, ordinary and race tests, vet,
+an out-of-tree build, and module verification.
+
+A real staged `make install` below `/tmp` generated all three completion
+files, installed them with mode 0644 in their standard `share/` locations,
+preserved the 0755 wrapper/backend and 0644 runtime data modes, and kept
+`default-target` at `host`. The staged wrapper served `host` and `linux.v1`
+target candidates through the host backend after its temporary
+`default-target` was changed to `linux.v1`. The Bash script passed
+`bash -n`, loaded in a clean Bash 5.2 process, and registered completion for
+`hard`. Zsh and Fish were not installed locally; their generated scripts were
+covered by content tests but were not executed by those shell binaries.
+
+Both POSIX shell syntax checks, release-workflow YAML parsing, and
+`git diff --check` passed.
 
 ## Workspace safety snapshot
 

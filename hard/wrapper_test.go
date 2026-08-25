@@ -122,6 +122,53 @@ func TestWrapperRunsHostBackendThroughPath(t *testing.T) {
 	}
 }
 
+func TestWrapperRunsCompletionThroughHostBackend(t *testing.T) {
+	for _, request := range []string{"__complete", "__completeNoDesc"} {
+		t.Run(request, func(t *testing.T) {
+			home := t.TempDir()
+			prefix := filepath.Join(t.TempDir(), "installed hard")
+			wrapper := installWrapperAtPrefix(t, prefix)
+			runtimeRoot := filepath.Join(prefix, "libexec", "hard")
+			backend := filepath.Join(runtimeRoot, "hard")
+			if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+				t.Fatalf("create runtime directory: %v", err)
+			}
+			writeWrapperExecutable(
+				t,
+				backend,
+				"#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$BACKEND_LOG\"\n",
+			)
+			if err := os.WriteFile(
+				filepath.Join(runtimeRoot, "default-target"),
+				[]byte("linux.v1\n"),
+				0o644,
+			); err != nil {
+				t.Fatalf("write default target: %v", err)
+			}
+			backendLog := filepath.Join(t.TempDir(), "backend.log")
+			dockerLog := filepath.Join(t.TempDir(), "docker.log")
+			binDirectory := installFakeWrapperDocker(t, dockerLog)
+			arguments := []string{request, "--target=linux.", ""}
+
+			command := exec.Command(wrapper, arguments...)
+			command.Env = wrapperTestEnvironment(map[string]string{
+				"BACKEND_LOG": backendLog,
+				"HOME":        home,
+				"PATH":        binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+			})
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("completion wrapper error = %v, output = %q", err, output)
+			}
+			if got := readWrapperArguments(t, backendLog); !reflect.DeepEqual(got, arguments) {
+				t.Fatalf("host backend arguments = %#v, want %#v", got, arguments)
+			}
+			if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("docker log error = %v, want not exist", err)
+			}
+		})
+	}
+}
+
 func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 	home := t.TempDir()
 	prefix := filepath.Join(home, ".local")

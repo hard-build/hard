@@ -17,8 +17,9 @@ curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | s
 The installer accepts no arguments. It resolves the latest `vX.Y` GitHub
 release, downloads its
 `hard-vX.Y.tar.gz` archive and SHA-256 file, verifies the archive, and then
-installs its relocatable `bin/` and `libexec/hard/` layout below `~/.local`.
-It does not invoke `sudo`, a distribution package manager, or a Docker service.
+installs its relocatable `bin/`, `libexec/hard/`, and shell-completion files
+below `~/.local`. It does not invoke `sudo`, a distribution package manager,
+or a Docker service.
 
 The installer adds `~/.local/bin` to its process `PATH` when necessary and
 records the path for new shells according to `$SHELL`:
@@ -34,6 +35,22 @@ An existing equivalent path entry is not duplicated. Because a piped `sh`
 process cannot modify its parent shell, the installer prints the same command
 to run when the current shell did not already contain `~/.local/bin`; opening
 a new shell reads the saved startup entry automatically.
+
+Command completion is installed at the shell-standard user-local paths:
+
+| Shell | Completion file | Activation |
+| --- | --- | --- |
+| Bash | `~/.local/share/bash-completion/completions/hard` | Sourced from `~/.bashrc` |
+| Zsh | `~/.local/share/zsh/site-functions/_hard` | `compinit` and the file are loaded from `~/.zshrc` |
+| Fish | `~/.local/share/fish/vendor_completions.d/hard.fish` | Discovered automatically |
+
+Existing Bash and Zsh activation entries are not duplicated. Completion offers
+the five public commands, command flags, filesystem paths, the `host` and
+`linux.v1` target values, and the default `format.v1` format. Its internal
+requests always execute the installed host backend, even when `linux.v1` is
+the installed default, so pressing Tab never starts or pulls a Docker
+container. POSIX shells without programmable completion and PowerShell do not
+receive a completion integration.
 
 The release archive can also be unpacked and used without installation:
 
@@ -1148,7 +1165,11 @@ From the repository root, `make` builds the Go backend as `build/hard`.
 │   ├── hard.h
 │   └── format/
 │       └── format.v1
-└── share/hard/
+└── share/
+    ├── bash-completion/completions/hard
+    ├── zsh/site-functions/_hard
+    ├── fish/vendor_completions.d/hard.fish
+    └── hard/
 ```
 
 The public `bin/hard` command is a POSIX shell wrapper. It derives the logical
@@ -1170,10 +1191,11 @@ or install target images or container assets, and it writes `host` to
 `default-target`.
 
 The portable archive extends the runtime bundle with the host backend's shared
-libraries, LLVM resource headers, `bin/clang-format`, license records, and a
-version file. Its top-level `bin/hard` can execute that bundle in place
-immediately after extraction. The installer places that complete bundle below
-`~/.local/libexec/hard` without a `default-target`, so host remains the default.
+libraries, LLVM resource headers, `bin/clang-format`, license records, a
+version file, and the three completion files shown above. Its top-level
+`bin/hard` can execute that bundle in place immediately after extraction.
+The installer places the runtime below `~/.local/libexec/hard` without a
+`default-target`, so host remains the default.
 It does not put runtime assets below `HARD_ROOT`.
 
 The backend, support header, and format files form an immutable runtime bundle:

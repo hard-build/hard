@@ -12,22 +12,25 @@ import (
 
 func TestInstallScriptInstallsReleaseAndConfiguresShell(t *testing.T) {
 	tests := []struct {
-		name       string
-		shell      string
-		configPath string
-		pathEntry  string
+		name            string
+		shell           string
+		configPath      string
+		pathEntry       string
+		completionEntry string
 	}{
 		{
-			name:       "bash",
-			shell:      "/bin/bash",
-			configPath: ".bashrc",
-			pathEntry:  `export PATH="$HOME/.local/bin:$PATH"`,
+			name:            "bash",
+			shell:           "/bin/bash",
+			configPath:      ".bashrc",
+			pathEntry:       `export PATH="$HOME/.local/bin:$PATH"`,
+			completionEntry: `[ -r "$HOME/.local/share/bash-completion/completions/hard" ] && . "$HOME/.local/share/bash-completion/completions/hard"`,
 		},
 		{
-			name:       "zsh",
-			shell:      "/usr/bin/zsh",
-			configPath: ".zshrc",
-			pathEntry:  `export PATH="$HOME/.local/bin:$PATH"`,
+			name:            "zsh",
+			shell:           "/usr/bin/zsh",
+			configPath:      ".zshrc",
+			pathEntry:       `export PATH="$HOME/.local/bin:$PATH"`,
+			completionEntry: `autoload -Uz compinit && compinit && . "$HOME/.local/share/zsh/site-functions/_hard"`,
 		},
 		{
 			name:       "fish",
@@ -56,6 +59,20 @@ func TestInstallScriptInstallsReleaseAndConfiguresShell(t *testing.T) {
 				filepath.Join(result.home, ".local", "libexec", "hard", "hard"),
 				0o755,
 			)
+			for _, path := range []string{
+				filepath.Join(result.home, ".local", "share", "bash-completion", "completions", "hard"),
+				filepath.Join(result.home, ".local", "share", "zsh", "site-functions", "_hard"),
+				filepath.Join(result.home, ".local", "share", "fish", "vendor_completions.d", "hard.fish"),
+			} {
+				assertInstallFileMode(t, path, 0o644)
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read completion file %s: %v", path, err)
+				}
+				if !strings.Contains(string(contents), "completion for hard") {
+					t.Fatalf("completion file %s = %q, want completion marker", path, contents)
+				}
+			}
 			libclang, err := os.Lstat(filepath.Join(
 				result.home,
 				".local",
@@ -89,11 +106,19 @@ func TestInstallScriptInstallsReleaseAndConfiguresShell(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read shell config: %v", err)
 			}
-			if got, want := string(config), tt.pathEntry+"\n"; got != want {
+			wantConfig := tt.pathEntry + "\n"
+			if tt.completionEntry != "" {
+				wantConfig += "\n" + tt.completionEntry + "\n"
+			}
+			if got, want := string(config), wantConfig; got != want {
 				t.Fatalf("shell config = %q, want %q", got, want)
 			}
 			if !strings.Contains(result.output, tt.pathEntry) {
 				t.Fatalf("install output = %q, want current-shell command %q", result.output, tt.pathEntry)
+			}
+			if tt.completionEntry != "" &&
+				!strings.Contains(result.output, "enabled "+filepath.Base(tt.shell)+" completion") {
+				t.Fatalf("install output = %q, want completion enabled message", result.output)
 			}
 			if result.packageLog != "" {
 				t.Errorf("package log = %q, want no package-manager calls", result.packageLog)
@@ -145,6 +170,9 @@ func TestInstallScriptDoesNotDuplicateConfiguredPath(t *testing.T) {
 			}
 			if count := strings.Count(string(config), ".local/bin"); count != 1 {
 				t.Fatalf("shell config = %q, path occurrences = %d, want 1", config, count)
+			}
+			if count := strings.Count(string(config), "bash-completion/completions/hard"); count != 2 {
+				t.Fatalf("shell config = %q, completion path occurrences = %d, want 2", config, count)
 			}
 			if tt.options.includeInstallBinInPath &&
 				!strings.Contains(result.output, "is already present in PATH") {
@@ -460,6 +488,9 @@ func createInstallArchive(
 		filepath.Join(archiveRoot, "libexec", "hard", "bin"),
 		filepath.Join(archiveRoot, "libexec", "hard", "format"),
 		filepath.Join(archiveRoot, "libexec", "hard", "lib"),
+		filepath.Join(archiveRoot, "share", "bash-completion", "completions"),
+		filepath.Join(archiveRoot, "share", "zsh", "site-functions"),
+		filepath.Join(archiveRoot, "share", "fish", "vendor_completions.d"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatalf("create archive directory: %v", err)
@@ -473,9 +504,12 @@ func createInstallArchive(
 		writeInstallTestExecutable(t, path, "#!/bin/sh\nexit 0\n")
 	}
 	for path, contents := range map[string]string{
-		filepath.Join(archiveRoot, "libexec", "hard", "hard.h"):                "#pragma once\n",
-		filepath.Join(archiveRoot, "libexec", "hard", "format", "format.v1"):   "BasedOnStyle: LLVM\n",
-		filepath.Join(archiveRoot, "libexec", "hard", "lib", "libclang.so.18"): "fixture\n",
+		filepath.Join(archiveRoot, "libexec", "hard", "hard.h"):                          "#pragma once\n",
+		filepath.Join(archiveRoot, "libexec", "hard", "format", "format.v1"):             "BasedOnStyle: LLVM\n",
+		filepath.Join(archiveRoot, "libexec", "hard", "lib", "libclang.so.18"):           "fixture\n",
+		filepath.Join(archiveRoot, "share", "bash-completion", "completions", "hard"):    "# bash completion for hard\n",
+		filepath.Join(archiveRoot, "share", "zsh", "site-functions", "_hard"):            "#compdef hard\n# zsh completion for hard\n",
+		filepath.Join(archiveRoot, "share", "fish", "vendor_completions.d", "hard.fish"): "# fish completion for hard\n",
 	} {
 		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 			t.Fatalf("write archive file: %v", err)

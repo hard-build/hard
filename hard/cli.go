@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -30,16 +31,32 @@ type arguments struct {
 
 func parseArguments(args []string, stdout, stderr io.Writer) (arguments, error) {
 	var parsed arguments
-	root := newRootCommand(&parsed)
-	root.SetArgs(normalizeJobArguments(args))
-	root.SetOut(stdout)
+	completionRequest := isShellCompletionRequest(args)
+	completionGeneration := len(args) > 0 && args[0] == "completion"
+	root := newRootCommand(&parsed, completionRequest || completionGeneration)
+	if completionRequest {
+		root.SetArgs(append([]string(nil), args...))
+	} else {
+		root.SetArgs(normalizeJobArguments(args))
+	}
+	var completionOutput bytes.Buffer
+	if completionRequest {
+		root.SetOut(&completionOutput)
+	} else {
+		root.SetOut(stdout)
+	}
 	root.SetErr(stderr)
 
 	err := root.Execute()
+	if completionRequest {
+		if outputErr := writeShellCompletion(stdout, completionOutput.String()); err == nil {
+			err = outputErr
+		}
+	}
 	return parsed, err
 }
 
-func newRootCommand(parsed *arguments) *cobra.Command {
+func newRootCommand(parsed *arguments, includeWrapperFlags bool) *cobra.Command {
 	var verbose bool
 	var silent bool
 	var noColor bool
@@ -60,7 +77,7 @@ func newRootCommand(parsed *arguments) *cobra.Command {
 			return errors.New("a command is required")
 		},
 		CompletionOptions: cobra.CompletionOptions{
-			DisableDefaultCmd: true,
+			HiddenDefaultCmd: true,
 		},
 	}
 	root.SetHelpTemplate(root.HelpTemplate() + `
@@ -70,6 +87,18 @@ Wrapper options:
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "print debug information")
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output")
+	if includeWrapperFlags {
+		root.PersistentFlags().String("target", "", "select an execution target (supported: host, linux.v1)")
+		if err := root.RegisterFlagCompletionFunc(
+			"target",
+			cobra.FixedCompletions(
+				[]string{"host", "linux.v1"},
+				cobra.ShellCompDirectiveNoFileComp,
+			),
+		); err != nil {
+			panic(err)
+		}
+	}
 	root.PersistentFlags().IntVarP(
 		&jobs,
 		"jobs",
@@ -104,6 +133,15 @@ Wrapper options:
 		defaultFormat,
 		"format style file installed with hard",
 	)
+	if err := formatCommand.RegisterFlagCompletionFunc(
+		"format",
+		cobra.FixedCompletions(
+			[]string{defaultFormat},
+			cobra.ShellCompDirectiveNoFileComp,
+		),
+	); err != nil {
+		panic(err)
+	}
 	formatCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
 	buildCommand := newPathCommand(
 		"build",
@@ -175,6 +213,26 @@ Wrapper options:
 	)
 
 	return root
+}
+
+func isShellCompletionRequest(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return args[0] == cobra.ShellCompRequestCmd || args[0] == cobra.ShellCompNoDescRequestCmd
+}
+
+func writeShellCompletion(output io.Writer, completion string) error {
+	for _, line := range strings.SplitAfter(completion, "\n") {
+		value := strings.TrimSuffix(line, "\n")
+		if value == "_help" || strings.HasPrefix(value, "_help\t") {
+			continue
+		}
+		if _, err := io.WriteString(output, line); err != nil {
+			return fmt.Errorf("write shell completion: %w", err)
+		}
+	}
+	return nil
 }
 
 func newPathCommand(

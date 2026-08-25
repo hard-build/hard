@@ -104,15 +104,31 @@ download_release() {
 	[ -f "$archive_root/libexec/hard/hard.h" ] || fail "release archive has no hard.h"
 	[ -f "$archive_root/libexec/hard/format/format.v1" ] || fail "release archive has no format.v1"
 	[ -e "$archive_root/libexec/hard/lib/libclang.so" ] || fail "release archive has no libclang"
+	[ -f "$archive_root/share/bash-completion/completions/hard" ] ||
+		fail "release archive has no Bash completion"
+	[ -f "$archive_root/share/zsh/site-functions/_hard" ] ||
+		fail "release archive has no Zsh completion"
+	[ -f "$archive_root/share/fish/vendor_completions.d/hard.fish" ] ||
+		fail "release archive has no Fish completion"
 }
 
 install_release() {
 	local_bin=$HOME/.local/bin
 	local_libexec=$HOME/.local/libexec
+	local_share=$HOME/.local/share
 	runtime_root=$local_libexec/hard
 	wrapper=$local_bin/hard
+	bash_completion=$local_share/bash-completion/completions/hard
+	zsh_completion=$local_share/zsh/site-functions/_hard
+	fish_completion=$local_share/fish/vendor_completions.d/hard.fish
 
-	mkdir -p "$local_bin" "$local_libexec" "$HOME/.local/share/hard"
+	mkdir -p \
+		"$local_bin" \
+		"$local_libexec" \
+		"$local_share/hard" \
+		"${bash_completion%/*}" \
+		"${zsh_completion%/*}" \
+		"${fish_completion%/*}"
 	if [ -e "$runtime_root" ] || [ -L "$runtime_root" ]; then
 		if [ ! -d "$runtime_root" ] || [ -L "$runtime_root" ]; then
 			fail "refusing to replace non-directory runtime: $runtime_root"
@@ -121,11 +137,25 @@ install_release() {
 	if [ -e "$wrapper" ] && [ ! -f "$wrapper" ] && [ ! -L "$wrapper" ]; then
 		fail "refusing to replace non-file wrapper: $wrapper"
 	fi
+	for completion_file in "$bash_completion" "$zsh_completion" "$fish_completion"; do
+		if [ -e "$completion_file" ] || [ -L "$completion_file" ]; then
+			if [ ! -f "$completion_file" ] || [ -L "$completion_file" ]; then
+				fail "refusing to replace non-file completion: $completion_file"
+			fi
+		fi
+	done
 
 	install_stage=$(mktemp -d "$local_libexec/.hard-install.XXXXXX")
 	cp -a "$archive_root/libexec/hard" "$install_stage/runtime"
 	cp "$archive_root/bin/hard" "$install_stage/wrapper"
+	cp "$archive_root/share/bash-completion/completions/hard" "$install_stage/bash-completion"
+	cp "$archive_root/share/zsh/site-functions/_hard" "$install_stage/zsh-completion"
+	cp "$archive_root/share/fish/vendor_completions.d/hard.fish" "$install_stage/fish-completion"
 	chmod 0755 "$install_stage/wrapper"
+	chmod 0644 \
+		"$install_stage/bash-completion" \
+		"$install_stage/zsh-completion" \
+		"$install_stage/fish-completion"
 
 	if ! mv "$install_stage/wrapper" "$wrapper"; then
 		fail "cannot install wrapper into $wrapper"
@@ -139,6 +169,15 @@ install_release() {
 	fi
 	if ! mv "$install_stage/runtime" "$runtime_root"; then
 		fail "cannot install runtime into $runtime_root"
+	fi
+	if ! mv "$install_stage/bash-completion" "$bash_completion"; then
+		fail "cannot install Bash completion into $bash_completion"
+	fi
+	if ! mv "$install_stage/zsh-completion" "$zsh_completion"; then
+		fail "cannot install Zsh completion into $zsh_completion"
+	fi
+	if ! mv "$install_stage/fish-completion" "$fish_completion"; then
+		fail "cannot install Fish completion into $fish_completion"
 	fi
 	install_complete=1
 }
@@ -160,19 +199,25 @@ configure_path() {
 		bash)
 			shell_config=$HOME/.bashrc
 			path_entry='export PATH="$HOME/.local/bin:$PATH"'
+			completion_token='bash-completion/completions/hard'
+			completion_entry='[ -r "$HOME/.local/share/bash-completion/completions/hard" ] && . "$HOME/.local/share/bash-completion/completions/hard"'
 			;;
 		zsh)
 			shell_config=$HOME/.zshrc
 			path_entry='export PATH="$HOME/.local/bin:$PATH"'
+			completion_token='zsh/site-functions/_hard'
+			completion_entry='autoload -Uz compinit && compinit && . "$HOME/.local/share/zsh/site-functions/_hard"'
 			;;
 		fish)
 			shell_config=$HOME/.config/fish/config.fish
 			path_entry='fish_add_path "$HOME/.local/bin"'
+			completion_entry=
 			;;
 		*)
 			shell_name=${shell_name:-sh}
 			shell_config=$HOME/.profile
 			path_entry='export PATH="$HOME/.local/bin:$PATH"'
+			completion_entry=
 			;;
 	esac
 
@@ -200,6 +245,30 @@ configure_path() {
 		printf 'hard installer: added %s to %s.\n' "$local_bin" "$shell_config"
 	else
 		printf 'hard installer: %s is already configured in %s.\n' "$local_bin" "$shell_config"
+	fi
+
+	if [ -n "$completion_entry" ]; then
+		completion_already_configured=0
+		if [ -f "$shell_config" ]; then
+			while IFS= read -r line || [ -n "$line" ]; do
+				case "$line" in
+					\#*) continue ;;
+					*"$completion_token"*)
+						completion_already_configured=1
+						break
+						;;
+				esac
+			done < "$shell_config"
+		fi
+		if [ "$completion_already_configured" -eq 0 ]; then
+			if [ -s "$shell_config" ]; then
+				printf '\n' >> "$shell_config"
+			fi
+			printf '%s\n' "$completion_entry" >> "$shell_config"
+			printf 'hard installer: enabled %s completion in %s.\n' "$shell_name" "$shell_config"
+		else
+			printf 'hard installer: %s completion is already configured in %s.\n' "$shell_name" "$shell_config"
+		fi
 	fi
 }
 

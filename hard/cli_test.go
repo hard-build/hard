@@ -356,6 +356,120 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestShellCompletion(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "public commands only",
+			args: []string{"__complete", ""},
+			want: []string{
+				"build\tBuild C++ sources",
+				"fetch\tDownload C++ dependencies",
+				"format\tFormat C++ sources",
+				"run\tBuild and run a C++ program",
+				"test\tBuild and run C++ tests",
+				":4",
+			},
+			notWant: []string{"_help", "completion"},
+		},
+		{
+			name: "public commands without descriptions",
+			args: []string{"__completeNoDesc", ""},
+			want: []string{
+				"build\n",
+				"fetch\n",
+				"format\n",
+				"run\n",
+				"test\n",
+				":4",
+			},
+			notWant: []string{"_help", "completion"},
+		},
+		{
+			name:    "target values",
+			args:    []string{"__complete", "--target="},
+			want:    []string{"host", "linux.v1", ":4"},
+			notWant: []string{"_help", "completion"},
+		},
+		{
+			name: "default format",
+			args: []string{"__complete", "format", "--format="},
+			want: []string{"format.v1", ":4"},
+		},
+		{
+			name: "path completion",
+			args: []string{"__complete", "build", ""},
+			want: []string{":0"},
+		},
+		{
+			name: "bare jobs remains a partial flag",
+			args: []string{"__complete", "-j"},
+			want: []string{"-j\tnumber of parallel jobs", ":4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			parsed, err := parseArguments(tt.args, &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("parseArguments() error = %v, stderr = %q", err, stderr.String())
+			}
+			if !reflect.DeepEqual(parsed, arguments{}) {
+				t.Fatalf("parseArguments() = %#v, want no executable command", parsed)
+			}
+			output := stdout.String()
+			for _, want := range tt.want {
+				if !strings.Contains(output, want) {
+					t.Errorf("completion does not contain %q:\n%s", want, output)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(output, notWant) {
+					t.Errorf("completion contains internal value %q:\n%s", notWant, output)
+				}
+			}
+		})
+	}
+}
+
+func TestCompletionScripts(t *testing.T) {
+	tests := []struct {
+		shell string
+		want  []string
+	}{
+		{shell: "bash", want: []string{"# bash completion V2 for hard", "__start_hard()"}},
+		{shell: "zsh", want: []string{"#compdef hard", "compdef _hard hard"}},
+		{shell: "fish", want: []string{"# fish completion for hard", "complete -c hard"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.shell, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			parsed, err := parseArguments([]string{"completion", tt.shell}, &stdout, &stderr)
+			if err != nil {
+				t.Fatalf("parseArguments() error = %v, stderr = %q", err, stderr.String())
+			}
+			if !reflect.DeepEqual(parsed, arguments{}) {
+				t.Fatalf("parseArguments() = %#v, want no executable command", parsed)
+			}
+			output := stdout.String()
+			for _, want := range tt.want {
+				if !strings.Contains(output, want) {
+					t.Errorf("%s completion does not contain %q", tt.shell, want)
+				}
+			}
+			if strings.Contains(output, "_help") {
+				t.Errorf("%s completion contains internal help command", tt.shell)
+			}
+		})
+	}
+}
+
 func TestHelp(t *testing.T) {
 	tests := []struct {
 		name string

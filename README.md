@@ -22,8 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | s
 ```
 
 The installer places `hard` below `~/.local` without `sudo` or package-manager
-changes. Open a new shell after installation, or run the `PATH` command printed
-by the installer, then verify the command:
+changes. It also installs command completion for Bash, Zsh, and Fish. Open a
+new shell after installation, or run the `PATH` command printed by the
+installer, then verify the command:
 
 ```bash
 hard --help
@@ -327,7 +328,11 @@ The portable installer uses:
 ~/.local/
 ├── bin/hard
 ├── libexec/hard/          wrapper runtime, backend, headers, and tools
-└── share/hard/            downloaded sources and persistent caches
+└── share/
+    ├── bash-completion/completions/hard
+    ├── zsh/site-functions/_hard
+    ├── fish/vendor_completions.d/hard.fish
+    └── hard/              downloaded sources and persistent caches
 ```
 
 Persistent state below `HARD_ROOT` is separated into shared sources and

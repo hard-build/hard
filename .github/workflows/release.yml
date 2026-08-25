@@ -103,7 +103,10 @@ jobs:
                 "$runtime_root/bin" \
                 "$runtime_root/format" \
                 "$runtime_root/lib" \
-                "$runtime_root/licenses"
+                "$runtime_root/licenses" \
+                "$archive_root/share/bash-completion/completions" \
+                "$archive_root/share/zsh/site-functions" \
+                "$archive_root/share/fish/vendor_completions.d"
               install -m 0755 /src/hard.sh "$archive_root/bin/hard"
               install -m 0755 /tmp/hard "$runtime_root/hard"
               install -m 0755 "$llvm_root/bin/clang-format" "$runtime_root/bin/clang-format"
@@ -129,6 +132,18 @@ jobs:
               printf "%s\n" "$RELEASE_TAG" > "$runtime_root/VERSION"
 
               patchelf --set-rpath "\$ORIGIN/lib" "$runtime_root/hard"
+
+              "$runtime_root/hard" completion bash \
+                > "$archive_root/share/bash-completion/completions/hard"
+              "$runtime_root/hard" completion zsh \
+                > "$archive_root/share/zsh/site-functions/_hard"
+              "$runtime_root/hard" completion fish \
+                > "$archive_root/share/fish/vendor_completions.d/hard.fish"
+              chmod 0644 \
+                "$archive_root/share/bash-completion/completions/hard" \
+                "$archive_root/share/zsh/site-functions/_hard" \
+                "$archive_root/share/fish/vendor_completions.d/hard.fish"
+              bash -n "$archive_root/share/bash-completion/completions/hard"
 
               LD_LIBRARY_PATH="$runtime_root/lib" ldd "$runtime_root/hard" | tee /tmp/hard.ldd
               LD_LIBRARY_PATH="$runtime_root/lib" ldd "$runtime_root/bin/clang-format" | tee /tmp/clang-format.ldd
@@ -184,6 +199,16 @@ jobs:
                 HOME=/tmp/home "$hard" --target=host --help >/dev/null
                 HOME=/tmp/home "$hard" --target=host format /tmp/project/example.cpp
                 grep -q "int answer = 42;" /tmp/project/example.cpp
+                test -s /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
+                test -s /tmp/release/hard-linux-amd64/share/zsh/site-functions/_hard
+                test -s /tmp/release/hard-linux-amd64/share/fish/vendor_completions.d/hard.fish
+                bash -n /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
+                HOME=/tmp/home "$hard" __complete --target= > /tmp/targets
+                grep -qx host /tmp/targets
+                grep -qx linux.v1 /tmp/targets
+                HOME=/tmp/home bash --noprofile --norc -c \
+                  '. "$1"; complete -p hard' \
+                  _ /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
               '
           done
 
