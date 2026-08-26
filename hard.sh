@@ -5,6 +5,40 @@ fail() {
 	exit 1
 }
 
+is_numeric_version() {
+	version=$1
+	case "$version" in
+		*.*)
+			version_major=${version%%.*}
+			version_minor=${version#*.}
+			;;
+		*) return 1 ;;
+	esac
+	if [ -z "$version_major" ] || [ -z "$version_minor" ]; then
+		return 1
+	fi
+	case "$version_minor" in
+		*.*) return 1 ;;
+	esac
+	case "$version_major$version_minor" in
+		*[!0-9]*) return 1 ;;
+	esac
+}
+
+is_versioned_linux64_target() {
+	case "$1" in
+		linux64:v*-ubuntu.*) ;;
+		*) return 1 ;;
+	esac
+	linux64_version=${1#linux64:v}
+	hard_version=${linux64_version%%-ubuntu.*}
+	ubuntu_version=${linux64_version#*-ubuntu.}
+	if [ "$ubuntu_version" = "$linux64_version" ]; then
+		return 1
+	fi
+	is_numeric_version "$hard_version" && is_numeric_version "$ubuntu_version"
+}
+
 installation_root=
 resolve_installation_root() {
 	if [ -n "$installation_root" ]; then
@@ -101,11 +135,17 @@ case "$target" in
 		export PATH
 		exec "$runtime_root/hard" "$@"
 		;;
-	linux.v1)
-		image=ghcr.io/hard-build/hard:linux.v1
+	linux64)
+		image=ghcr.io/hard-build/linux64:latest
+		pull=always
 		;;
 	*)
-		fail "unknown target: $target"
+		if is_versioned_linux64_target "$target"; then
+			image=ghcr.io/hard-build/$target
+			pull=missing
+		else
+			fail "unknown target: $target"
+		fi
 		;;
 esac
 
@@ -126,7 +166,7 @@ user=$(id -u):$(id -g) || fail "cannot determine user identity"
 exec docker run \
 	--rm \
 	--interactive \
-	--pull=missing \
+	--pull="$pull" \
 	--user "$user" \
 	--mount "type=bind,source=$hard_root,target=/hard" \
 	--mount "type=bind,source=$working_directory,target=$working_directory" \

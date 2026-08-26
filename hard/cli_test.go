@@ -392,7 +392,7 @@ func TestShellCompletion(t *testing.T) {
 		{
 			name:    "target values",
 			args:    []string{"__complete", "--target="},
-			want:    []string{"host", "linux.v1", ":4"},
+			want:    []string{"host", "linux64", "linux64:v2.0-ubuntu.22.04", ":4"},
 			notWant: []string{"_help", "completion"},
 		},
 		{
@@ -489,7 +489,7 @@ func TestHelp(t *testing.T) {
 				"(default 1)",
 				"--no-color",
 				"--target string",
-				"supported: host, linux.v1",
+				"supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM",
 				"-v, --verbose",
 			},
 		},

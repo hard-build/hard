@@ -60,10 +60,10 @@ That example will have its own `README.md` with the source layout, build
 transcript, and expected output.
 
 The default `host` target requires a C++20 compiler. If Docker is available,
-the reproducible `linux.v1` environment can be selected explicitly:
+the latest `linux64` environment can be selected explicitly:
 
 ```bash
-hard --target=linux.v1 run example.cpp
+hard --target=linux64 run example.cpp
 ```
 
 ## How It Works
@@ -232,13 +232,14 @@ refreshed automatically.
 
 ## Targets
 
-The wrapper accepts `--target=host`, `--target=linux.v1`, and their
-separate-value forms anywhere before `--`:
+The wrapper accepts `host`, the latest `linux64` image, or a versioned
+`linux64:vX.Y-ubuntu.YY.MM` image. Both target-option forms are accepted
+anywhere before `--`:
 
 ```bash
 hard --target=host build src
-hard --target=linux.v1 build src
-hard test --target linux.v1 tests
+hard --target=linux64 build src
+hard test --target linux64:v2.0-ubuntu.22.04 tests
 ```
 
 The portable installer leaves the target default absent, which selects `host`.
@@ -246,12 +247,24 @@ The portable installer leaves the target default absent, which selects `host`.
 the installed default.
 
 The `host` target executes the backend from the same installation prefix and
-uses the host compiler and dependencies. The `linux.v1` target only executes
-`docker run` with:
+uses the host compiler and dependencies. The unversioned target always checks
+for and runs the latest image:
 
 ```text
-ghcr.io/hard-build/hard:linux.v1
+linux64 -> ghcr.io/hard-build/linux64:latest
 ```
+
+An explicit version is immutable and downloaded only when it is missing:
+
+```text
+linux64:v2.0-ubuntu.22.04
+  -> ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04
+```
+
+The current versioned image contains the `hard` v2.0 portable runtime and an
+Ubuntu 22.04 C++ build environment. Both its versioned tag and `latest` use
+`HARD_ENV=linux64:v2.0-ubuntu.22.04`, so they share compatible artifacts while
+future image versions receive separate cache directories.
 
 The wrapper mounts `HARD_ROOT` at `/hard` and the current working directory at
 the same absolute container path. Source snapshots and caches therefore persist
@@ -263,7 +276,7 @@ symlinks outside both trees are unavailable in the container. Host `HARD_*`
 values other than the mount source are not forwarded; the image owns its
 toolchain configuration.
 
-`linux.v1` is `linux/amd64` and generated programs require an x86-64-v3 CPU.
+`linux64` images are `linux/amd64`; generated programs require an x86-64-v3 CPU.
 Docker must be installed and running separately.
 
 ## Requirements
@@ -280,11 +293,11 @@ Host execution additionally needs tools required by the selected command:
 - network access when a required GitHub snapshot is not cached.
 
 The installer does not install these tools, Docker, or system packages. The
-`linux.v1` image contains its own compiler, GoogleTest, CMake, GNU Make,
+`linux64` image contains its own compiler, GoogleTest, CMake, GNU Make,
 Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool.
 
 Ubuntu 18.04's default GCC 7 does not satisfy the default C++20 build contract.
-Use `linux.v1` there or configure a suitable host toolchain.
+Use `linux64` there or configure a suitable host toolchain.
 
 ## Configuration
 
@@ -347,7 +360,7 @@ HARD_ROOT/
 │   └── recipe -> github.com/hard-build/recipe
 └── env/
     ├── host/
-    └── linux.v1/
+    └── linux64:v2.0-ubuntu.22.04/
 ```
 
 Generated forwards, objects, internal binaries, package installations, and

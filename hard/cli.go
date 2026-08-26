@@ -82,17 +82,17 @@ func newRootCommand(parsed *arguments, includeWrapperFlags bool) *cobra.Command 
 	}
 	root.SetHelpTemplate(root.HelpTemplate() + `
 Wrapper options:
-      --target string   select an execution target (supported: host, linux.v1)
+      --target string   select an execution target (supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM)
 `)
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "print debug information")
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	if includeWrapperFlags {
-		root.PersistentFlags().String("target", "", "select an execution target (supported: host, linux.v1)")
+		root.PersistentFlags().String("target", "", "select an execution target (supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM)")
 		if err := root.RegisterFlagCompletionFunc(
 			"target",
 			cobra.FixedCompletions(
-				[]string{"host", "linux.v1"},
+				[]string{"host", "linux64", "linux64:v2.0-ubuntu.22.04"},
 				cobra.ShellCompDirectiveNoFileComp,
 			),
 		); err != nil {

@@ -30,7 +30,7 @@ func TestWrapperRunsHostBackendFromPortableLayoutWithoutTarget(t *testing.T) {
 	dockerLog := filepath.Join(t.TempDir(), "docker.log")
 	binDirectory := installFakeWrapperDocker(t, dockerLog)
 
-	command := exec.Command(wrapper, "run", "--", "--target", "linux.v1")
+	command := exec.Command(wrapper, "run", "--", "--target", "linux64")
 	command.Env = wrapperTestEnvironment(map[string]string{
 		"BACKEND_LOG": backendLog,
 		"HOME":        home,
@@ -40,7 +40,7 @@ func TestWrapperRunsHostBackendFromPortableLayoutWithoutTarget(t *testing.T) {
 		t.Fatalf("host wrapper error = %v, output = %q", err, output)
 	}
 
-	want := []string{"run", "--", "--target", "linux.v1"}
+	want := []string{"run", "--", "--target", "linux64"}
 	if got := readWrapperArguments(t, backendLog); !reflect.DeepEqual(got, want) {
 		t.Fatalf("host backend arguments = %#v, want %#v", got, want)
 	}
@@ -140,7 +140,7 @@ func TestWrapperRunsCompletionThroughHostBackend(t *testing.T) {
 			)
 			if err := os.WriteFile(
 				filepath.Join(runtimeRoot, "default-target"),
-				[]byte("linux.v1\n"),
+				[]byte("linux64\n"),
 				0o644,
 			); err != nil {
 				t.Fatalf("write default target: %v", err)
@@ -148,7 +148,7 @@ func TestWrapperRunsCompletionThroughHostBackend(t *testing.T) {
 			backendLog := filepath.Join(t.TempDir(), "backend.log")
 			dockerLog := filepath.Join(t.TempDir(), "docker.log")
 			binDirectory := installFakeWrapperDocker(t, dockerLog)
-			arguments := []string{request, "--target=linux.", ""}
+			arguments := []string{request, "--target=linux64:", ""}
 
 			command := exec.Command(wrapper, arguments...)
 			command.Env = wrapperTestEnvironment(map[string]string{
@@ -177,7 +177,7 @@ func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("create runtime directory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(runtimeRoot, "default-target"), []byte("linux.v1\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runtimeRoot, "default-target"), []byte("linux64\n"), 0o644); err != nil {
 		t.Fatalf("write default target: %v", err)
 	}
 	hardRoot := filepath.Join(home, ".local", "share", "hard")
@@ -199,8 +199,11 @@ func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 	}
 
 	arguments := readWrapperArguments(t, dockerLog)
-	if !containsWrapperArgument(arguments, "ghcr.io/hard-build/hard:linux.v1") {
-		t.Fatalf("docker arguments = %#v, want linux.v1 image", arguments)
+	if !containsWrapperArgument(arguments, "ghcr.io/hard-build/linux64:latest") {
+		t.Fatalf("docker arguments = %#v, want linux64 latest image", arguments)
+	}
+	if !containsWrapperArgument(arguments, "--pull=always") {
+		t.Fatalf("docker arguments = %#v, want latest pull policy", arguments)
 	}
 	if got := arguments[len(arguments)-2:]; !reflect.DeepEqual(got, []string{"build", "source.cpp"}) {
 		t.Fatalf("backend arguments = %#v, want build arguments", got)
@@ -209,19 +212,32 @@ func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 
 func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
-		want []string
+		name  string
+		args  []string
+		image string
+		pull  string
+		want  []string
 	}{
 		{
-			name: "separate target value",
-			args: []string{"--target", "linux.v1", "build", "source file.cpp"},
-			want: []string{"build", "source file.cpp"},
+			name:  "separate target value",
+			args:  []string{"--target", "linux64", "build", "source file.cpp"},
+			image: "ghcr.io/hard-build/linux64:latest",
+			pull:  "always",
+			want:  []string{"build", "source file.cpp"},
 		},
 		{
-			name: "target between backend arguments",
-			args: []string{"build", "first.cpp", "--target=linux.v1", "second.cpp", "--", "--target", "program-value"},
-			want: []string{"build", "first.cpp", "second.cpp", "--", "--target", "program-value"},
+			name:  "versioned target between backend arguments",
+			args:  []string{"build", "first.cpp", "--target=linux64:v2.0-ubuntu.22.04", "second.cpp", "--", "--target", "program-value"},
+			image: "ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04",
+			pull:  "missing",
+			want:  []string{"build", "first.cpp", "second.cpp", "--", "--target", "program-value"},
+		},
+		{
+			name:  "future versioned target",
+			args:  []string{"--target=linux64:v12.34-ubuntu.24.04", "build"},
+			image: "ghcr.io/hard-build/linux64:v12.34-ubuntu.24.04",
+			pull:  "missing",
+			want:  []string{"build"},
 		},
 	}
 
@@ -261,7 +277,7 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 				"run",
 				"--rm",
 				"--interactive",
-				"--pull=missing",
+				"--pull=" + tt.pull,
 				"--user",
 				strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
 				"--mount",
@@ -270,7 +286,7 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 				"type=bind,source=" + project + ",target=" + project,
 				"--workdir",
 				project,
-				"ghcr.io/hard-build/hard:linux.v1",
+				tt.image,
 			}
 			want = append(want, tt.want...)
 			if got := readWrapperArguments(t, dockerLog); !reflect.DeepEqual(got, want) {
@@ -286,7 +302,7 @@ func TestWrapperUsesDefaultHardRoot(t *testing.T) {
 	dockerLog := filepath.Join(t.TempDir(), "docker.log")
 	binDirectory := installFakeWrapperDocker(t, dockerLog)
 
-	command := exec.Command(wrapperPath(t), "--target=linux.v1", "build")
+	command := exec.Command(wrapperPath(t), "--target=linux64", "build")
 	command.Dir = project
 	command.Env = wrapperTestEnvironment(map[string]string{
 		"HARD_ROOT": "",
@@ -313,10 +329,13 @@ func TestWrapperRejectsInvalidTarget(t *testing.T) {
 		{name: "empty value", args: []string{"--target=", "build"}, wantErr: "--target requires a value"},
 		{
 			name:    "duplicate target",
-			args:    []string{"--target=linux.v1", "build", "--target", "linux.v1"},
+			args:    []string{"--target=linux64", "build", "--target", "linux64:v2.0-ubuntu.22.04"},
 			wantErr: "--target may only be specified once",
 		},
-		{name: "unknown target", args: []string{"--target=linux.v2", "build"}, wantErr: "unknown target: linux.v2"},
+		{name: "legacy target", args: []string{"--target=linux.v1", "build"}, wantErr: "unknown target: linux.v1"},
+		{name: "missing image version", args: []string{"--target=linux64:v2.0", "build"}, wantErr: "unknown target: linux64:v2.0"},
+		{name: "invalid hard version", args: []string{"--target=linux64:v2.x-ubuntu.22.04", "build"}, wantErr: "unknown target: linux64:v2.x-ubuntu.22.04"},
+		{name: "invalid Ubuntu version", args: []string{"--target=linux64:v2.0-ubuntu.22", "build"}, wantErr: "unknown target: linux64:v2.0-ubuntu.22"},
 	}
 
 	for _, tt := range tests {

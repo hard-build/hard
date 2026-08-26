@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "target/*.Dockerfile"
+      - "target/*/*.Dockerfile"
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
 
 jobs:
   discover:
@@ -40,35 +40,55 @@ jobs:
           fi
 
           mapfile -t dockerfiles < <(
-            git diff --diff-filter=A --name-only \
-              "$BEFORE_SHA" "$CURRENT_SHA" -- "target/*.Dockerfile"
+            git diff --no-renames --diff-filter=A --name-only \
+              "$BEFORE_SHA" "$CURRENT_SHA" -- "target/*/*.Dockerfile"
           )
 
           targets=()
           for dockerfile in "${dockerfiles[@]}"; do
-            filename=${dockerfile#target/}
-            target=${filename%.Dockerfile}
-            if [[ "$dockerfile" != "target/$target.Dockerfile" ]] || \
-               [[ ! "$target" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            relative=${dockerfile#target/}
+            image=${relative%%/*}
+            filename=${relative#*/}
+            version=${filename%.Dockerfile}
+            if [[ "$dockerfile" != "target/$image/$version.Dockerfile" ]] || \
+               [[ ! "$image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || \
+               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-ubuntu\.[0-9]+\.[0-9]+$ ]]; then
               echo "invalid target Dockerfile name: $dockerfile" >&2
               exit 1
             fi
 
-            if [[ "$target" == "linux.v1" ]]; then
-              echo "Skipping immutable target $target"
+            if [[ -n "$(git log -1 --format=%H "$BEFORE_SHA" -- "$dockerfile")" ]]; then
+              echo "Skipping previously known image $image:$version"
               continue
             fi
 
-            if [[ -n "$(git log -1 --format=%H "$BEFORE_SHA" -- "$dockerfile")" ]]; then
-              echo "Skipping previously known target $target"
-              continue
+            hard_version=${version%%-ubuntu.*}
+            if ! git show-ref --verify --quiet "refs/tags/$hard_version"; then
+              echo "hard release tag does not exist: $hard_version" >&2
+              exit 1
+            fi
+            hard_revision=$(git rev-parse "$hard_version^{commit}")
+
+            latest_dockerfile=$(
+              find "target/$image" -maxdepth 1 -type f \
+                -name 'v*-ubuntu.*.Dockerfile' -print \
+                | sort -V \
+                | tail -1
+            )
+            publish_latest=false
+            if [[ "$dockerfile" == "$latest_dockerfile" ]]; then
+              publish_latest=true
             fi
 
             targets+=("$(
               jq -cn \
                 --arg dockerfile "$dockerfile" \
-                --arg target "$target" \
-                '{dockerfile: $dockerfile, target: $target}'
+                --arg hard_revision "$hard_revision" \
+                --arg hard_version "$hard_version" \
+                --arg image "$image" \
+                --argjson publish_latest "$publish_latest" \
+                --arg version "$version" \
+                '{dockerfile: $dockerfile, hard_revision: $hard_revision, hard_version: $hard_version, image: $image, publish_latest: $publish_latest, version: $version}'
             )")
           done
 
@@ -101,19 +121,26 @@ jobs:
         id: metadata
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
           flavor: latest=false
           tags: |
-            type=raw,value=${{ matrix.target }}
+            type=raw,value=${{ matrix.version }}
+            type=raw,value=latest,enable=${{ matrix.publish_latest }}
 
-      - name: Build and publish ${{ matrix.target }}
+      - name: Build and publish ${{ matrix.image }}:${{ matrix.version }}
         uses: docker/build-push-action@v7
         with:
+          build-args: |
+            HARD_REVISION=${{ matrix.hard_revision }}
+            HARD_VERSION=${{ matrix.hard_version }}
           context: .
           file: ${{ matrix.dockerfile }}
+          labels: |
+            org.opencontainers.image.revision=${{ matrix.hard_revision }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ matrix.version }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -45,12 +45,12 @@ Command completion is installed at the shell-standard user-local paths:
 | Fish | `~/.local/share/fish/vendor_completions.d/hard.fish` | Discovered automatically |
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
-the five public commands, command flags, filesystem paths, the `host` and
-`linux.v1` target values, and the default `format.v1` format. Its internal
-requests always execute the installed host backend, even when `linux.v1` is
-the installed default, so pressing Tab never starts or pulls a Docker
-container. POSIX shells without programmable completion and PowerShell do not
-receive a completion integration.
+the five public commands, command flags, filesystem paths, `host`, `linux64`,
+the current `linux64:v2.0-ubuntu.22.04` version, and the default `format.v1`
+format. Its internal requests always execute the installed host backend, even
+when a container target is the installed default, so pressing Tab never starts
+or pulls a Docker container. POSIX shells without programmable completion and
+PowerShell do not receive a completion integration.
 
 The release archive can also be unpacked and used without installation:
 
@@ -67,8 +67,8 @@ default is `host`.
 The installer does not install native compilers, GoogleTest, pkg-config, GNU
 Make, CMake, Meson/Ninja, Autoconf, Automake, Libtool, or Docker. Install the
 particular host tools required by the commands and reachable recipes you use.
-The `linux.v1` image already contains those build tools, but selecting it with
-`--target=linux.v1` requires Docker to have been installed and started
+The `linux64` image already contains those build tools, but selecting it with
+`--target=linux64` requires Docker to have been installed and started
 separately.
 
 ## Requirements
@@ -84,7 +84,7 @@ That glibc floor covers launching the bundled backend and formatter. Native
 dependency analysis, compilation, linking, and tests still require C++20
 standard-library headers and a compiler that accepts the configured flags.
 Ubuntu 18.04's default GCC 7 does not meet that toolchain contract; use the
-`linux.v1` target there unless a suitable host toolchain is
+`linux64` target there unless a suitable host toolchain is
 configured explicitly.
 
 Building the Go module in `hard/` requires:
@@ -107,7 +107,7 @@ Depending on the command, using `hard` also requires:
   or well-known repository snapshot is not already cached below
   `HARD_ROOT/source`.
 
-Using `--target=linux.v1` requires Docker. The target image contains its own
+Using `--target=linux64` requires Docker. The target image contains its own
 backend and C/C++ toolchain, so the host does not need the native build
 requirements listed above for target-mode execution.
 
@@ -147,72 +147,89 @@ hard test   [--list-tests] [--test=<selector>]...
 
 ### Container targets
 
-The POSIX wrapper accepts `--target=<name>` and
-`--target <name>` anywhere before `--`. The supported targets are `host`, which
-executes the private backend from the same installation prefix, and the
-`linux.v1` container:
+The POSIX wrapper accepts `--target=<name>` and `--target <name>` anywhere
+before `--`. `host` executes the private backend from the same installation
+prefix. Container execution accepts either the newest `linux64` image or an
+explicit version matching `linux64:vX.Y-ubuntu.YY.MM`:
 
 ```bash
 hard --target=host build src
-hard --target=linux.v1 build src
-hard test --target linux.v1 tests
-hard run --target=linux.v1 src/application.cpp -- --mode=check
+hard --target=linux64 build src
+hard test --target linux64:v2.0-ubuntu.22.04 tests
+hard run --target=linux64 src/application.cpp -- --mode=check
 ```
 
 Without `--target`, the wrapper uses the choice recorded in the sibling
-`libexec/hard/default-target` file.
-`make install` writes `host` to that file. The portable installer and an
-unpacked archive leave the file absent, which also selects `host`. An explicit
-target always overrides that default,
-and no compatibility diagnostics are added to host execution.
+`libexec/hard/default-target` file. `make install` writes `host` to that file.
+The portable installer and an unpacked archive leave the file absent, which
+also selects `host`. An explicit target always overrides that default, and no
+compatibility diagnostics are added to host execution.
 
-A target-looking value after the `run` separator belongs to the program and
-is not interpreted by the wrapper. Empty, repeated, and unknown targets are
-errors.
+A target-looking value after the `run` separator belongs to the program and is
+not interpreted by the wrapper. Empty, repeated, malformed, and unknown targets
+are errors. The legacy `linux.v1` spelling is not supported.
 
-For `linux.v1`, the wrapper only executes `docker run`; it never builds an
-image or resolves the host runtime. The image entrypoint runs the container
-backend. Docker pulls the missing image from:
+For a container target, the wrapper only executes `docker run`; it never builds
+an image or resolves the host runtime. The image entrypoint runs the container
+backend. The unversioned form checks for a newer image on every invocation:
 
 ```text
-ghcr.io/hard-build/hard:linux.v1
+linux64 -> ghcr.io/hard-build/linux64:latest     (--pull=always)
 ```
 
-Both image stages use Ubuntu 22.04. The runtime C++ toolchain is GCC 11 with
-glibc 2.35. `-static-libgcc` and `-static-libstdc++` do not make glibc static,
-so `linux.v1` does not promise that generated programs run on systems older
-than the Ubuntu 22.04 ABI.
+The explicit form names an immutable image and downloads it only when missing:
 
-The backend and formatter use LLVM 18.1.8 packages from the signed, versioned
-[LLVM Jammy repository](https://apt.llvm.org/jammy/dists/llvm-toolchain-jammy-18/)
-because Ubuntu 22.04 supplies LLVM 14 by default. The runtime also contains
-GoogleTest 1.11, CMake 3.22, GNU Make, Meson with Ninja, pkg-config, and the
-Autoconf, Automake, and Libtool toolchain. Distribution package revisions are
-resolved when the image is built. The retained LLVM 18 repository is outside
-apt.llvm.org's actively maintained last-two-release set, so future image
-rebuilds depend on that archive remaining available. Ubuntu 22.04 standard
-security maintenance ends in May 2027.
+```text
+linux64:v2.0-ubuntu.22.04
+  -> ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04  (--pull=missing)
+```
+
+The current image definition is
+`target/linux64/v2.0-ubuntu.22.04.Dockerfile`. It downloads the official
+`hard-v2.0.tar.gz` portable release, verifies SHA-256
+`da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`,
+requires its bundled `VERSION` to equal `v2.0`, and installs its complete
+`libexec/hard` runtime at `/usr/local/libexec/hard`. The container therefore
+uses the backend, `hard.h`, format, clang-format, libclang 18.1.8, Clang
+resource headers, and compatibility libraries published from Git tag `v2.0`,
+rather than compiling the current branch.
+
+The image uses Ubuntu 22.04. Its C++ toolchain is GCC 11 with glibc 2.35.
+`-static-libgcc` and `-static-libstdc++` do not make glibc static, so the image
+does not promise that generated programs run on systems older than the Ubuntu
+22.04 ABI. The runtime also contains GoogleTest 1.11, CMake 3.22, GNU Make,
+Meson with Ninja, pkg-config, and the Autoconf, Automake, and Libtool toolchain.
+Distribution package revisions are resolved when the image is built. Ubuntu
+22.04 standard security maintenance ends in May 2027.
+
+An image version is published only when its previously unseen Dockerfile is
+added. CI publishes the immutable version tag and advances `latest` only when
+that file is the newest version for its image repository. Modifying, deleting,
+or re-adding a known Dockerfile does not rebuild or republish it.
 
 The wrapper bind-mounts the host `${HARD_ROOT:-$HOME/.local/share/hard}` at
 `/hard` and the current working directory at the same absolute path inside the
-container. The image uses `/hard/source` and `/hard/env/linux.v1/build`, so
-host and container access the same downloaded source snapshots while target
-artifacts persist across disposable containers and remain separate from
-`env/host`. The container runs with the current numeric UID and GID, preventing
-root-owned build outputs, and forwards stdin without allocating a TTY.
+container. The current image uses `/hard/source` and
+`/hard/env/linux64:v2.0-ubuntu.22.04/build`. Both its versioned tag and the
+corresponding `latest` tag therefore share compatible artifacts. A future image
+sets its own versioned `HARD_ENV`, preserving the shared source snapshots while
+isolating its build artifacts from this image and `env/host`.
 
-Only the working directory and `HARD_ROOT` are mounted. Explicit inputs or
-resolved symlinks outside both trees are therefore unavailable in the
-container. A non-empty host `HARD_ROOT` selects the bind-mount source but is
-not copied into the container environment. Other host `HARD_*` values are not
-forwarded: the image fixes its complete target configuration as follows:
+The container runs with the current numeric UID and GID, preventing root-owned
+build outputs, and forwards stdin without allocating a TTY. Only the working
+directory and `HARD_ROOT` are mounted. Explicit inputs or resolved symlinks
+outside both trees are therefore unavailable in the container. A non-empty
+host `HARD_ROOT` selects the bind-mount source but is not copied into the
+container environment. Other host `HARD_*` values are not forwarded: the image
+fixes its complete target configuration as follows:
 
 ```text
 HARD_ROOT=/hard
-HARD_ENV=linux.v1
+HARD_ENV=linux64:v2.0-ubuntu.22.04
 HARD_CC=c++
 HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto
-            -Wall -Wextra
+            -Wall -Wextra -idirafter
+            /usr/local/libexec/hard/lib/clang/18/include
 HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
              -static-libgcc -static-libstdc++
 HARD_ENTRYPOINTS=main _start
@@ -222,11 +239,15 @@ The backend always adds `-I/hard/source` and
 `-include /usr/local/libexec/hard/hard.h` internally. These are hard-managed
 include mechanics rather than part of the image `HARD_CFLAGS` value.
 
-`linux.v1` is a `linux/amd64` image. Programs built by it require an
-x86-64-v3 processor; Docker does not emulate missing CPU instructions. The
-target used by the current wrapper is:
+The final `-idirafter` path exposes the relocated LLVM 18 resource headers to
+the bundled libclang used for dependency analysis. Because it is searched after
+the compiler's regular system directories, GCC continues to use its own builtin
+headers during compilation. The Docker build compiles a minimal C++ source with
+this configuration before the image can be published.
 
-- `linux.v1`: the stable target selected by the wrapper.
+`linux64` images use the `linux/amd64` platform. Programs built by the current
+image require an x86-64-v3 processor; Docker does not emulate missing CPU
+instructions.
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
@@ -271,9 +292,9 @@ clang-format --style=file:<runtime-root>/format/<name> -i <file>
 the `format` directory installed beside the running backend. The runtime root
 is derived from the physical backend executable path, including through a
 symlink; it is normally `~/.local/libexec/hard` on the host and
-`/usr/local/libexec/hard` in `linux.v1`. Empty values, absolute paths, lexical
-escapes through `..`, non-regular files, and symlinks resolving outside the
-real format directory are rejected. An internal symlink to a regular style
+`/usr/local/libexec/hard` in `linux64` images. Empty values, absolute paths,
+lexical escapes through `..`, non-regular files, and symlinks resolving outside
+the real format directory are rejected. An internal symlink to a regular style
 file is allowed.
 
 Formatting uses the selected job count. A formatter exit failure is reported
@@ -320,8 +341,9 @@ participate in implementation discovery, source-context forward extraction,
 and cache fingerprints. Their canonical absolute paths are deduplicated and
 sorted per source. `HARD_ENV` is the immutability boundary for the compiler
 toolchain, standard library, libc, sysroot, Clang resource headers, and every
-path marked as system by libclang, including user-provided `-isystem`
-directories. System headers are excluded from parse and compilation cache
+path marked as system by libclang, including user-provided `-isystem` and
+`-idirafter` directories. System headers are excluded from parse and
+compilation cache
 fingerprints.
 No preliminary header list is printed; preparation progress identifies only
 the translation unit currently being parsed. The same analysis reports
@@ -1123,17 +1145,17 @@ target, and has no effect on `hard test`.
 
 `HARD_ENV` is the cache boundary for immutable toolchain state. Use a distinct
 value whenever the compiler, libclang resource headers, standard library,
-libc, sysroot, ABI, target, container, or a user-provided `-isystem` tree
-changes. System headers are not content-hashed; keeping the same `HARD_ENV`
-asserts that they remain compatible and unchanged. `--no-cache` can force a
-one-off rebuild in the current environment, while a new `HARD_ENV` keeps old
-artifacts isolated. Artifact generation rejects environment names that escape
-`HARD_ROOT/env`.
+libc, sysroot, ABI, target, container, or a user-provided system-include tree
+supplied through `-isystem` or `-idirafter` changes. System headers are not
+content-hashed; keeping the same `HARD_ENV` asserts that they remain compatible
+and unchanged. `--no-cache` can force a one-off rebuild in the current
+environment, while a new `HARD_ENV` keeps old artifacts isolated. Artifact
+generation rejects environment names that escape `HARD_ROOT/env`.
 
 These variables describe host-mode execution. Target mode does not forward
-their host values into the container; `linux.v1` uses the fixed values listed
-under [Container targets](#container-targets). The host-side `HARD_ROOT` value
-is still used to select the directory mounted at `/hard`.
+their host values into the container; `linux64` images use the fixed values
+listed under [Container targets](#container-targets). The host-side
+`HARD_ROOT` value is still used to select the directory mounted at `/hard`.
 
 Example:
 
@@ -1178,9 +1200,9 @@ sibling `<prefix>/libexec/hard` directory only for host execution and the
 installed default target. Without `--target`, it reads
 `libexec/hard/default-target`; a missing file preserves the host default.
 `--target=host` replaces the wrapper with the host backend and prefixes its
-bundled tool directory to `PATH`. `--target=linux.v1` executes the documented
-`docker run` invocation without resolving the host runtime. It never builds an
-image.
+bundled tool directory to `PATH`. `--target=linux64` or an explicit version
+executes the documented `docker run` invocation without resolving the host
+runtime. It never builds an image.
 
 `PREFIX` defaults to `$HOME/.local`, `BUILD_DIR` defaults to `build`, and
 `DESTDIR` can stage an installation without changing its logical prefix.

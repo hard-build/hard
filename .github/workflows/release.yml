@@ -205,7 +205,9 @@ jobs:
                 bash -n /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
                 HOME=/tmp/home "$hard" __complete --target= > /tmp/targets
                 grep -qx host /tmp/targets
-                grep -qx linux.v1 /tmp/targets
+                grep -qx linux64 /tmp/targets
+                grep -qx 'linux64:v2.0-ubuntu.22.04' /tmp/targets
+                ! grep -qx linux.v1 /tmp/targets
                 HOME=/tmp/home bash --noprofile --norc -c \
                   '. "$1"; complete -p hard' \
                   _ /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard

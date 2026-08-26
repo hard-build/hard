@@ -130,16 +130,18 @@ Implemented:
   Zsh, Fish, or POSIX-shell `PATH` startup configuration;
 - generated Bash, Zsh, and Fish completion files, including wrapper target
   values and host-only dynamic completion dispatch;
-- an optional wrapper-owned `linux.v1` Docker target whose image is pulled from
-  GHCR and whose persistent source/cache root is bind-mounted from the host;
+- wrapper-owned `linux64` Docker targets that select either the always-refreshed
+  GHCR `latest` tag or an immutable `linux64:vX.Y-ubuntu.YY.MM` tag while
+  bind-mounting the persistent source/cache root from the host;
 - separate executable-relative runtime bundles for the host and container,
   with shared source snapshots and environment-specific caches below
   `HARD_ROOT`;
 - exclusion of runtime support `hard.h` declarations from source forwards
   while retaining its backend-managed force include;
-- a GitHub Actions workflow that publishes a target image only when a
-  previously unseen `target/<target>.Dockerfile` is added to `main`, while
-  keeping existing target tags immutable;
+- a GitHub Actions workflow that publishes an image version only when a
+  previously unseen `target/<image>/<version>.Dockerfile` is added to `main`,
+  keeps version tags immutable, and advances `latest` only for the newest
+  version;
 - a release-tag GitHub workflow that builds the host backend against
   the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
   file.
@@ -165,10 +167,10 @@ cache entries and are not refreshed automatically.
 | `LICENSE` | MIT license |
 | `Makefile` | Builds the Go backend and installs the host wrapper, runtime bundle, and shell completions |
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
-| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or `docker run` for `linux.v1`, and keeps completion dispatch on the host |
+| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or a latest/versioned `linux64` image, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
-| `target/linux.v1.Dockerfile` | Self-contained Ubuntu 22.04 `linux/amd64` target image definition |
+| `target/linux64/v2.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v2.0 portable runtime |
 | `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
 | `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
@@ -266,20 +268,21 @@ default GCC 7 does not implement the default C++20 contract; Docker remains the
 recommended execution target there unless the user supplies a suitable host
 toolchain.
 
-The `linux.v1` image build uses Ubuntu 22.04 for both stages, downloads and
-checksum-verifies Go 1.23.12 for `linux/amd64`, and builds the CGO backend
-against `libclang-18-dev`. Jammy's distribution default is LLVM 14, so the
-image configures the signed, versioned `llvm-toolchain-jammy-18` repository
-from apt.llvm.org in both stages. The runtime installs libclang 18 with its
-resource headers from `libclang-common-18-dev`, exposes `clang-format-18` as
-the unversioned `clang-format` command, and includes GoogleTest, GNU Make,
-CMake, Meson, Ninja, pkg-config, Autoconf, Automake, Libtool, and the
-image-local runtime bundle.
+The current `linux64:v2.0-ubuntu.22.04` image uses Ubuntu 22.04 and installs
+hard from the official `hard-v2.0.tar.gz` portable release rather than building
+the Go backend from the current source tree. The Dockerfile pins SHA-256
+`da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`,
+requires the archive `VERSION` to equal `v2.0`, and records Git revision
+`100406872f99fd4fcdb23425d21f638d58368237`, to which tag `v2.0` points.
+There is no Go builder stage or apt.llvm.org repository in this image.
 
-The selected Jammy toolchain is GCC 11 with glibc 2.35. libgcc and libstdc++
-are linked statically into generated programs by the fixed linker flags, but
-glibc remains dynamic. The verified LLVM patch release is 18.1.8, GoogleTest
-is 1.11.0, and CMake is 3.22.1.
+The portable runtime supplies the backend, hard.h, format.v1, clang-format,
+libclang 18.1.8, Clang resource headers, libtinfo compatibility library, and
+licenses below `/usr/local/libexec/hard`. Ubuntu packages supply GCC 11,
+glibc 2.35, GoogleTest 1.11.0, CMake 3.22.1, GNU Make, Meson, Ninja,
+pkg-config, Autoconf, Automake, and Libtool. libgcc and libstdc++ are linked
+statically into generated programs by the fixed linker flags, but glibc
+remains dynamic.
 
 Runtime tools by command:
 
@@ -329,31 +332,34 @@ $HOME/.local/
     └── hard/                          persistent state root
 ```
 
-`hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host` and `linux.v1`
-targets. It resolves the installation prefix from its own path only when the
-target is absent or explicit host execution is selected. Without `--target`,
-it reads `<prefix>/libexec/hard/default-target`, falling back to `host` when
-the file is absent. Host mode prefixes the sibling runtime's `bin` directory
-to `PATH`, uses `exec` on `<prefix>/libexec/hard/hard`, and passes the
-remaining argument vector with `"$@"`. Linux target mode removes the wrapper
-option and uses `exec docker run`; the container image entrypoint runs its
-backend, and the wrapper does not resolve a host runtime. Empty, duplicate, and
-unknown targets are errors.
+`hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host`, `linux64`, and
+`linux64:vX.Y-ubuntu.YY.MM` targets. It resolves the installation prefix from
+its own path only when the target is absent or explicit host execution is
+selected. Without `--target`, it reads
+`<prefix>/libexec/hard/default-target`, falling back to `host` when the file is
+absent. Host mode prefixes the sibling runtime's `bin` directory to `PATH`,
+uses `exec` on `<prefix>/libexec/hard/hard`, and passes the remaining argument
+vector with `"$@"`. Linux target mode removes the wrapper option and uses
+`exec docker run`; the container image entrypoint runs its backend, and the
+wrapper does not resolve a host runtime. Empty, duplicate, legacy, malformed,
+and unknown targets are errors.
 Values after `--` remain untouched.
 
 The private Cobra `__complete` and `__completeNoDesc` protocols are routed
 directly to the sibling host backend before target parsing. Their argument
 vectors, including partial `--target` values, remain intact. Completion
-therefore never starts or pulls Docker even when `default-target` selects
-`linux.v1`.
+therefore never starts or pulls Docker even when `default-target` selects a
+container target.
 
 The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
 source of a bind mount targeting `/hard`. The physical current working
 directory is mounted at the same absolute container path and becomes the
-container workdir. Docker uses `--rm`, stdin forwarding, `--pull=missing`, and
-the current numeric UID:GID. No host `HARD_*` value is forwarded into the
-container. A relative host `HARD_ROOT` is made absolute below the current
-working directory. Only the working directory and persistent root are mounted.
+container workdir. Docker uses `--rm`, stdin forwarding, and the current
+numeric UID:GID. The mutable `linux64` target uses `--pull=always`; explicit
+versioned targets use `--pull=missing`. No host `HARD_*` value is forwarded
+into the container. A relative host `HARD_ROOT` is made absolute below the
+current working directory. Only the working directory and persistent root are
+mounted.
 
 Any prefix with sibling `bin/hard` and `libexec/hard` paths is a supported
 wrapper layout. Changing `PREFIX` or staging through `DESTDIR` preserves the
@@ -395,7 +401,8 @@ but keeps every runtime asset under `$HOME/.local/libexec/hard`. It leaves
 The installer does not inspect the distribution, invoke `sudo`, install system
 packages, start Docker, or change group membership. Native compiler, testing,
 recipe-build, and Docker prerequisites remain the user's responsibility.
-Explicit `--target=linux.v1` remains available when Docker is installed.
+Explicit `--target=linux64` and versioned `linux64` targets remain available
+when Docker is installed.
 
 After installation, the script prepends `$HOME/.local/bin` to its own `PATH`
 when absent. According to the basename of `$SHELL`, it idempotently records the
@@ -418,43 +425,69 @@ discovers its vendor file automatically. The POSIX fallback receives only the
 
 ### Container image and publication
 
-The wrapper maps `linux.v1` to:
+The wrapper maps its two container target forms as follows:
 
-    ghcr.io/hard-build/hard:linux.v1
+    --target=linux64                         ghcr.io/hard-build/linux64:latest
+    --target=linux64:v2.0-ubuntu.22.04      ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04
 
-The image runtime bundle is:
+The mutable `linux64` alias is pulled before every run, so it follows the newest
+available image. Exact version targets are pulled only when missing locally.
+Exact targets remain available for reproducible builds and persistent caches.
+
+The current image installs the official `hard-v2.0.tar.gz` portable release,
+whose backend corresponds to Git tag `v2.0` at
+`100406872f99fd4fcdb23425d21f638d58368237`. The archive checksum is pinned to
+`da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`.
+Its runtime bundle is:
 
     /usr/local/libexec/hard/hard
     /usr/local/libexec/hard/hard.h
     /usr/local/libexec/hard/format/format.v1
+    /usr/local/libexec/hard/bin/clang-format
+    /usr/local/libexec/hard/lib/
+    /usr/local/libexec/hard/VERSION
 
-Its fixed target environment is:
+The Docker build verifies both the release checksum and the bundled `VERSION`.
+It does not use `curl ... | sh`: the interactive latest-release installer cannot
+pin `v2.0`, mutates shell configuration, and installs below `$HOME/.local`.
+Installing the versioned archive directly gives the image an immutable input and
+fails the build if either the archive or expected version changes.
+
+The image's fixed target environment is:
 
     HARD_ROOT=/hard
-    HARD_ENV=linux.v1
+    HARD_ENV=linux64:v2.0-ubuntu.22.04
     HARD_CC=c++
-    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
+    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra -idirafter /usr/local/libexec/hard/lib/clang/18/include
     HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++
     HARD_ENTRYPOINTS=main _start
 
-`linux.v1` is intentionally `linux/amd64` only, and generated programs require
-an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
-system, or minimum-CPU changes require a new target version.
+The final `-idirafter` path supplies the relocated LLVM 18 resource headers to
+the portable libclang used by hard v2.0. Plain `-isystem` is not used because it
+would make GCC prefer Clang's `stddef.h` and `stdarg.h`; the after-path lets GCC
+keep its own builtin headers. The Dockerfile compiles a minimal C++ source during
+the build so a missing resource path fails image publication.
 
-The GHCR workflow is independent from release tags and has no manual dispatch.
-On a push to `main`, it considers only added `target/*.Dockerfile` paths. A path
-that already occurred in earlier Git history is not a new target and is
-skipped. The basename before `.Dockerfile` becomes the image tag, so adding
-`target/linux.v2.Dockerfile` publishes `linux.v2`. Changing, deleting, or
-re-adding an existing target Dockerfile does not build an image. `linux.v1` is
-also excluded explicitly and is never advanced by the current workflow. If the
-previous push commit is unavailable, discovery fails closed instead of treating
-the current target tree as newly added.
-Release-specific, commit, edge, and implicit `latest` tags are not published.
-The first externally published GitHub package defaults private and must be
-made public once by a maintainer before anonymous pulls work. Package
-visibility remains an external GitHub organization setting and is not managed
-by the workflow.
+The image is intentionally `linux/amd64` only, and generated programs require
+an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
+system, bundled hard version, or minimum-CPU changes require a new target
+version.
+
+The GHCR workflow is independent from release publication and has no manual
+dispatch. On a push to `main`, it considers only newly added
+`target/<image>/<version>.Dockerfile` paths. It validates the directory and
+filename, requires the `vX.Y` prefix to name an existing Git tag, and records
+that tag's revision in the image. A path that occurred earlier in Git history is
+skipped, even if deleted and re-added. A newly added Dockerfile publishes an
+immutable version tag. It also advances `latest` only when that file is the
+newest version currently present for its image. Changing or deleting an existing
+Dockerfile, and ordinary pushes without a new Dockerfile, publish no image.
+Commit, edge, and release-only tags are not published.
+
+The first externally published GitHub package defaults private and must be made
+public once by a maintainer before anonymous pulls work. Package visibility
+remains an external GitHub organization setting and is not managed by the
+workflow.
 
 ## Exact public CLI
 
@@ -469,10 +502,11 @@ The public command forms are:
                 [--no-cache] [-s|--silent] [path...]
 
 The installed wrapper additionally accepts `--target=host`,
-`--target=linux.v1`, or their separate-value forms anywhere before `--`. This
-selects how one of the same five public commands is executed; it does not add
-another public command. The Go help template documents the wrapper option,
-while the wrapper owns its parsing, installed default, and Docker behavior.
+`--target=linux64`, `--target=linux64:vX.Y-ubuntu.YY.MM`, or their
+separate-value forms anywhere before `--`. This selects how one of the same
+five public commands is executed; it does not add another public command. The
+Go help template documents the wrapper option, while the wrapper owns its
+parsing, installed default, and Docker behavior.
 
 Persistent flags accepted by every command:
 
@@ -508,9 +542,9 @@ Other CLI decisions:
   Zsh, and Fish scripts for installation and release packaging;
 - dynamic completion lists only the five public commands and filters Cobra's
   private `_help` suggestion;
-- completion supplies fixed `host` and `linux.v1` values for `--target`,
-  `format.v1` for `--format`, flag names, and default filesystem-path
-  completion for positional arguments;
+- completion supplies fixed `host`, `linux64`, and
+  `linux64:v2.0-ubuntu.22.04` values for `--target`, `format.v1` for `--format`,
+  flag names, and default filesystem-path completion for positional arguments;
 - the normal `help` command is not public; `help` and `_help` are rejected;
 - root and command `--help` succeed without configuration loading or source
   discovery;
@@ -558,7 +592,7 @@ characters.
 - non-empty: retained exactly;
 - defines the immutable toolchain/cache boundary for compiler, libclang
   resource headers, standard library, libc, sysroot, ABI, target, container,
-  and user-provided `-isystem` trees;
+  and user-provided system-include trees such as `-isystem` or `-idirafter`;
 - must change when that system state changes because system headers are not
   content-hashed by parse or object caches;
 - artifact path construction rejects values escaping `HARD_ROOT/env`, such as
@@ -819,9 +853,8 @@ removed. One canonical, deduplicated, sorted list excludes resolved system
 headers and drives implementation discovery, source-forward filtering,
 parse-result fingerprints, and compilation fingerprints. `HARD_ENV` represents
 immutable system and toolchain state instead of hashing each system header.
-Paths marked system by libclang, including user-provided `-isystem`
-directories, are absent
-from persistent dependency snapshots.
+Paths marked system by libclang, including user-provided `-isystem` and
+`-idirafter` directories, are absent from persistent dependency snapshots.
 
 Unresolved includes are preserved with diagnostics. Only actionable GitHub or
 well-known paths trigger a snapshot request. Other missing includes retain the
@@ -1671,10 +1704,13 @@ to leave the library unchanged for now.
   its own location. `hard.h` and formats are installed beside that backend,
   while persistent source and caches remain in `PREFIX/share/hard` for the
   default user-local prefix.
-- The wrapper supports `--target=linux.v1` by running the published GHCR image,
-  with fixed container configuration and a bind-mounted persistent root. It
-  does not resolve the host runtime or build images; the image entrypoint starts
-  the container backend, and `make install` remains host-only.
+- The wrapper supports a mutable `--target=linux64` alias and explicit
+  `--target=linux64:vX.Y-ubuntu.YY.MM` versions. They run
+  `ghcr.io/hard-build/linux64:latest` and the corresponding exact GHCR tag with
+  `--pull=always` and `--pull=missing`, respectively. The wrapper does not
+  resolve the host runtime or build images; the image entrypoint starts the
+  container backend, persistent state is bind-mounted, and `make install`
+  remains host-only.
 - `host` is an explicit wrapper target. A missing `default-target` means host;
   `make install` records host, while the portable installer leaves the file
   absent. Host runtime lookup is relative to the wrapper with no
@@ -1695,12 +1731,12 @@ to leave the library unchanged for now.
   completion is present, but all dynamic completion requests bypass target
   selection and use the installed host backend so interactive completion cannot
   start Docker.
-- Before its first external publication, `linux.v1` was rebaselined from the
-  provisional Ubuntu 24.04 image to Ubuntu 22.04. The finalized target keeps
-  GCC 11 and glibc 2.35 from Jammy while preserving libclang and clang-format
-  major 18 through the signed `llvm-toolchain-jammy-18` repository.
-- `linux.v1` includes GNU Make, CMake, Meson with Ninja, pkg-config, and the
-  Autoconf, Automake, and Libtool toolchain for building compiled third-party
+- Before its first external publication, the former `linux.v1` image was
+  rebaselined from provisional Ubuntu 24.04 to Ubuntu 22.04. The finalized
+  target keeps GCC 11 and glibc 2.35 from Jammy while preserving libclang and
+  clang-format major 18 through the signed `llvm-toolchain-jammy-18` repository.
+- The former `linux.v1` image includes GNU Make, CMake, Meson with Ninja,
+  pkg-config, Autoconf, Automake, and Libtool for building compiled third-party
   libraries inside the target environment. `make install` for `hard` remains
   host-only.
 - Integration scenarios use a strict, ordered `test.yaml` step list interpreted
@@ -1714,8 +1750,9 @@ to leave the library unchanged for now.
 - System-header and toolchain-state changes inside one `HARD_ENV` intentionally
   do not invalidate parse or object caches. Select a new environment after
   compiler, libclang resource, standard-library, libc, sysroot, ABI, target,
-  container, or `-isystem` tree changes; use `--no-cache` for a one-off forced
-  rebuild in the current environment.
+  container, or a system-include tree supplied through `-isystem` or
+  `-idirafter` changes; use `--no-cache` for a one-off forced rebuild in the
+  current environment.
 - Parse-result records use the previously observed include set. A newly created
   higher-priority header can shadow an existing include without invalidating
   that set. A dependency can also test the availability of an optional header
@@ -1728,19 +1765,14 @@ to leave the library unchanged for now.
 - Old per-header forward files and header parse records are not removed even
   though new builds no longer generate or include them.
 - There is no private GitHub authentication configuration.
-- The retained `llvm-toolchain-jammy-18` repository is outside apt.llvm.org's
-  actively maintained last-two-release set. Future image builds depend on the
-  old archive remaining available and do not receive new LLVM 18 maintenance.
 - Ubuntu 22.04 standard security maintenance ends in May 2027. Continued use
   after that date needs an explicit target-version or security-support decision.
-- A local `env/linux.v1` created by the provisional Ubuntu 24.04 image must not
-  be reused with the finalized Ubuntu 22.04 target. Keep it separate or remove
-  it explicitly before relying on the finalized target cache.
-- The GHCR package exists, but an anonymous manifest request returned
-  `unauthorized` on 2026-08-23. Package visibility is not managed by the
-  workflow. Previously published commit and edge tags may remain in GHCR until
-  a maintainer explicitly removes them; the current workflow neither updates
-  nor deletes them.
+- The legacy `ghcr.io/hard-build/hard` GHCR package returned `unauthorized` for
+  an anonymous manifest request on 2026-08-23. Package visibility is not managed
+  by the workflow. The new `ghcr.io/hard-build/linux64` package also requires a
+  maintainer to make it public once before anonymous pulls work. Previously
+  published legacy commit and edge tags remain external state; the current
+  workflow neither updates nor deletes them.
 - The hard-build library incomplete-type warning remains intentionally
   unresolved in the external repository.
 
@@ -1753,9 +1785,10 @@ to leave the library unchanged for now.
   source include and runtime support include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
 - `hard/wrapper_test.go`: host passthrough, both target spellings and positions,
-  installed target defaults, bundled host tool lookup, exact Docker arguments
-  and mounts, default persistent root, argument preservation, no host `HARD_*`
-  forwarding, host-only completion dispatch, and invalid target diagnostics.
+  installed target defaults, bundled host tool lookup, mutable and exact
+  `linux64` image mappings and pull policies, Docker arguments and mounts,
+  default persistent root, argument preservation, no host `HARD_*` forwarding,
+  host-only completion dispatch, and invalid target diagnostics.
 - `hard/install_test.go`: checksum-gated installation, portable runtime file
   modes, symlinks, and completion data files, absent installed `default-target`,
   strict `vX.Y` release resolution and exact versioned asset URLs, Bash, Zsh,
@@ -1869,19 +1902,23 @@ tests. Release publication remains an external action and is never part of
 routine local verification.
 
 For container-target changes, build the image locally for `linux/amd64`, inspect
-its architecture, entrypoint, fixed `HARD_*` values, runtime bundle, and dynamic
-libraries, and run the real wrapper against a temporary C++ project at least
-twice to exercise persistent cache reuse:
+its architecture, entrypoint, fixed `HARD_*` values, OCI version and revision
+labels, pinned release version, runtime bundle, and dynamic libraries. Run the
+real wrapper against a temporary C++ project at least twice to exercise
+persistent cache reuse:
 
     docker build --platform linux/amd64 \
-      --file target/linux.v1.Dockerfile \
-      --tag hard-build/hard:linux.v1 .
+      --file target/linux64/v2.0-ubuntu.22.04.Dockerfile \
+      --tag hard-build/linux64:v2.0-ubuntu.22.04 .
 
-The wrapper smoke test must use a temporary host `HARD_ROOT`, confirm container
-artifacts below `env/linux.v1`, and confirm host `HARD_*` variables do not
-replace the image configuration. Validate the workflow syntax and tag rules.
-Do not push, publish, change package visibility, or remove a pre-existing local
-image as part of routine verification.
+Temporarily tag that local image with its exact GHCR reference for the wrapper
+smoke test. Use a temporary host `HARD_ROOT`, confirm container artifacts below
+`env/linux64:v2.0-ubuntu.22.04`, and confirm host `HARD_*` variables do not
+replace the image configuration. Verify the unversioned `linux64` wrapper form
+selects the `latest` reference with `--pull=always`, while the exact form uses
+`--pull=missing`. Validate the workflow syntax and version/tag rules. Do not
+push, publish, change package visibility, or remove a pre-existing local image
+as part of routine verification.
 
 From the repository root:
 
@@ -2503,6 +2540,39 @@ covered by content tests but were not executed by those shell binaries.
 
 Both POSIX shell syntax checks, release-workflow YAML parsing, and
 `git diff --check` passed.
+
+## Last known verification of linux64 image versioning
+
+On 2026-08-26, container targets changed from the legacy `linux.v1` name to
+the mutable `linux64` alias and exact
+`linux64:vX.Y-ubuntu.YY.MM` versions. The wrapper maps them to the
+`ghcr.io/hard-build/linux64` repository with `--pull=always` and
+`--pull=missing`, respectively.
+
+The new `v2.0-ubuntu.22.04.Dockerfile` installs the checksum-pinned official
+`hard-v2.0.tar.gz` release rather than rebuilding the current branch. Its
+bundled `VERSION` is verified as `v2.0`, and the OCI revision is the commit
+named by Git tag `v2.0`. Workflow discovery passed isolated tests for a new
+version, an ordinary modification, an older version, deletion and re-addition,
+an invalid filename, and a missing release tag.
+
+The first real C++ smoke exposed that portable libclang did not automatically
+find its relocated resource headers. A plain `-isystem` path made GCC consume
+Clang-specific headers and was rejected. Adding the runtime include directory
+with `-idirafter` preserved GCC's builtin headers and fixed libclang analysis.
+The Dockerfile now compiles a minimal C++ source during the image build so this
+failure cannot pass publication again.
+
+Clean gofmt output, ordinary and race Go tests, vet, an out-of-tree build,
+module verification, POSIX wrapper and installer syntax, workflow YAML parsing,
+and staged `make install` checks passed. The local `linux/amd64` image built
+successfully, verified the release SHA-256 and `VERSION`, and exposed the
+expected entrypoint, OCI labels, runtime files, dynamic libraries, GCC 11,
+clang-format 18.1.8, Make, CMake, Meson, Ninja, Autoconf, Automake, and Libtool.
+The real wrapper built and ran an iostream program twice with poisoned host
+`HARD_*` values; the repeat reported cached parsing, compilation, linking, and
+delivery, and artifacts existed only below
+`env/linux64:v2.0-ubuntu.22.04`.
 
 ## Workspace safety snapshot
 
