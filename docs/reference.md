@@ -21,6 +21,13 @@ installs its relocatable `bin/`, `libexec/hard/`, and shell-completion files
 below `~/.local`. It does not invoke `sudo`, a distribution package manager,
 or a Docker service.
 
+The terminal output names each of eight stages: checking compatibility,
+resolving the latest release, downloading the archive, downloading its
+checksum, verifying it, extracting and validating the bundle, installing the
+files, and configuring the current shell. Download entries include the source
+URL and use curl's progress bar. ANSI styling is enabled only when stdout is a
+terminal and `NO_COLOR` is unset, so piped or captured output remains plain.
+
 The installer adds `~/.local/bin` to its process `PATH` when necessary and
 records the path for new shells according to `$SHELL`:
 
@@ -72,6 +79,18 @@ particular host tools required by the commands and reachable recipes you use.
 The `linux64` image already contains those build tools, but selecting it with
 `--target=linux64` requires Docker to have been installed and started
 separately.
+
+After a successful installation, the script prints an informational-only
+`Next steps` section. For a native hello-world build it recommends a C++20
+compiler and shows the minimal package command for Ubuntu/Debian, Arch Linux
+and CachyOS, Fedora/RHEL/Rocky Linux, and openSUSE. The displayed compatibility
+floors are Ubuntu 22.04, Debian 12, RHEL 9, and Rocky Linux 9; the openSUSE
+command is for Tumbleweed. Alpine uses musl and cannot run the portable glibc
+host runtime, so the installer directs Alpine users to the Docker target
+instead. The section then shows how to check `c++ --version` and run
+`hard build example.cpp`. As an alternative, it shows
+`hard --target=linux64 build example.cpp` for a Docker-provided toolchain.
+None of these recommendation commands is executed by the installer.
 
 ## Requirements
 

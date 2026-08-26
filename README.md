@@ -22,8 +22,10 @@ curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | s
 ```
 
 The installer places `hard` below `~/.local` without `sudo` or package-manager
-changes. It also installs command completion for Bash, Zsh, and Fish. Open a
-new shell after installation, or run the `PATH` command printed by the
+changes. It describes each download and installation step, then prints—but
+does not run—minimal C++20 compiler commands for common glibc-based Linux
+distributions. It also installs command completion for Bash, Zsh, and Fish.
+Open a new shell after installation, or run the `PATH` command printed by the
 installer, then verify the command:
 
 ```bash

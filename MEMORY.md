@@ -127,7 +127,8 @@ Implemented:
 - a POSIX command wrapper and Make-based user-local build and installation;
 - a no-argument `curl | sh` installer for the latest checksum-verified portable
   `linux/amd64` release, with user-local staged replacement and idempotent Bash,
-  Zsh, Fish, or POSIX-shell `PATH` startup configuration;
+  Zsh, Fish, or POSIX-shell `PATH` startup configuration, eight named progress
+  stages, and informational hello-world toolchain recommendations;
 - generated Bash, Zsh, and Fish completion files, with target values owned by
   the wrapper and every other dynamic request dispatched to the host backend;
 - wrapper-owned `linux64` Docker targets that select the always-refreshed
@@ -413,6 +414,21 @@ of the wrapper and runtime below `$HOME/.local`. A failed runtime replacement
 restores the previous runtime. The installer creates `$HOME/.local/share/hard`
 but keeps every runtime asset under `$HOME/.local/libexec/hard`. It leaves
 `default-target` absent, so wrapper fallback selects `host`.
+
+Its user-facing output consists of eight named stages covering compatibility,
+release resolution, both downloads, checksum verification, bundle extraction,
+installation, and shell configuration. Download stages show their URL and use
+curl's progress bar. Styling is limited to terminal stdout when `NO_COLOR` is
+unset; noninteractive output contains no ANSI escapes. A successful run ends
+with an informational `Next steps` section listing minimal C++20 compiler
+commands for Ubuntu/Debian, Arch/CachyOS, Fedora/RHEL/Rocky, openSUSE, and
+the Docker target for Alpine. The native compatibility floors shown are Ubuntu
+22.04, Debian 12, RHEL 9, and Rocky Linux 9; the openSUSE command is for
+Tumbleweed. Alpine is called out as musl-based and incompatible with the
+portable glibc host runtime. The section then shows `c++ --version`,
+`hard build example.cpp`, and the Docker alternative
+`hard --target=linux64 build example.cpp`. These commands are printed only
+and are never executed by the installer.
 
 The installer does not inspect the distribution, invoke `sudo`, install system
 packages, start Docker, or change group membership. Native compiler, testing,
@@ -1845,7 +1861,10 @@ to leave the library unchanged for now.
   Fish, and POSIX startup configuration, Bash/Zsh completion activation,
   active and existing path handling, repeated-install idempotence, rejected
   arguments, checksum failure, failed-update runtime restoration, and absence
-  of package-manager or service changes.
+  of package-manager or service changes; ordered stage descriptions, curl
+  progress bars, plain noninteractive output, and informational hello-world
+  toolchain recommendations for supported glibc distributions and the Alpine
+  Docker-target compatibility note.
 - `hard/source_test.go`: accepted and rejected extensions, case-insensitive test
   suffix, recursion/order, explicit paths, relative display, canonical
   deduplication, file and directory symlinks, cycles, missing paths, and empty
@@ -2788,6 +2807,35 @@ block, documentation path and link checks, Dockerfile whitespace checks, and
 The exact GHCR references currently exist only as local tags. These repository
 changes are not committed, pushed, or published remotely, and no package
 visibility setting has been changed.
+
+## Last known verification of installer output
+
+On 2026-08-26, `install.sh` gained an eight-stage user-facing progress flow,
+curl progress bars for both release downloads, and post-install instructions
+for a minimal C++20 hello-world toolchain. The recommendations cover supported
+glibc releases of Ubuntu/Debian, Arch/CachyOS, Fedora/RHEL/Rocky, and openSUSE;
+Alpine is explicitly directed to Docker because its musl environment cannot
+run the portable glibc host runtime. All recommendations remain informational:
+the installer still invokes no package manager, `sudo`, Docker, or service
+manager.
+
+Clean gofmt output, ordinary and race Go tests, vet, an out-of-tree Go build,
+module verification, both POSIX shell syntax checks, and `git diff --check`
+passed. Unit coverage verified the ordered stage text, download URLs, curl
+progress-bar option, every recommendation, and absence of ANSI escapes in
+noninteractive output. `shellcheck` was not installed locally and was not run.
+
+A staged `make build` and `make install` below `/tmp` produced the expected
+0755 wrapper/backend and 0644 runtime, default-target, and completion files.
+The staged wrapper reached its sibling backend with `--target=host --help`, and
+the Bash completion file passed `bash -n`.
+
+Finally, the real installer resolved and downloaded the official v3.0 archive
+and checksum into an isolated temporary `HOME`. Both curl progress bars were
+visible in a pseudo-terminal, checksum and bundle validation succeeded, the
+expected Bash startup entries were written only below that temporary home, and
+the installed wrapper's explicit host help succeeded. No real user or system
+installation path was changed.
 
 ## Workspace safety snapshot
 

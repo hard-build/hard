@@ -12,9 +12,40 @@ install_stage=
 install_complete=0
 previous_runtime_moved=0
 runtime_root=
+step_number=0
+step_total=8
+style_bold=
+style_cyan=
+style_green=
+style_red=
+style_reset=
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+	style_bold=$(printf '\033[1m')
+	style_cyan=$(printf '\033[36m')
+	style_green=$(printf '\033[32m')
+	style_red=$(printf '\033[31m')
+	style_reset=$(printf '\033[0m')
+fi
+
+print_header() {
+	printf '%sHard Build installer%s\n' "$style_bold" "$style_reset"
+}
+
+print_step() {
+	step_number=$((step_number + 1))
+	printf '\n%s%s[%d/%d]%s %s\n' \
+		"$style_bold" "$style_cyan" "$step_number" "$step_total" \
+		"$style_reset" "$1"
+}
+
+print_detail() {
+	printf '  %s\n' "$1"
+}
 
 fail() {
-	printf 'hard installer: %s\n' "$1" >&2
+	printf '%s%shard installer: error:%s %s\n' \
+		"$style_bold" "$style_red" "$style_reset" "$1" >&2
 	exit 1
 }
 
@@ -80,21 +111,28 @@ resolve_release() {
 	release_download_url=$release_base_url/download/$release_tag
 	archive_name=hard-$release_tag.tar.gz
 	checksum_name=$archive_name.sha256
+	print_detail "Selected release: $release_tag"
 }
 
-download_release() {
-	download_directory=$(mktemp -d "${TMPDIR:-/tmp}/hard-download.XXXXXX")
-	printf 'hard installer: downloading the portable Linux archive.\n'
+download_file() {
+	print_detail "$2"
 	curl --fail --location --retry 3 \
-		--output "$download_directory/$archive_name" \
-		"$release_download_url/$archive_name"
-	curl --fail --location --retry 3 \
-		--output "$download_directory/$checksum_name" \
-		"$release_download_url/$checksum_name"
-	(
+		--progress-bar --show-error \
+		--output "$download_directory/$1" \
+		"$2"
+}
+
+verify_download() {
+	if ! (
 		cd "$download_directory"
 		sha256sum --check "$checksum_name"
-	)
+	) >/dev/null; then
+		fail "checksum verification failed for $archive_name"
+	fi
+	print_detail "SHA-256 checksum matches."
+}
+
+extract_release() {
 	tar -xzf "$download_directory/$archive_name" --directory "$download_directory"
 
 	archive_root=$download_directory/hard-linux-amd64
@@ -110,6 +148,7 @@ download_release() {
 		fail "release archive has no Zsh completion"
 	[ -f "$archive_root/share/fish/vendor_completions.d/hard.fish" ] ||
 		fail "release archive has no Fish completion"
+	print_detail "Release contents are complete."
 }
 
 install_release() {
@@ -180,6 +219,9 @@ install_release() {
 		fail "cannot install Fish completion into $fish_completion"
 	fi
 	install_complete=1
+	print_detail "Command: $wrapper"
+	print_detail "Runtime: $runtime_root"
+	print_detail "Completions: $local_share"
 }
 
 configure_path() {
@@ -220,6 +262,7 @@ configure_path() {
 			completion_entry=
 			;;
 	esac
+	print_step "Configuring the $shell_name shell"
 
 	if [ -e "$shell_config" ] || [ -L "$shell_config" ]; then
 		[ -f "$shell_config" ] || fail "shell configuration is not a regular file: $shell_config"
@@ -242,9 +285,9 @@ configure_path() {
 			printf '\n' >> "$shell_config"
 		fi
 		printf '%s\n' "$path_entry" >> "$shell_config"
-		printf 'hard installer: added %s to %s.\n' "$local_bin" "$shell_config"
+		print_detail "Added $local_bin to $shell_config."
 	else
-		printf 'hard installer: %s is already configured in %s.\n' "$local_bin" "$shell_config"
+		print_detail "$local_bin is already configured in $shell_config."
 	fi
 
 	if [ -n "$completion_entry" ]; then
@@ -265,16 +308,51 @@ configure_path() {
 				printf '\n' >> "$shell_config"
 			fi
 			printf '%s\n' "$completion_entry" >> "$shell_config"
-			printf 'hard installer: enabled %s completion in %s.\n' "$shell_name" "$shell_config"
+			print_detail "Enabled $shell_name completion in $shell_config."
 		else
-			printf 'hard installer: %s completion is already configured in %s.\n' "$shell_name" "$shell_config"
+			print_detail "$shell_name completion is already configured in $shell_config."
 		fi
+	elif [ "$shell_name" = fish ]; then
+		print_detail "Fish discovers completion from $fish_completion."
+	else
+		print_detail "Programmable completion is not configured for $shell_name."
 	fi
+}
+
+print_summary() {
+	printf '\n%s%sInstallation complete%s\n' \
+		"$style_bold" "$style_green" "$style_reset"
+	printf '  hard %s was installed in %s.\n' "$release_tag" "$HOME/.local"
+	if [ "$path_added_to_environment" -eq 1 ]; then
+		printf '  To use hard in the current %s shell, run:\n    %s\n' \
+			"$shell_name" "$path_entry"
+	else
+		printf '  %s is already present in PATH.\n' "$local_bin"
+	fi
+
+	printf '\n%sNext steps%s\n' "$style_bold" "$style_reset"
+	printf '\n%sBuild a C++ hello world on the host%s\n' "$style_bold" "$style_reset"
+	printf '  The minimum requirement is a compiler with C++20 support.\n'
+	printf '  Install it for your distribution:\n\n'
+	printf '    Ubuntu 22.04+/Debian 12+:  sudo apt update && sudo apt install g++\n'
+	printf '    Arch/CachyOS:               sudo pacman -S gcc\n'
+	printf '    Fedora/RHEL 9+/Rocky 9+:    sudo dnf install gcc-c++\n'
+	printf '    openSUSE Tumbleweed:        sudo zypper install gcc-c++\n'
+	printf '\n  Alpine uses musl, while the portable host runtime requires glibc.\n'
+	printf '  Use the Docker target shown below on Alpine.\n'
+	printf '\n  Then verify the compiler and build your source:\n\n'
+	printf '    c++ --version\n'
+	printf '    hard build example.cpp\n'
+	printf '\n  If Docker is already installed, a host compiler is not required:\n\n'
+	printf '    hard --target=linux64 build example.cpp\n'
+	printf '\n  These are recommendations only; the installer did not run them.\n'
 }
 
 if [ "$#" -ne 0 ]; then
 	fail "no arguments are accepted"
 fi
+print_header
+print_step "Checking system compatibility"
 case "$(uname -s)" in
 	Linux) ;;
 	*) fail "the portable archive currently supports Linux only" ;;
@@ -289,14 +367,25 @@ require_command curl
 require_command tar
 require_command sha256sum
 require_command mktemp
+print_detail "Linux x86-64 and required archive tools are available."
+
+print_step "Resolving the latest hard release"
 resolve_release
-download_release
+
+download_directory=$(mktemp -d "${TMPDIR:-/tmp}/hard-download.XXXXXX")
+print_step "Downloading $archive_name"
+download_file "$archive_name" "$release_download_url/$archive_name"
+
+print_step "Downloading $checksum_name"
+download_file "$checksum_name" "$release_download_url/$checksum_name"
+
+print_step "Verifying the archive checksum"
+verify_download
+
+print_step "Extracting and validating the release"
+extract_release
+
+print_step "Installing hard $release_tag"
 install_release
 configure_path
-
-printf '\nhard %s was installed in %s.\n' "$release_tag" "$HOME/.local"
-if [ "$path_added_to_environment" -eq 1 ]; then
-	printf 'To use hard in the current %s shell, run:\n  %s\n' "$shell_name" "$path_entry"
-else
-	printf '%s is already present in PATH.\n' "$local_bin"
-fi
+print_summary

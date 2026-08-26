@@ -117,7 +117,7 @@ func TestInstallScriptInstallsReleaseAndConfiguresShell(t *testing.T) {
 				t.Fatalf("install output = %q, want current-shell command %q", result.output, tt.pathEntry)
 			}
 			if tt.completionEntry != "" &&
-				!strings.Contains(result.output, "enabled "+filepath.Base(tt.shell)+" completion") {
+				!strings.Contains(result.output, "Enabled "+filepath.Base(tt.shell)+" completion") {
 				t.Fatalf("install output = %q, want completion enabled message", result.output)
 			}
 			if result.packageLog != "" {
@@ -127,6 +127,65 @@ func TestInstallScriptInstallsReleaseAndConfiguresShell(t *testing.T) {
 				t.Errorf("service log = %q, want no service changes", result.serviceLog)
 			}
 		})
+	}
+}
+
+func TestInstallScriptDescribesProgressAndHelloWorldSetup(t *testing.T) {
+	result := runInstallScript(t, installScriptOptions{shell: "/bin/bash"})
+	if result.err != nil {
+		t.Fatalf("install error = %v, output = %q", result.err, result.output)
+	}
+
+	steps := []string{
+		"[1/8] Checking system compatibility",
+		"[2/8] Resolving the latest hard release",
+		"[3/8] Downloading hard-v1.0.tar.gz",
+		"[4/8] Downloading hard-v1.0.tar.gz.sha256",
+		"[5/8] Verifying the archive checksum",
+		"[6/8] Extracting and validating the release",
+		"[7/8] Installing hard v1.0",
+		"[8/8] Configuring the bash shell",
+	}
+	previousStep := -1
+	for _, step := range steps {
+		position := strings.Index(result.output, step)
+		if position == -1 {
+			t.Fatalf("install output = %q, want step %q", result.output, step)
+		}
+		if position <= previousStep {
+			t.Fatalf("install output = %q, step %q is out of order", result.output, step)
+		}
+		previousStep = position
+	}
+
+	for _, message := range []string{
+		"Selected release: v1.0",
+		"https://github.com/hard-build/hard/releases/download/v1.0/hard-v1.0.tar.gz",
+		"https://github.com/hard-build/hard/releases/download/v1.0/hard-v1.0.tar.gz.sha256",
+		"SHA-256 checksum matches.",
+		"Release contents are complete.",
+		"Installation complete",
+		"Next steps",
+		"The minimum requirement is a compiler with C++20 support.",
+		"Ubuntu 22.04+/Debian 12+",
+		"sudo apt update && sudo apt install g++",
+		"sudo pacman -S gcc",
+		"Fedora/RHEL 9+/Rocky 9+",
+		"sudo dnf install gcc-c++",
+		"sudo zypper install gcc-c++",
+		"Alpine uses musl, while the portable host runtime requires glibc.",
+		"Use the Docker target shown below on Alpine.",
+		"c++ --version",
+		"hard build example.cpp",
+		"hard --target=linux64 build example.cpp",
+		"These are recommendations only; the installer did not run them.",
+	} {
+		if !strings.Contains(result.output, message) {
+			t.Fatalf("install output = %q, want message %q", result.output, message)
+		}
+	}
+	if strings.Contains(result.output, "\x1b[") {
+		t.Fatalf("non-interactive install output contains ANSI escapes: %q", result.output)
 	}
 }
 
@@ -343,6 +402,7 @@ func runInstallScript(t *testing.T, options installScriptOptions) installScriptR
 
 	writeInstallTestExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
 output=
+progress_bar=0
 url=
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -352,6 +412,10 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--write-out)
 			shift 2
+			;;
+		--progress-bar)
+			progress_bar=1
+			shift
 			;;
 		https://*)
 			url=$1
@@ -365,9 +429,11 @@ case "$url" in
 		printf 'https://github.com/hard-build/hard/releases/tag/%s' "$INSTALL_TEST_RELEASE_TAG"
 		;;
 	"https://github.com/hard-build/hard/releases/download/$INSTALL_TEST_RELEASE_TAG/hard-$INSTALL_TEST_RELEASE_TAG.tar.gz")
+		[ "$progress_bar" -eq 1 ] || exit 2
 		cp "$INSTALL_TEST_ARCHIVE" "$output"
 		;;
 	"https://github.com/hard-build/hard/releases/download/$INSTALL_TEST_RELEASE_TAG/hard-$INSTALL_TEST_RELEASE_TAG.tar.gz.sha256")
+		[ "$progress_bar" -eq 1 ] || exit 2
 		cp "$INSTALL_TEST_CHECKSUM" "$output"
 		;;
 	*) exit 1 ;;
