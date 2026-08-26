@@ -240,7 +240,7 @@ anywhere before `--`:
 ```bash
 hard --target=host build src
 hard --target=linux64 build src
-hard test --target linux64:v2.0-ubuntu.22.04 tests
+hard test --target linux64:v3.0-ubuntu.22.04 tests
 ```
 
 The portable installer leaves the target default absent, which selects `host`.
@@ -258,14 +258,18 @@ linux64 -> ghcr.io/hard-build/linux64:latest
 Explicit versions are immutable and downloaded only when they are missing:
 
 ```text
-linux64:v2.0-ubuntu.22.04
-  -> ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04
+linux64:v3.0-ubuntu.22.04
+  -> ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
+linux64:v3.0-alpine.3.22-static
+  -> ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static
 ```
 
-The Ubuntu image contains the `hard` v2.0 portable runtime and an Ubuntu 22.04
+The Ubuntu image contains the `hard` v3.0 portable runtime and an Ubuntu 22.04
 C++ build environment. Both its versioned tag and `latest` use
-`HARD_ENV=linux64:v2.0-ubuntu.22.04`, so they share compatible artifacts while
-future image versions receive separate cache directories.
+`HARD_ENV=linux64:v3.0-ubuntu.22.04`, so they share compatible artifacts. The
+Alpine image builds `hard` v3.0 natively against musl, uses its own
+`HARD_ENV=linux64:v3.0-alpine.3.22-static`, and links generated executables
+fully statically.
 
 The wrapper mounts `HARD_ROOT` at `/hard` and the current working directory at
 the same absolute container path. Source snapshots and caches therefore persist
@@ -365,7 +369,8 @@ HARD_ROOT/
 │   └── recipe -> github.com/hard-build/recipe
 └── env/
     ├── host/
-    └── linux64:v2.0-ubuntu.22.04/
+    ├── linux64:v3.0-ubuntu.22.04/
+    └── linux64:v3.0-alpine.3.22-static/
 ```
 
 Generated forwards, objects, internal binaries, package installations, and

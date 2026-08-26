@@ -172,6 +172,8 @@ cache entries and are not refreshed automatically.
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
 | `target/linux64/v2.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v2.0 portable runtime |
+| `target/linux64/v3.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v3.0 portable runtime |
+| `target/linux64/v3.0-alpine.3.22-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v3.0 against musl and producing fully static programs |
 | `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
 | `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
@@ -269,13 +271,15 @@ default GCC 7 does not implement the default C++20 contract; Docker remains the
 recommended execution target there unless the user supplies a suitable host
 toolchain.
 
-The current `linux64:v2.0-ubuntu.22.04` image uses Ubuntu 22.04 and installs
-hard from the official `hard-v2.0.tar.gz` portable release rather than building
-the Go backend from the current source tree. The Dockerfile pins SHA-256
-`da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`,
-requires the archive `VERSION` to equal `v2.0`, and records Git revision
-`100406872f99fd4fcdb23425d21f638d58368237`, to which tag `v2.0` points.
-There is no Go builder stage or apt.llvm.org repository in this image.
+The Ubuntu `linux64:v3.0-ubuntu.22.04` target installs hard from the official
+`hard-v3.0.tar.gz` portable release rather than building the Go backend from
+the current source tree. The Dockerfile pins SHA-256
+`4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`,
+requires the archive `VERSION` to equal `v3.0`, and records Git revision
+`3826020ccc617f189521e5628e2ce5f8ecf82e00`, to which tag `v3.0` points.
+There is no Go builder stage or apt.llvm.org repository in this image. The
+older immutable `linux64:v2.0-ubuntu.22.04` target remains available by its
+exact version.
 
 The portable runtime supplies the backend, hard.h, format.v1, clang-format,
 libclang 18.1.8, Clang resource headers, libtinfo compatibility library, and
@@ -285,13 +289,15 @@ pkg-config, Autoconf, Automake, and Libtool. libgcc and libstdc++ are linked
 statically into generated programs by the fixed linker flags, but glibc
 remains dynamic.
 
-An Alpine 3.22 static prototype was built and verified locally with hard v2.0,
-but it was superseded before commit or publication. Its Dockerfile is not a
-current repository target. The accepted replacement is
-`linux64:v3.0-alpine.3.22-static`, added only after the v3.0 Git tag and release
-artifact exist. The planned image builds hard natively against musl and
-Alpine's system libclang, while `HARD_LDFLAGS` makes generated C++ executables
-fully static.
+The Alpine `linux64:v3.0-alpine.3.22-static` target checksum-verifies the
+official v3.0 GitHub source archive, builds the Go backend natively against
+musl and Alpine's system libclang 18, and copies that backend into an Alpine
+3.22 runtime image. Its final package set includes the same compiler, formatter,
+recipe-build, and test classes of tools as the Ubuntu target. Because Alpine's
+packaged GoogleTest libraries are shared-only for linker purposes, the image
+builds `libgtest.a` and `libgtest_main.a` from the packaged sources.
+`HARD_LDFLAGS` adds `-static`, so generated C and C++ executables are fully
+static; the hard backend itself remains a dynamically linked musl program.
 
 Runtime tools by command:
 
@@ -438,22 +444,20 @@ discovers its vendor file automatically. The POSIX fallback receives only the
 The wrapper maps its container target forms as follows:
 
     --target=linux64                         ghcr.io/hard-build/linux64:latest
-    --target=linux64:v2.0-ubuntu.22.04      ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04
-
-The v3.0 wrapper completion also advertises the staged targets that will be
-published after the v3.0 release artifact exists:
-
     --target=linux64:v3.0-ubuntu.22.04       ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
     --target=linux64:v3.0-alpine.3.22-static ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static
+
+The older exact `linux64:v2.0-ubuntu.22.04` target remains valid and maps to
+the same tag below `ghcr.io/hard-build/linux64`.
 
 The mutable `linux64` alias is pulled before every run and remains the newest
 Ubuntu image. Exact version targets are pulled only when missing locally.
 Exact targets remain available for reproducible builds and persistent caches.
 
-The current Ubuntu image installs the official `hard-v2.0.tar.gz` portable release,
-whose backend corresponds to Git tag `v2.0` at
-`100406872f99fd4fcdb23425d21f638d58368237`. The archive checksum is pinned to
-`da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`.
+The v3.0 Ubuntu image installs the official `hard-v3.0.tar.gz` portable release,
+whose backend corresponds to Git tag `v3.0` at
+`3826020ccc617f189521e5628e2ce5f8ecf82e00`. The archive checksum is pinned to
+`4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`.
 Its runtime bundle is:
 
     /usr/local/libexec/hard/hard
@@ -465,24 +469,29 @@ Its runtime bundle is:
 
 The Docker build verifies both the release checksum and the bundled `VERSION`.
 It does not use `curl ... | sh`: the interactive latest-release installer cannot
-pin `v2.0`, mutates shell configuration, and installs below `$HOME/.local`.
+pin `v3.0`, mutates shell configuration, and installs below `$HOME/.local`.
 Installing the versioned archive directly gives the image an immutable input and
 fails the build if either the archive or expected version changes.
 
 The Ubuntu image's fixed target environment is:
 
     HARD_ROOT=/hard
-    HARD_ENV=linux64:v2.0-ubuntu.22.04
+    HARD_ENV=linux64:v3.0-ubuntu.22.04
     HARD_CC=c++
-    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra -idirafter /usr/local/libexec/hard/lib/clang/18/include
+    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
     HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++
     HARD_ENTRYPOINTS=main _start
 
-The final `-idirafter` path supplies the relocated LLVM 18 resource headers to
-the portable libclang used by hard v2.0. Plain `-isystem` is not used because it
-would make GCC prefer Clang's `stddef.h` and `stdarg.h`; the after-path lets GCC
-keep its own builtin headers. The Dockerfile compiles a minimal C++ source during
-the build so a missing resource path fails image publication.
+The Alpine image uses the same root, compiler, entrypoints, and compiler flags,
+with these target-specific values:
+
+    HARD_ENV=linux64:v3.0-alpine.3.22-static
+    HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static -static-libgcc -static-libstdc++
+
+It checksum-verifies the official v3.0 source archive at
+`ee24cbeec82087f31a0c07d7a346f85c0f3d5b36fd25199a90ebb69c1e1bee35`,
+builds hard natively against musl, and uses Alpine's system libclang resource
+directory.
 
 Starting with hard v3.0, the backend checks for
 `<runtime-root>/lib/clang/18/include` and appends it as `-idirafter` only to
@@ -491,7 +500,7 @@ libclang argument vectors. The configured and compiler-effective
 including Alpine's package, uses its already discoverable system resource
 directory and receives no extra flag.
 
-The image is intentionally `linux/amd64` only, and generated programs require
+The images are intentionally `linux/amd64` only, and generated programs require
 an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
 system, bundled hard version, or minimum-CPU changes require a new target
 version.
@@ -1949,17 +1958,23 @@ real wrapper against a temporary C++ project at least twice to exercise
 persistent cache reuse:
 
     docker build --platform linux/amd64 \
-      --file target/linux64/v2.0-ubuntu.22.04.Dockerfile \
-      --tag hard-build/linux64:v2.0-ubuntu.22.04 .
+      --file target/linux64/v3.0-ubuntu.22.04.Dockerfile \
+      --tag hard-build/linux64:v3.0-ubuntu.22.04 .
+
+    docker build --platform linux/amd64 \
+      --file target/linux64/v3.0-alpine.3.22-static.Dockerfile \
+      --tag hard-build/linux64:v3.0-alpine.3.22-static .
 
 Temporarily tag that local image with its exact GHCR reference for the wrapper
 smoke test. Use a temporary host `HARD_ROOT`, confirm container artifacts below
-`env/linux64:v2.0-ubuntu.22.04`, and confirm host `HARD_*` variables do not
-replace the image configuration. Verify the unversioned `linux64` wrapper form
-selects the `latest` reference with `--pull=always`, while the exact form uses
-`--pull=missing`. Validate the workflow syntax and version/tag rules. Do not
-push, publish, change package visibility, or remove a pre-existing local image
-as part of routine verification.
+the matching `env/linux64:<version>` directory, and confirm host `HARD_*`
+variables do not replace the image configuration. For a static target, inspect
+all generated programs for both an ELF interpreter and `NEEDED` entries. Verify
+the unversioned `linux64` wrapper form selects the `latest` reference with
+`--pull=always`, while the exact form uses `--pull=missing`. Validate the
+workflow syntax and version/tag rules. Do not push, publish, change package
+visibility, or remove a pre-existing local image as part of routine
+verification.
 
 From the repository root:
 
@@ -2720,10 +2735,59 @@ then failed because that separate job had no checkout while its `gh release`
 commands did not select a repository explicitly.
 
 The follow-up passes `--repo "$GITHUB_REPOSITORY"` to release view, upload, and
-create, so publication no longer depends on a local Git checkout. It is
-committed locally, and the local annotated `v3.0` tag points at that commit.
-Neither the follow-up commit nor the moved tag has been pushed. No v3.0 GitHub
-Release, Dockerfile, image, or publication exists yet.
+create, so publication no longer depends on a local Git checkout. The follow-up
+commit and moved annotated `v3.0` tag were pushed, and the subsequent workflow
+published the GitHub Release. Its `hard-v3.0.tar.gz` asset has SHA-256
+`4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`.
+Tag `v3.0` resolves to commit
+`3826020ccc617f189521e5628e2ce5f8ecf82e00`; the corresponding GitHub source
+archive has SHA-256
+`ee24cbeec82087f31a0c07d7a346f85c0f3d5b36fd25199a90ebb69c1e1bee35`.
+
+## Last known verification of v3.0 container images
+
+On 2026-08-26, two new immutable repository targets were prepared:
+`linux64:v3.0-ubuntu.22.04` and
+`linux64:v3.0-alpine.3.22-static`. The Ubuntu Dockerfile installs the exact
+portable release asset; the Alpine multi-stage Dockerfile builds the exact tag
+source against musl and Alpine's system LLVM 18. Neither Dockerfile contains a
+smoke-test layer because `.github/workflows/container.yml` owns publication
+smoke testing.
+
+Both `linux/amd64` images built locally with their pinned checksums and version
+checks. Their local IDs are
+`sha256:5ac994271f12b7a0cabcbee6acfd2cd00aa5b6d86915071885159fd6f9c3712d`
+for Ubuntu and
+`sha256:9ada3fea3a68a2f92a253c363017594d2094e01267a594092c62db3ea18643fb`
+for Alpine. Inspection confirmed the v3.0 backend entrypoint, runtime files,
+OCI revision, toolchain and recipe-build tools, target-specific environment,
+and the absence of parser-only `-idirafter` from `HARD_CFLAGS`. The Ubuntu
+backend resolves the bundled portable libclang; the Alpine backend is a
+dynamic musl program resolving Alpine's system libclang.
+
+The real wrapper built and ran the same C++20 program twice through each exact
+target with poisoned host `HARD_*` variables. The second run reused parsing,
+compilation, linking, and delivery, and the shared root kept separate
+`env/linux64:v3.0-ubuntu.22.04` and
+`env/linux64:v3.0-alpine.3.22-static` cache trees. All 12 declarative
+integration scenarios passed independently in both images, including
+GoogleTest, the embedded TinyXML2 recipe, and the well-known TinyXML2 recipe.
+All 38 Alpine-generated ELF applications and test binaries inspected across
+the output and build trees were statically linked and had neither an ELF
+interpreter nor `NEEDED` entries.
+
+An isolated replay of workflow discovery produced exactly two matrix entries,
+both tied to tag `v3.0` and its commit. The Alpine entry had
+`publish_latest=false`; the newest Ubuntu entry had `publish_latest=true`.
+Final repository verification also passed clean gofmt output, ordinary and
+race Go tests, vet, an out-of-tree Go build, module verification, POSIX wrapper
+and installer syntax, workflow YAML parsing and Bash syntax for every run
+block, documentation path and link checks, Dockerfile whitespace checks, and
+`git diff --check`.
+
+The exact GHCR references currently exist only as local tags. These repository
+changes are not committed, pushed, or published remotely, and no package
+visibility setting has been changed.
 
 ## Workspace safety snapshot
 

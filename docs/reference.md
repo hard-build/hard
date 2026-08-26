@@ -46,7 +46,7 @@ Command completion is installed at the shell-standard user-local paths:
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
 the five public commands, command flags, filesystem paths, `host`, `linux64`,
-the planned `linux64:v3.0-ubuntu.22.04` and
+the `linux64:v3.0-ubuntu.22.04` and
 `linux64:v3.0-alpine.3.22-static` versions, and the default `format.v1` format.
 The wrapper itself supplies target values. Other dynamic requests always
 execute the installed host backend, even when a container target is the
@@ -159,7 +159,7 @@ version matching `linux64:vX.Y-alpine.A.B-static`:
 ```bash
 hard --target=host build src
 hard --target=linux64 build src
-hard test --target linux64:v2.0-ubuntu.22.04 tests
+hard test --target linux64:v3.0-ubuntu.22.04 tests
 hard run --target=linux64 src/application.cpp -- --mode=check
 ```
 
@@ -185,21 +185,32 @@ linux64 -> ghcr.io/hard-build/linux64:latest     (--pull=always)
 Explicit forms name immutable images and download them only when missing:
 
 ```text
-linux64:v2.0-ubuntu.22.04
-  -> ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04  (--pull=missing)
+linux64:v3.0-ubuntu.22.04
+  -> ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04  (--pull=missing)
+linux64:v3.0-alpine.3.22-static
+  -> ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static  (--pull=missing)
 ```
 
 The Ubuntu image definition is
-`target/linux64/v2.0-ubuntu.22.04.Dockerfile`. It downloads the official
-`hard-v2.0.tar.gz` portable release, verifies SHA-256
-`da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`,
-requires its bundled `VERSION` to equal `v2.0`, and installs its complete
+`target/linux64/v3.0-ubuntu.22.04.Dockerfile`. It downloads the official
+`hard-v3.0.tar.gz` portable release, verifies SHA-256
+`4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`,
+requires its bundled `VERSION` to equal `v3.0`, and installs its complete
 `libexec/hard` runtime at `/usr/local/libexec/hard`. The container therefore
 uses the backend, `hard.h`, format, clang-format, libclang 18.1.8, Clang
-resource headers, and compatibility libraries published from Git tag `v2.0`,
+resource headers, and compatibility libraries published from Git tag `v3.0`,
 rather than compiling the current branch.
 
-The image uses Ubuntu 22.04. Its C++ toolchain is GCC 11 with glibc 2.35.
+The static Alpine definition is
+`target/linux64/v3.0-alpine.3.22-static.Dockerfile`. The portable release is a
+glibc runtime and cannot execute on musl, so this image downloads the source
+archive for Git tag `v3.0`, verifies SHA-256
+`ee24cbeec82087f31a0c07d7a346f85c0f3d5b36fd25199a90ebb69c1e1bee35`, and
+builds the backend natively against Alpine's libclang 18. Generated programs
+are linked completely statically against musl. The image also builds static
+GoogleTest archives from Alpine's packaged sources.
+
+The Ubuntu image uses Ubuntu 22.04. Its C++ toolchain is GCC 11 with glibc 2.35.
 `-static-libgcc` and `-static-libstdc++` do not make glibc static, so the image
 does not promise that generated programs run on systems older than the Ubuntu
 22.04 ABI. The runtime also contains GoogleTest 1.11, CMake 3.22, GNU Make,
@@ -217,9 +228,10 @@ an ELF interpreter or `NEEDED` shared library.
 
 The wrapper bind-mounts the host `${HARD_ROOT:-$HOME/.local/share/hard}` at
 `/hard` and the current working directory at the same absolute path inside the
-container. The Ubuntu tags use
-`/hard/env/linux64:v2.0-ubuntu.22.04/build`. Every image preserves the shared
-source snapshots while isolating its build artifacts from other target
+container. The v3.0 images use
+`/hard/env/linux64:v3.0-ubuntu.22.04/build` and
+`/hard/env/linux64:v3.0-alpine.3.22-static/build`. Every image preserves the
+shared source snapshots while isolating its build artifacts from other target
 versions and `env/host`.
 
 The container runs with the current numeric UID and GID, preventing root-owned
@@ -232,26 +244,34 @@ Ubuntu image fixes its complete target configuration as follows:
 
 ```text
 HARD_ROOT=/hard
-HARD_ENV=linux64:v2.0-ubuntu.22.04
+HARD_ENV=linux64:v3.0-ubuntu.22.04
 HARD_CC=c++
 HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto
-            -Wall -Wextra -idirafter
-            /usr/local/libexec/hard/lib/clang/18/include
+            -Wall -Wextra
 HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
              -static-libgcc -static-libstdc++
 HARD_ENTRYPOINTS=main _start
+```
+
+The Alpine image uses the same fixed root, compiler, compiler flags, and
+entrypoints; only the environment name and linker flags differ:
+
+```text
+HARD_ENV=linux64:v3.0-alpine.3.22-static
+HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
+             -static -static-libgcc -static-libstdc++
 ```
 
 The backend always adds `-I/hard/source` and
 `-include /usr/local/libexec/hard/hard.h` internally. These are hard-managed
 include mechanics rather than part of the image `HARD_CFLAGS` value.
 
-The v2.0 image's final `-idirafter` value exposes the relocated LLVM 18
-resource headers to its bundled libclang. Starting with hard v3.0, the backend
-adds `<runtime-root>/lib/clang/18/include` only to libclang arguments when that
-directory exists. It is not part of `HARD_CFLAGS` and is never passed to GCC.
-The after-system position lets GCC-compatible standard-library discovery keep
-using the compiler's builtin headers during analysis.
+Hard v3.0 adds `<runtime-root>/lib/clang/18/include` only to libclang arguments
+when that directory exists. It is not part of `HARD_CFLAGS` and is never passed
+to GCC. The after-system position lets GCC-compatible standard-library
+discovery keep using the compiler's builtin headers during analysis. Alpine's
+native libclang discovers its packaged resource directory without this
+additional argument.
 
 `linux64` images use the `linux/amd64` platform. Programs built by the current
 images require an x86-64-v3 processor; Docker does not emulate missing CPU
