@@ -2685,14 +2685,39 @@ smoke also passed against the existing local v2.0 Ubuntu image and the removed
 Alpine prototype, including the static ELF checks; this validates the workflow
 command sequence, not either future v3.0 image.
 
-The preparation is committed, and the local annotated `v3.0` tag points at
-that commit. Neither the branch nor the tag has been pushed, so no v3.0 release
-artifact, Dockerfile, image, or publication exists yet. The next stage is to
-push the commit and tag, let the portable `hard-v3.0.tar.gz` artifact be
-published, pin its checksum in
-`target/linux64/v3.0-ubuntu.22.04.Dockerfile`, add
-`target/linux64/v3.0-alpine.3.22-static.Dockerfile`, and run the full image and
-integration verification before publication.
+The preparation commit and annotated `v3.0` tag were pushed. The first release
+workflow run built the portable archive successfully, but failed before
+starting its first compatibility container. Nested single quotes in the
+`sh -c` smoke script ended the runner's outer quoted string, so runner Bash
+expanded the inner completion check's `$1` while `set -u` was active. Artifact
+upload and GitHub release publication were therefore skipped.
+
+The release workflow is now split into build, smoke, and publish jobs. Build
+uploads the archive and checksum as a workflow artifact and exposes its ID.
+Smoke uses a non-fail-fast matrix of Ubuntu 18.04, 22.04, and 24.04 job
+containers, so the compatibility commands execute directly in each target
+environment without a nested `docker run` or quoted container script.
+Publication depends on both build and the complete smoke matrix.
+
+Modern JavaScript artifact actions cannot execute in the Ubuntu 18.04 job
+container because the runner's Node runtime requires a newer glibc. Each
+matrix container therefore installs `curl` and `unzip` and downloads the
+same immutable workflow artifact through GitHub's authenticated REST API.
+The host-side publish job can use `actions/download-artifact` normally.
+
+Local verification parsed the workflow, checked every run script with
+`bash -n`, and asserted the three exact matrix images, non-fail-fast policy,
+job dependencies, artifact-ID handoff, and absence of nested Docker in smoke.
+All three local base images installed their declared dependencies successfully;
+Ubuntu 22.04 and 24.04 also compiled and ran the smoke C++20 source. The REST
+artifact transfer and complete matrix remain pending verification by an actual
+GitHub Actions run.
+
+The corrected workflow is committed, and the local annotated `v3.0` tag
+points at that corrected commit. Neither the corrected commit nor the moved
+tag has been pushed after this fix, so the remote tag and failed workflow
+remain unchanged. No v3.0 release artifact, Dockerfile, image, or publication
+exists yet.
 
 ## Workspace safety snapshot
 

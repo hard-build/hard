@@ -6,6 +6,7 @@ on:
       - "v*.*"
 
 permissions:
+  actions: read
   contents: write
 
 env:
@@ -18,8 +19,10 @@ env:
   CHECKSUM_NAME: hard-${{ github.ref_name }}.tar.gz.sha256
 
 jobs:
-  linux-amd64:
+  build:
     runs-on: ubuntu-24.04
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -184,58 +187,8 @@ jobs:
               sha256sum "$ARCHIVE_NAME" > "$CHECKSUM_NAME"
             '
 
-      - name: Smoke-test supported glibc baselines
-        run: |
-          set -euo pipefail
-          for image in ubuntu:18.04 ubuntu:22.04 ubuntu:24.04; do
-            docker run --rm --platform linux/amd64 \
-              --volume "$RUNNER_TEMP/release/$ARCHIVE_NAME:/tmp/hard.tar.gz:ro" \
-              "$image" \
-              sh -euxc '
-                mkdir -p /tmp/home /tmp/project /tmp/release
-                tar -xzf /tmp/hard.tar.gz --directory /tmp/release
-                hard=/tmp/release/hard-linux-amd64/bin/hard
-                printf "int answer=42;\n" > /tmp/project/example.cpp
-                HOME=/tmp/home "$hard" --target=host --help >/dev/null
-                HOME=/tmp/home "$hard" --target=host format /tmp/project/example.cpp
-                grep -q "int answer = 42;" /tmp/project/example.cpp
-                test -s /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
-                test -s /tmp/release/hard-linux-amd64/share/zsh/site-functions/_hard
-                test -s /tmp/release/hard-linux-amd64/share/fish/vendor_completions.d/hard.fish
-                bash -n /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
-                HOME=/tmp/home "$hard" __complete --target= > /tmp/targets
-                grep -qx host /tmp/targets
-                grep -qx linux64 /tmp/targets
-                grep -qx 'linux64:v3.0-ubuntu.22.04' /tmp/targets
-                grep -qx 'linux64:v3.0-alpine.3.22-static' /tmp/targets
-                ! grep -qx linux.v1 /tmp/targets
-                HOME=/tmp/home bash --noprofile --norc -c \
-                  '. "$1"; complete -p hard' \
-                  _ /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
-
-                . /etc/os-release
-                case "$VERSION_ID" in
-                  18.04) ;;
-                  *)
-                    apt-get update
-                    apt-get install -y --no-install-recommends build-essential
-                    printf "%s\n" \
-                      "#include <cstddef>" \
-                      "#include <iostream>" \
-                      "" \
-                      "int main()" \
-                      "{" \
-                      "    std::cout << (sizeof(std::max_align_t) > 0 ? \"ok\" : \"invalid\");" \
-                      "}" \
-                      > /tmp/project/build.cpp
-                    HOME=/tmp/home "$hard" --target=host build -s /tmp/project/build.cpp
-                    test "$(/tmp/project/build)" = ok
-                    ;;
-                esac
-              '
-          done
-
       - name: Upload workflow artifact
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: hard-${{ github.ref_name }}
@@ -243,6 +196,108 @@ jobs:
             ${{ runner.temp }}/release/${{ env.ARCHIVE_NAME }}
             ${{ runner.temp }}/release/${{ env.CHECKSUM_NAME }}
           if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:18.04
+          - ubuntu:22.04
+          - ubuntu:24.04
+    env:
+      ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+    steps:
+      - name: Install smoke-test dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          . /etc/os-release
+          case "$VERSION_ID" in
+            18.04)
+              apt-get install -y --no-install-recommends ca-certificates curl unzip
+              ;;
+            *)
+              apt-get install -y --no-install-recommends build-essential ca-certificates curl unzip
+              ;;
+          esac
+
+      - name: Download portable archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release
+          curl --fail --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output /tmp/release.zip \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip"
+          unzip -q /tmp/release.zip -d /tmp/release
+
+      - name: Smoke-test supported glibc baseline
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/home /tmp/project /tmp/runtime
+          tar -xzf "/tmp/release/$ARCHIVE_NAME" --directory /tmp/runtime
+          hard=/tmp/runtime/hard-linux-amd64/bin/hard
+          printf "int answer=42;\n" > /tmp/project/example.cpp
+          HOME=/tmp/home "$hard" --target=host --help >/dev/null
+          HOME=/tmp/home "$hard" --target=host format /tmp/project/example.cpp
+          grep -q "int answer = 42;" /tmp/project/example.cpp
+          test -s /tmp/runtime/hard-linux-amd64/share/bash-completion/completions/hard
+          test -s /tmp/runtime/hard-linux-amd64/share/zsh/site-functions/_hard
+          test -s /tmp/runtime/hard-linux-amd64/share/fish/vendor_completions.d/hard.fish
+          bash -n /tmp/runtime/hard-linux-amd64/share/bash-completion/completions/hard
+          HOME=/tmp/home "$hard" __complete --target= > /tmp/targets
+          grep -qx host /tmp/targets
+          grep -qx linux64 /tmp/targets
+          grep -qx 'linux64:v3.0-ubuntu.22.04' /tmp/targets
+          grep -qx 'linux64:v3.0-alpine.3.22-static' /tmp/targets
+          ! grep -qx linux.v1 /tmp/targets
+          HOME=/tmp/home bash --noprofile --norc -c \
+            '. "$1"; complete -p hard' \
+            _ /tmp/runtime/hard-linux-amd64/share/bash-completion/completions/hard
+
+          . /etc/os-release
+          case "$VERSION_ID" in
+            18.04) ;;
+            *)
+              printf "%s\n" \
+                "#include <cstddef>" \
+                "#include <iostream>" \
+                "" \
+                "int main()" \
+                "{" \
+                "    std::cout << (sizeof(std::max_align_t) > 0 ? \"ok\" : \"invalid\");" \
+                "}" \
+                > /tmp/project/build.cpp
+              HOME=/tmp/home "$hard" --target=host build -s /tmp/project/build.cpp
+              test "$(/tmp/project/build)" = ok
+              ;;
+          esac
+
+  publish:
+    needs:
+      - build
+      - smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download workflow artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hard-${{ github.ref_name }}
+          path: ${{ runner.temp }}/release
 
       - name: Publish GitHub release
         env:
