@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mattn/go-shellwords"
 )
@@ -15,19 +16,23 @@ const (
 	hardCFlagsEnvironment      = "HARD_CFLAGS"
 	hardLDFlagsEnvironment     = "HARD_LDFLAGS"
 	hardEntryPointsEnvironment = "HARD_ENTRYPOINTS"
+	hardExecutableSuffix       = "HARD_EXECUTABLE_SUFFIX"
+	hardExecutableRunner       = "HARD_EXECUTABLE_RUNNER"
 
 	defaultHardEnv = "host"
 	defaultHardCC  = "c++"
 )
 
 type configuration struct {
-	root        string
-	runtimeRoot string
-	env         string
-	cc          string
-	cflags      []string
-	ldflags     []string
-	entrypoints []string
+	root             string
+	runtimeRoot      string
+	env              string
+	cc               string
+	cflags           []string
+	ldflags          []string
+	entrypoints      []string
+	executableSuffix string
+	executableRunner string
 }
 
 func loadConfiguration(runtimeRoot string) (configuration, error) {
@@ -79,16 +84,36 @@ func loadConfigurationFrom(
 	if err != nil {
 		return configuration{}, err
 	}
+	executableSuffix, _ := lookupEnv(hardExecutableSuffix)
+	if err := validateExecutableSuffix(executableSuffix); err != nil {
+		return configuration{}, err
+	}
+	executableRunner, _ := lookupEnv(hardExecutableRunner)
 
 	return configuration{
-		root:        root,
-		runtimeRoot: runtimeRoot,
-		env:         environment,
-		cc:          cc,
-		cflags:      cflags,
-		ldflags:     ldflags,
-		entrypoints: entrypoints,
+		root:             root,
+		runtimeRoot:      runtimeRoot,
+		env:              environment,
+		cc:               cc,
+		cflags:           cflags,
+		ldflags:          ldflags,
+		entrypoints:      entrypoints,
+		executableSuffix: executableSuffix,
+		executableRunner: executableRunner,
 	}, nil
+}
+
+func validateExecutableSuffix(suffix string) error {
+	if suffix == "" {
+		return nil
+	}
+	if !strings.HasPrefix(suffix, ".") {
+		return fmt.Errorf("%s must be empty or start with '.': %s", hardExecutableSuffix, suffix)
+	}
+	if strings.ContainsAny(suffix, `/\\`) {
+		return fmt.Errorf("%s must not contain a path separator: %s", hardExecutableSuffix, suffix)
+	}
+	return nil
 }
 
 func entryPointsFromEnvironment(lookupEnv func(string) (string, bool)) ([]string, error) {

@@ -41,6 +41,8 @@ func TestLoadConfigurationOverrides(t *testing.T) {
 		hardCFlagsEnvironment:      `-std=c++23 '-DNAME=hello world'`,
 		hardLDFlagsEnvironment:     `-fuse-ld=lld "-Wl,-rpath,/path with space"`,
 		hardEntryPointsEnvironment: `main service_start`,
+		hardExecutableSuffix:       ".exe",
+		hardExecutableRunner:       "/usr/bin/wine",
 	}
 
 	got, err := loadConfigurationFrom(runtimeRoot, environment(values), homeDirectory("unused"))
@@ -49,13 +51,15 @@ func TestLoadConfigurationOverrides(t *testing.T) {
 	}
 
 	want := configuration{
-		root:        "/opt/hard",
-		runtimeRoot: runtimeRoot,
-		env:         "custom",
-		cc:          "clang++",
-		cflags:      []string{"-std=c++23", "-DNAME=hello world"},
-		ldflags:     []string{"-fuse-ld=lld", "-Wl,-rpath,/path with space"},
-		entrypoints: []string{"main", "service_start"},
+		root:             "/opt/hard",
+		runtimeRoot:      runtimeRoot,
+		env:              "custom",
+		cc:               "clang++",
+		cflags:           []string{"-std=c++23", "-DNAME=hello world"},
+		ldflags:          []string{"-fuse-ld=lld", "-Wl,-rpath,/path with space"},
+		entrypoints:      []string{"main", "service_start"},
+		executableSuffix: ".exe",
+		executableRunner: "/usr/bin/wine",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("loadConfigurationFrom() = %#v, want %#v", got, want)
@@ -161,6 +165,21 @@ func TestLoadConfigurationRejectsInvalidShellWords(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), name) {
 				t.Fatalf("loadConfigurationFrom() error = %q, want it to contain %q", err, name)
+			}
+		})
+	}
+}
+
+func TestLoadConfigurationRejectsInvalidExecutableSuffix(t *testing.T) {
+	for _, suffix := range []string{"exe", "../exe", `.\\exe`} {
+		t.Run(suffix, func(t *testing.T) {
+			values := map[string]string{hardExecutableSuffix: suffix}
+			_, err := loadConfigurationFrom("/runtime/hard", environment(values), homeDirectory("/home/user"))
+			if err == nil {
+				t.Fatal("loadConfigurationFrom() error = nil")
+			}
+			if !strings.Contains(err.Error(), hardExecutableSuffix) {
+				t.Fatalf("loadConfigurationFrom() error = %q, want it to contain %q", err, hardExecutableSuffix)
 			}
 		})
 	}

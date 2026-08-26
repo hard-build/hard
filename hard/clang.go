@@ -139,20 +139,61 @@ func analyzeClangFile(
 }
 
 func clangParserArguments(arguments []string, runtimeRoot string) ([]string, error) {
-	resourceDirectory := filepath.Join(runtimeRoot, "lib", "clang", "18", "include")
-	info, err := os.Stat(resourceDirectory)
-	if errors.Is(err, os.ErrNotExist) {
-		return arguments, nil
-	}
+	resourceDirectory, err := clangResourceDirectory(runtimeRoot)
 	if err != nil {
-		return nil, fmt.Errorf("inspect libclang resource directory %s: %w", resourceDirectory, err)
+		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("libclang resource path is not a directory: %s", resourceDirectory)
+	if resourceDirectory == "" {
+		return arguments, nil
 	}
 
 	result := append([]string(nil), arguments...)
 	return append(result, "-idirafter", resourceDirectory), nil
+}
+
+func clangResourceDirectory(runtimeRoot string) (string, error) {
+	resourceRoot := filepath.Join(runtimeRoot, "lib", "clang")
+	entries, err := os.ReadDir(resourceRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect libclang resource root %s: %w", resourceRoot, err)
+	}
+
+	resourceDirectories := make([]string, 0, 1)
+	for _, entry := range entries {
+		versionDirectory := filepath.Join(resourceRoot, entry.Name())
+		versionInfo, err := os.Stat(versionDirectory)
+		if err != nil {
+			return "", fmt.Errorf("inspect libclang resource version %s: %w", versionDirectory, err)
+		}
+		if !versionInfo.IsDir() {
+			continue
+		}
+		resourceDirectory := filepath.Join(versionDirectory, "include")
+		info, err := os.Stat(resourceDirectory)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspect libclang resource directory %s: %w", resourceDirectory, err)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("libclang resource path is not a directory: %s", resourceDirectory)
+		}
+		resourceDirectories = append(resourceDirectories, resourceDirectory)
+	}
+	if len(resourceDirectories) == 0 {
+		return "", nil
+	}
+	if len(resourceDirectories) > 1 {
+		return "", fmt.Errorf(
+			"multiple libclang resource directories: %s",
+			strings.Join(resourceDirectories, ", "),
+		)
+	}
+	return resourceDirectories[0], nil
 }
 
 func boolToInt(value bool) int {

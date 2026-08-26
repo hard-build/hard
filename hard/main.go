@@ -28,6 +28,13 @@ func main() {
 		os.Exit(1)
 	}
 	cflags := effectiveCFlags(configuration.cflags, configuration.root, configuration.runtimeRoot)
+	if parsed.command == "environment" {
+		if err := writeEnvironmentReport(configuration, cflags, parsed.noColor, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	progress := newProgressBar(os.Stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
 	sources, err := discoverSourcesWithProgress(parsed.command, parsed.paths, progress)
@@ -38,10 +45,11 @@ func main() {
 	}
 
 	if parsed.command == "build" {
-		if err := buildSourcesWithProgress(
+		if err := buildSourcesWithProgressExecutable(
 			configuration.root,
 			configuration.runtimeRoot,
 			configuration.env,
+			configuration.executableSuffix,
 			configuration.cc,
 			cflags,
 			configuration.ldflags,
@@ -62,10 +70,12 @@ func main() {
 	}
 
 	if parsed.command == "run" {
-		err := runSourcesWithProgress(
+		err := runSourcesWithProgressExecutable(
 			configuration.root,
 			configuration.runtimeRoot,
 			configuration.env,
+			configuration.executableSuffix,
+			configuration.executableRunner,
 			configuration.cc,
 			cflags,
 			configuration.ldflags,
@@ -124,10 +134,12 @@ func main() {
 		}
 		return
 	}
-	if err := testSourcesWithProgressSelection(
+	if err := testSourcesWithProgressSelectionExecutable(
 		configuration.root,
 		configuration.runtimeRoot,
 		configuration.env,
+		configuration.executableSuffix,
+		configuration.executableRunner,
 		configuration.cc,
 		cflags,
 		configuration.ldflags,

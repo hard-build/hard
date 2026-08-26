@@ -66,6 +66,20 @@ make -C unittest \
   JOBS=4
 ```
 
+Cross-target CI can tell the runner how delivered application names and their
+execution differ from native host binaries. For example, the `windows64`
+container runs all scenarios with:
+
+```bash
+python3 unittest/run.py \
+  --hard=/usr/local/libexec/hard/hard \
+  --executable-suffix=.exe \
+  --executable-runner=wine
+```
+
+These two options affect only `run` actions. The default empty suffix and no
+runner preserve direct native execution.
+
 `OUTPUT/<scenario>` receives delivered application binaries. Generated
 headers, objects, and GoogleTest executables remain below `HARD_ROOT`. No
 build artifact is written into a fixture source directory.

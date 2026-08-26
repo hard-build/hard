@@ -82,13 +82,13 @@ func newRootCommand(parsed *arguments, includeWrapperFlags bool) *cobra.Command 
 	}
 	root.SetHelpTemplate(root.HelpTemplate() + `
 Wrapper options:
-      --target string   select an execution target (supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM, linux64:vX.Y-alpine.A.B-static)
+      --target string   select an execution target (supported: host, linux64, windows64, versioned targets, docker://image)
 `)
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "print debug information")
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	if includeWrapperFlags {
-		root.PersistentFlags().String("target", "", "select an execution target (supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM, linux64:vX.Y-alpine.A.B-static)")
+		root.PersistentFlags().String("target", "", "select an execution target (supported: host, linux64, windows64, versioned targets, docker://image)")
 	}
 	root.PersistentFlags().IntVarP(
 		&jobs,
@@ -195,15 +195,48 @@ Wrapper options:
 	testCommand.Flags().BoolVar(&noCache, "no-cache", false, "rebuild and rerun tests without using cached results")
 	testCommand.Flags().BoolVar(&listTests, "list-tests", false, "list tests without running them")
 	testCommand.Flags().StringArrayVar(&testSelectors, "test", nil, "run tests matching selector; may be repeated")
+	environmentCommand := newEnvironmentCommand(
+		&verbose,
+		&noColor,
+		&jobs,
+		parsed,
+	)
 	root.AddCommand(
 		formatCommand,
 		buildCommand,
+		environmentCommand,
 		fetchCommand,
 		runCommand,
 		testCommand,
 	)
 
 	return root
+}
+
+func newEnvironmentCommand(
+	verbose *bool,
+	noColor *bool,
+	jobs *int,
+	parsed *arguments,
+) *cobra.Command {
+	return &cobra.Command{
+		Use:   "environment",
+		Short: "Describe the build environment",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			jobCount, err := resolveJobCount(*jobs)
+			if err != nil {
+				return err
+			}
+			*parsed = arguments{
+				command: "environment",
+				verbose: *verbose,
+				noColor: *noColor,
+				jobs:    jobCount,
+			}
+			return nil
+		},
+	}
 }
 
 func isShellCompletionRequest(args []string) bool {

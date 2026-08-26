@@ -20,8 +20,8 @@
 - Update `MEMORY.md` when requirements, decisions, implementation status,
   dependencies, tests, known gaps, or verification procedures change.
 - Update `README.md` when user-facing behavior changes, keeping it English
-  and limiting the public commands to `format`, `build`, `fetch`, `run`,
-  and `test`.
+  and limiting the public commands to `environment`, `format`, `build`,
+  `fetch`, `run`, and `test`.
 
 ## Verification
 

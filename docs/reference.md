@@ -3,8 +3,8 @@
 This document defines the complete user-facing behavior of `hard`. For an
 overview and first build, start with the [project README](../README.md).
 
-The public interface contains only `format`, `build`, `fetch`, `run`,
-and `test`.
+The public interface contains only `environment`, `format`, `build`, `fetch`,
+`run`, and `test`.
 
 ## Installation
 
@@ -52,11 +52,12 @@ Command completion is installed at the shell-standard user-local paths:
 | Fish | `~/.local/share/fish/vendor_completions.d/hard.fish` | Discovered automatically |
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
-the five public commands, command flags, filesystem paths, `host`, `linux64`,
-the `linux64:v3.0-ubuntu.22.04` and
-`linux64:v3.0-alpine.3.22-static` versions, and the default `format.v1` format.
-The wrapper itself supplies target values. Other dynamic requests always
-execute the installed host backend, even when a container target is the
+the six public commands, command flags, filesystem paths, `host`, `linux64`,
+`windows64`, the `linux64:v3.0-ubuntu.22.04` and
+`linux64:v3.0-alpine.3.22-static` versions, the
+`windows64:v4.0-llvm-mingw.20260616-ucrt` version, `docker://`, and the default
+`format.v1` format. The wrapper itself supplies target values. Other dynamic requests
+always execute the installed host backend, even when a container target is the
 installed default, so pressing Tab never starts or pulls a Docker container.
 POSIX shells without programmable completion and PowerShell do not receive a
 completion integration.
@@ -76,9 +77,8 @@ default is `host`.
 The installer does not install native compilers, GoogleTest, pkg-config, GNU
 Make, CMake, Meson/Ninja, Autoconf, Automake, Libtool, or Docker. Install the
 particular host tools required by the commands and reachable recipes you use.
-The `linux64` image already contains those build tools, but selecting it with
-`--target=linux64` requires Docker to have been installed and started
-separately.
+Container images already contain those build tools, but selecting one requires
+Docker to have been installed and started separately.
 
 After a successful installation, the script prints an informational-only
 `Next steps` section. For a native hello-world build it recommends a C++20
@@ -129,9 +129,11 @@ Depending on the command, using `hard` also requires:
   or well-known repository snapshot is not already cached below
   `HARD_ROOT/source`.
 
-Using `--target=linux64` requires Docker. The target image contains its own
-backend and C/C++ toolchain, so the host does not need the native build
-requirements listed above for target-mode execution.
+Using `--target=linux64`, `--target=windows64`, or `--target=docker://image`
+requires Docker. The documented target images contain their own backend and
+C/C++ toolchain, so the host does not need the native build requirements
+listed above for target-mode execution. An arbitrary image is responsible for
+providing the compatible entrypoint and environment itself.
 
 ## Command-line interface
 
@@ -149,8 +151,8 @@ executed. In `hard test`, the selected count is the invocation-wide maximum for
 source preparation, compilation, linking, and test-execution phases.
 
 `-v` writes permanent progress entries and command-specific details.
-`--no-color` disables ANSI colors. Every command accepts `-s` or `--silent`,
-which suppresses normal output while preserving errors.
+`--no-color` disables ANSI colors. The source-processing commands accept `-s`
+or `--silent`, which suppresses normal output while preserving errors.
 
 Persistent flags may appear before or after the command. Command-local flags,
 including `-s`, appear after the command and may be interspersed with paths.
@@ -158,6 +160,7 @@ including `-s`, appear after the command and may be interspersed with paths.
 The public interface contains exactly these commands:
 
 ```text
+hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [-s|--silent] [path...]
@@ -167,19 +170,55 @@ hard test   [--list-tests] [--test=<selector>]...
             [--no-cache] [-s|--silent] [path...]
 ```
 
+### `hard environment`
+
+```bash
+hard environment
+hard --target=linux64 environment
+```
+
+`environment` writes a human-readable report describing where and how the
+current invocation would build binaries. It takes no paths, does not search a
+source tree, and does not create or read build artifacts. The report contains:
+
+- the resolved hard executable, runtime root, `HARD_ENV`, and `HARD_ROOT`;
+- operating-system identity from `/etc/os-release`, kernel and architecture
+  from `uname`, the first CPU model from `/proc/cpuinfo`, the logical CPU
+  count, and libc from `getconf GNU_LIBC_VERSION` with `ldd --version` as a
+  fallback;
+- `HARD_CC`, its resolved executable, the first `--version` line, and its
+  `-dumpmachine` target;
+- the configured executable suffix and runner;
+- effective compiler flags including the hard-managed includes, linker flags,
+  and entry points, rendered as one shell-quoted argument per line;
+- the libclang API version and the single portable Clang resource directory,
+  or `system default` when the runtime supplies none.
+
+Failure of an individual system or toolchain probe is printed as
+`unavailable`; the remaining diagnostics continue. Invalid `HARD_*`
+configuration and failure to write the requested report remain command errors.
+The output has a title, aligned fields, and separate runtime, system, compiler,
+build-configuration, and parser sections. By default the title and labels use
+cyan, section headings use green, and `unavailable`, `none`, `direct`, and
+`system default` use yellow. `--no-color` preserves the complete layout while
+removing all ANSI sequences. The command has no `--silent` flag because the
+report itself is its result.
+
 ### Container targets
 
 The POSIX wrapper accepts `--target=<name>` and `--target <name>` anywhere
 before `--`. `host` executes the private backend from the same installation
-prefix. Container execution accepts the latest Ubuntu-based `linux64` image,
-an explicit `linux64:vX.Y-ubuntu.YY.MM` version, or an explicit static Alpine
-version matching `linux64:vX.Y-alpine.A.B-static`:
+prefix. Container execution accepts the latest `linux64` or `windows64` image,
+their documented versioned forms, or any image reference prefixed with
+`docker://`:
 
 ```bash
 hard --target=host build src
 hard --target=linux64 build src
 hard test --target linux64:v3.0-ubuntu.22.04 tests
 hard run --target=linux64 src/application.cpp -- --mode=check
+hard --target=windows64 build src/application.cpp
+hard --target=docker://registry.example/toolchain:tag environment
 ```
 
 Without `--target`, the wrapper uses the choice recorded in the sibling
@@ -189,16 +228,16 @@ also selects `host`. An explicit target always overrides that default, and no
 compatibility diagnostics are added to host execution.
 
 A target-looking value after the `run` separator belongs to the program and is
-not interpreted by the wrapper. Empty, repeated, malformed, and unknown targets
-are errors. The legacy `linux.v1` spelling is not supported.
+not interpreted by the wrapper. Empty, repeated, malformed, and unknown named
+targets are errors. The legacy `linux.v1` spelling is not supported.
 
 For a container target, the wrapper only executes `docker run`; it never builds
 an image or resolves the host runtime. The image entrypoint runs the container
-backend. The unversioned Ubuntu form checks for a newer image on every
-invocation:
+backend. Unversioned forms check for a newer image on every invocation:
 
 ```text
 linux64 -> ghcr.io/hard-build/linux64:latest     (--pull=always)
+windows64 -> ghcr.io/hard-build/windows64:latest (--pull=always)
 ```
 
 Explicit forms name immutable images and download them only when missing:
@@ -208,7 +247,18 @@ linux64:v3.0-ubuntu.22.04
   -> ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04  (--pull=missing)
 linux64:v3.0-alpine.3.22-static
   -> ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static  (--pull=missing)
+windows64:v4.0-llvm-mingw.20260616-ucrt
+  -> ghcr.io/hard-build/windows64:v4.0-llvm-mingw.20260616-ucrt  (--pull=missing)
 ```
+
+For `docker://registry.example/toolchain:tag`, the wrapper removes exactly the
+`docker://` prefix and passes `registry.example/toolchain:tag` to
+`docker run --pull=missing`. It does not prepend GHCR or validate a known tag
+shape. An empty image or an image beginning with `-` is rejected before Docker
+is started. The image must own a hard-compatible entrypoint and complete
+`HARD_*` configuration. It receives the same `/hard` persistent-state mount,
+same-absolute-path project mount, working directory, UID:GID, and stdin
+contract as the documented images.
 
 The Ubuntu image definition is
 `target/linux64/v3.0-ubuntu.22.04.Dockerfile`. It downloads the official
@@ -229,6 +279,18 @@ builds the backend natively against Alpine's libclang 18. Generated programs
 are linked completely statically against musl. The image also builds static
 GoogleTest archives from Alpine's packaged sources.
 
+The Windows definition is
+`target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile`. It builds the
+backend from the exact Git revision supplied for tag `v4.0`, against the
+apt.llvm.org Jammy libclang 22.1.8 packages, and installs the resulting runtime
+at `/usr/local/libexec/hard`. It checksum-verifies the official LLVM-MinGW
+20260616 UCRT archive for Ubuntu 22.04 with SHA-256
+`534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda`.
+LLVM-MinGW supplies Clang/LLD/libc++ 22.1.8 and the Windows SDK headers and
+libraries. The image also cross-builds static GoogleTest archives, installs
+Wine 64-bit, and supplies a CMake toolchain file at
+`/opt/windows64/toolchain.cmake`.
+
 The Ubuntu image uses Ubuntu 22.04. Its C++ toolchain is GCC 11 with glibc 2.35.
 `-static-libgcc` and `-static-libstdc++` do not make glibc static, so the image
 does not promise that generated programs run on systems older than the Ubuntu
@@ -238,12 +300,15 @@ Distribution package revisions are resolved when the image is built. Ubuntu
 22.04 standard security maintenance ends in May 2027.
 
 An image version is published only when its previously unseen Dockerfile is
-added. Only the newest Ubuntu version can advance `latest`; adding an Alpine
-static image leaves the unversioned target unchanged. Modifying, deleting, or
-re-adding a known Dockerfile does not rebuild or republish it. CI loads each
-new image locally, builds and executes a C++20 smoke program, and only then
-pushes its tags. For a `*-static` image, the same pre-publication step rejects
-an ELF interpreter or `NEEDED` shared library.
+added. The newest Ubuntu version advances `linux64:latest`, and the newest
+LLVM-MinGW UCRT version advances `windows64:latest`; adding an Alpine static
+image leaves `linux64:latest` unchanged. Modifying, deleting, or re-adding a
+known Dockerfile does not rebuild or republish it. CI loads each new image
+locally, builds and executes a C++20 smoke program, and only then pushes its
+tags. For a `*-static` image, the same pre-publication step rejects an ELF
+interpreter or `NEEDED` shared library. For `windows64`, it requires an AMD64
+PE file with UCRT contract imports, executes it through `hard run` and Wine,
+and runs all declarative integration scenarios inside the image.
 
 The wrapper bind-mounts the host `${HARD_ROOT:-$HOME/.local/share/hard}` at
 `/hard` and the current working directory at the same absolute path inside the
@@ -252,6 +317,10 @@ container. The v3.0 images use
 `/hard/env/linux64:v3.0-alpine.3.22-static/build`. Every image preserves the
 shared source snapshots while isolating its build artifacts from other target
 versions and `env/host`.
+
+The Windows image uses
+`/hard/env/windows64:v4.0-llvm-mingw.20260616-ucrt/build` and keeps its Wine
+prefix below the same environment directory.
 
 The container runs with the current numeric UID and GID, preventing root-owned
 build outputs, and forwards stdin without allocating a TTY. Only the working
@@ -281,20 +350,47 @@ HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
              -static -static-libgcc -static-libstdc++
 ```
 
+The Windows image fixes the cross-toolchain configuration as follows:
+
+```text
+HARD_ROOT=/hard
+HARD_ENV=windows64:v4.0-llvm-mingw.20260616-ucrt
+HARD_CC=x86_64-w64-mingw32-clang++
+HARD_CFLAGS=-std=c++20 --target=x86_64-w64-mingw32
+            --sysroot=/opt/llvm-mingw/x86_64-w64-mingw32 -stdlib=libc++
+            -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
+HARD_LDFLAGS=-std=c++20 --target=x86_64-w64-mingw32
+             --sysroot=/opt/llvm-mingw/x86_64-w64-mingw32 -stdlib=libc++
+             -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
+             -static
+HARD_ENTRYPOINTS=main _start
+HARD_EXECUTABLE_SUFFIX=.exe
+HARD_EXECUTABLE_RUNNER=wine
+CMAKE_TOOLCHAIN_FILE=/opt/windows64/toolchain.cmake
+PKG_CONFIG_LIBDIR=/opt/windows64/lib/pkgconfig
+```
+
+`-static` links the LLVM-MinGW C++ runtime into generated programs, but Windows
+system and UCRT API-set DLL imports remain. The image is therefore not named or
+documented as a fully static target. The generic suffix and runner variables
+make `hard run` and `hard test` execute the resulting `.exe` files through
+Wine; the backend does not recognize the `windows64` environment name.
+
 The backend always adds `-I/hard/source` and
 `-include /usr/local/libexec/hard/hard.h` internally. These are hard-managed
 include mechanics rather than part of the image `HARD_CFLAGS` value.
 
-Hard v3.0 adds `<runtime-root>/lib/clang/18/include` only to libclang arguments
-when that directory exists. It is not part of `HARD_CFLAGS` and is never passed
-to GCC. The after-system position lets GCC-compatible standard-library
-discovery keep using the compiler's builtin headers during analysis. Alpine's
-native libclang discovers its packaged resource directory without this
-additional argument.
+Hard scans `<runtime-root>/lib/clang/*/include` and adds the directory only to
+libclang arguments when exactly one exists. It is not part of `HARD_CFLAGS`
+and is never passed to the compiler. The after-system position lets the
+configured standard-library discovery keep using compiler headers during
+analysis. No matching directory is normal for a native libclang installation;
+multiple matching resource directories are an error.
 
-`linux64` images use the `linux/amd64` platform. Programs built by the current
-images require an x86-64-v3 processor; Docker does not emulate missing CPU
-instructions. Static Alpine outputs use musl rather than glibc.
+Container images use the `linux/amd64` platform. Programs built by the current
+images require an x86-64-v3 processor; Docker and Wine do not emulate missing
+CPU instructions. Static Alpine outputs use musl rather than glibc. Windows
+outputs are x86-64 PE executables targeting UCRT.
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
@@ -339,7 +435,7 @@ clang-format --style=file:<runtime-root>/format/<name> -i <file>
 the `format` directory installed beside the running backend. The runtime root
 is derived from the physical backend executable path, including through a
 symlink; it is normally `~/.local/libexec/hard` on the host and
-`/usr/local/libexec/hard` in `linux64` images. Empty values, absolute paths,
+`/usr/local/libexec/hard` in container images. Empty values, absolute paths,
 lexical escapes through `..`, non-regular files, and symlinks resolving outside
 the real format directory are rejected. An internal symlink to a regular style
 file is allowed.
@@ -750,6 +846,14 @@ directory and removes the source extension:
   -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/application
 ```
 
+When `HARD_EXECUTABLE_SUFFIX=.exe`, inferred internal binary names receive that
+suffix instead:
+
+```text
+/home/user/project/src/application.cpp
+  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/application.exe
+```
+
 After successful linking, the binary is copied atomically to its delivery
 path. Without `-o`, each binary is placed beside its lexical entry source with
 the source extension removed:
@@ -768,6 +872,10 @@ are mirrored from their lexical absolute paths instead of escaping through
 is replaced atomically; symlinks and other non-regular destinations are
 rejected. With no entry source, `-o` produces no file and is not an error. The
 internal artifact is retained after delivery.
+
+The configured executable suffix is also appended to the default delivery path
+and paths inferred below a directory `-o`. An exact file destination supplied
+as `-o path` remains exact and is not rewritten.
 
 Delivery is skipped when cache reads are enabled and the existing regular
 destination already has the same content and permissions as the internal
@@ -861,6 +969,10 @@ With no path before `--`, source selection defaults to `.`. The program runs
 with the current invocation directory as its working directory and inherits
 `hard`'s stdin, stdout, and stderr. `--no-color` affects only `hard` progress,
 not program output.
+
+The internal binary uses `HARD_EXECUTABLE_SUFFIX`. When
+`HARD_EXECUTABLE_RUNNER` is non-empty, `hard run` invokes
+`<runner> <binary> <arguments...>`; otherwise it executes the binary directly.
 
 Parsing, compilation, and linking use the same content caches and invalidation
 rules as `build`. `--no-cache` forces all three build stages. Execution itself
@@ -1049,6 +1161,10 @@ The internal binary follows the same mirrored path rule as a build binary:
   -> HARD_ROOT/env/HARD_ENV/build/home/user/project/tests/random.test
 ```
 
+With `HARD_EXECUTABLE_SUFFIX=.exe`, the corresponding path ends in
+`random.test.exe`. Test listing and execution use
+`HARD_EXECUTABLE_RUNNER` in the same way as `hard run`.
+
 Test binaries remain in the environment build tree and are not copied into
 the project. The `test` command does not accept `-o`.
 
@@ -1146,6 +1262,8 @@ its ANSI colors in verbose output and when a failed test's output is reported.
 | `HARD_CFLAGS` | Project toolchain flags for libclang and object compilation | See below |
 | `HARD_LDFLAGS` | Executable linker flags | See below |
 | `HARD_ENTRYPOINTS` | Global entry-function names | `main _start` |
+| `HARD_EXECUTABLE_SUFFIX` | Suffix for inferred executable paths | Empty |
+| `HARD_EXECUTABLE_RUNNER` | Executable used to start built binaries | Empty |
 
 Unset or empty `HARD_ROOT`, `HARD_ENV`, and `HARD_CC` use their defaults.
 
@@ -1167,11 +1285,13 @@ and the runtime support header available even when `HARD_CFLAGS` is explicitly
 empty, while allowing the host runtime bundle and container image to remain
 self-contained.
 
-If `<runtime-root>/lib/clang/18/include` exists, hard appends it as an
-`-idirafter` directory only to libclang analysis. The argument is not part of
-the configured or compiler-effective `HARD_CFLAGS`, so verbose compiler
-commands do not contain it. A system-installed libclang whose resource
-directory is already discoverable needs no additional argument.
+Hard scans immediate version directories below `<runtime-root>/lib/clang` for
+`include`. When exactly one exists, hard appends it as an `-idirafter`
+directory only to libclang analysis. The argument is not part of the configured
+or compiler-effective `HARD_CFLAGS`, so verbose compiler commands do not
+contain it. No matching directory is normal for a system-installed libclang.
+A present non-directory or inaccessible resource path and multiple matching
+resource directories are errors.
 
 Default linker flags:
 
@@ -1197,6 +1317,20 @@ does not select the default: it disables `hard build` binary linking while
 preserving object compilation, makes `hard run` fail because it has no entry
 target, and has no effect on `hard test`.
 
+`HARD_EXECUTABLE_SUFFIX` is read as one literal value. It must be empty or
+start with `.` and must not contain `/` or `\\`. A non-empty value is appended
+to inferred internal build and test binaries, default build delivery paths, and
+paths inferred below a directory `-o`. It is not duplicated when the inferred
+path already ends with the exact suffix. A file destination supplied exactly
+through `-o path` is never rewritten.
+
+`HARD_EXECUTABLE_RUNNER` is one executable name or path, with no shell-word
+splitting. Empty means direct execution. A non-empty value changes the process
+vector for `hard run`, GoogleTest listing, and GoogleTest execution to
+`<runner> <binary> <arguments...>`. It is also part of the successful-test
+cache fingerprint. Neither value is inferred from `HARD_ENV`; images and host
+toolchain configurations must set them explicitly when required.
+
 `HARD_ENV` is the cache boundary for immutable toolchain state. Use a distinct
 value whenever the compiler, libclang resource headers, standard library,
 libc, sysroot, ABI, target, container, or a user-provided system-include tree
@@ -1207,7 +1341,7 @@ environment, while a new `HARD_ENV` keeps old artifacts isolated. Artifact
 generation rejects environment names that escape `HARD_ROOT/env`.
 
 These variables describe host-mode execution. Target mode does not forward
-their host values into the container; `linux64` images use the fixed values
+their host values into the container; container images use the fixed values
 listed under [Container targets](#container-targets). The host-side
 `HARD_ROOT` value is still used to select the directory mounted at `/hard`.
 
@@ -1254,9 +1388,10 @@ sibling `<prefix>/libexec/hard` directory only for host execution and the
 installed default target. Without `--target`, it reads
 `libexec/hard/default-target`; a missing file preserves the host default.
 `--target=host` replaces the wrapper with the host backend and prefixes its
-bundled tool directory to `PATH`. `--target=linux64` or an explicit version
-executes the documented `docker run` invocation without resolving the host
-runtime. It never builds an image.
+bundled tool directory to `PATH`. `--target=linux64`, `--target=windows64`, an
+explicit documented version, or `--target=docker://image` executes the
+documented `docker run` invocation without resolving the host runtime. It
+never builds an image.
 
 The wrapper also owns the fixed completion values for `--target`. It answers
 that value position directly for both Cobra completion protocols. Other
@@ -1321,10 +1456,12 @@ HARD_ROOT/
                 └── manifest.json
 ```
 
-An entry source or test source also creates an extensionless internal binary
-beside its object, such as `application` beside `application.cpp.o`. Build
-binaries are delivered according to `-o` or beside their lexical entry sources
-by default. Run and test binaries are not copied out of the build tree.
+An entry source or test source normally creates an extensionless internal
+binary beside its object, such as `application` beside `application.cpp.o`.
+A configured `HARD_EXECUTABLE_SUFFIX` changes inferred names, for example to
+`application.exe`. Build binaries are delivered according to `-o` or beside
+their lexical entry sources by default. Run and test binaries are not copied
+out of the build tree.
 
 `make install` supplies `hard.h` and `format.v1` beside the host backend. The
 container image supplies its own copies beside its own backend. `HARD_ENV`

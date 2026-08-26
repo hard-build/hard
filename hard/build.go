@@ -117,6 +117,44 @@ func buildSourcesWithProgress(
 	stderr io.Writer,
 	noCache bool,
 ) error {
+	return buildSourcesWithProgressExecutable(
+		root,
+		runtimeRoot,
+		environment,
+		"",
+		compiler,
+		cflags,
+		ldflags,
+		configuredEntryPoints,
+		sources,
+		output,
+		jobs,
+		verbose,
+		silent,
+		progress,
+		stderr,
+		noCache,
+	)
+}
+
+func buildSourcesWithProgressExecutable(
+	root string,
+	runtimeRoot string,
+	environment string,
+	executableSuffix string,
+	compiler string,
+	cflags []string,
+	ldflags []string,
+	configuredEntryPoints []string,
+	sources []string,
+	output string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	progress *progressBar,
+	stderr io.Writer,
+	noCache bool,
+) error {
 	if len(sources) == 0 {
 		return progress.finish()
 	}
@@ -208,9 +246,10 @@ func buildSourcesWithProgress(
 	); err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	err = linkSourcesWithLibraries(
+	err = linkSourcesWithLibrariesExecutable(
 		root,
 		environment,
+		executableSuffix,
 		compiler,
 		ldflags,
 		sources,
@@ -1310,12 +1349,55 @@ func linkSourcesWithLibraries(
 	stderr io.Writer,
 	cache *artifactCache,
 ) error {
+	return linkSourcesWithLibrariesExecutable(
+		root,
+		environment,
+		"",
+		compiler,
+		ldflags,
+		sources,
+		dependenciesBySource,
+		librariesBySource,
+		entryPointsBySource,
+		rootSourceCount,
+		output,
+		jobs,
+		verbose,
+		silent,
+		workingDirectory,
+		progress,
+		stderr,
+		cache,
+	)
+}
+
+func linkSourcesWithLibrariesExecutable(
+	root string,
+	environment string,
+	executableSuffix string,
+	compiler string,
+	ldflags []string,
+	sources []string,
+	dependenciesBySource [][]string,
+	librariesBySource [][]libraryArtifact,
+	entryPointsBySource []string,
+	rootSourceCount int,
+	output string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	workingDirectory string,
+	progress *progressBar,
+	stderr io.Writer,
+	cache *artifactCache,
+) error {
 	if jobs < 1 {
 		return fmt.Errorf("jobs must be positive: %d", jobs)
 	}
-	tasks, err := planLinkJobsWithLibraries(
+	tasks, err := planLinkJobsWithLibrariesExecutable(
 		root,
 		environment,
+		executableSuffix,
 		sources,
 		dependenciesBySource,
 		librariesBySource,
@@ -1494,6 +1576,32 @@ func planLinkJobsWithLibraries(
 	output string,
 	workingDirectory string,
 ) ([]linkJob, error) {
+	return planLinkJobsWithLibrariesExecutable(
+		root,
+		environment,
+		"",
+		sources,
+		dependenciesBySource,
+		librariesBySource,
+		entryPointsBySource,
+		rootSourceCount,
+		output,
+		workingDirectory,
+	)
+}
+
+func planLinkJobsWithLibrariesExecutable(
+	root string,
+	environment string,
+	executableSuffix string,
+	sources []string,
+	dependenciesBySource [][]string,
+	librariesBySource [][]libraryArtifact,
+	entryPointsBySource []string,
+	rootSourceCount int,
+	output string,
+	workingDirectory string,
+) ([]linkJob, error) {
 	if len(dependenciesBySource) != len(sources) {
 		return nil, fmt.Errorf(
 			"dependency source count does not match sources: %d != %d",
@@ -1561,7 +1669,12 @@ func planLinkJobsWithLibraries(
 			objects = append(objects, object)
 		}
 		objects = append(objects, libraryArchivesByIndexes(librariesBySource, objectIndexes)...)
-		artifact, err := binaryArtifactPath(root, environment, sources[entryIndex])
+		artifact, err := binaryArtifactPathWithSuffix(
+			root,
+			environment,
+			sources[entryIndex],
+			executableSuffix,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -1576,15 +1689,21 @@ func planLinkJobsWithLibraries(
 			if !filepath.IsAbs(sourcePath) {
 				sourcePath = filepath.Join(workingDirectory, sourcePath)
 			}
-			destination = strings.TrimSuffix(filepath.Clean(sourcePath), filepath.Ext(sourcePath))
+			destination = appendExecutableSuffix(
+				strings.TrimSuffix(filepath.Clean(sourcePath), filepath.Ext(sourcePath)),
+				executableSuffix,
+			)
 		} else if directoryOutput {
 			relativeSource, err := binaryOutputRelativeSourcePath(sources[entryIndex], workingDirectory)
 			if err != nil {
 				return nil, err
 			}
-			destination = filepath.Join(
-				outputPath,
-				strings.TrimSuffix(relativeSource, filepath.Ext(relativeSource)),
+			destination = appendExecutableSuffix(
+				filepath.Join(
+					outputPath,
+					strings.TrimSuffix(relativeSource, filepath.Ext(relativeSource)),
+				),
+				executableSuffix,
 			)
 		}
 		if previous, ok := destinations[destination]; ok {
@@ -2040,6 +2159,10 @@ func objectFilePath(root, environment, source string) (string, error) {
 }
 
 func binaryArtifactPath(root, environment, source string) (string, error) {
+	return binaryArtifactPathWithSuffix(root, environment, source, "")
+}
+
+func binaryArtifactPathWithSuffix(root, environment, source, executableSuffix string) (string, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("make HARD_ROOT absolute: %w", err)
@@ -2056,7 +2179,10 @@ func binaryArtifactPath(root, environment, source string) (string, error) {
 	if sourceBinaryName(mirrored) == "" {
 		return "", fmt.Errorf("cannot derive binary name from source: %s", source)
 	}
-	mirrored = strings.TrimSuffix(mirrored, filepath.Ext(mirrored))
+	mirrored = appendExecutableSuffix(
+		strings.TrimSuffix(mirrored, filepath.Ext(mirrored)),
+		executableSuffix,
+	)
 	environmentRoot := filepath.Join(absoluteRoot, "env")
 	outputRoot := filepath.Join(environmentRoot, environment, "build")
 	relativeEnvironment, err := filepath.Rel(environmentRoot, outputRoot)

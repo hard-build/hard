@@ -110,7 +110,7 @@ func TestAnalyzeClangFilePreservesUnresolvedIncludeSpelling(t *testing.T) {
 
 func TestClangParserArgumentsUsePortableResourceDirectory(t *testing.T) {
 	runtimeRoot := t.TempDir()
-	resourceDirectory := filepath.Join(runtimeRoot, "lib", "clang", "18", "include")
+	resourceDirectory := filepath.Join(runtimeRoot, "lib", "clang", "22", "include")
 	if err := os.MkdirAll(resourceDirectory, 0o755); err != nil {
 		t.Fatalf("create resource directory: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestClangParserArgumentsIgnoreMissingSystemResourceDirectory(t *testing.T) 
 
 func TestClangParserArgumentsRejectNonDirectoryResourcePath(t *testing.T) {
 	runtimeRoot := t.TempDir()
-	resourcePath := filepath.Join(runtimeRoot, "lib", "clang", "18", "include")
+	resourcePath := filepath.Join(runtimeRoot, "lib", "clang", "22", "include")
 	if err := os.MkdirAll(filepath.Dir(resourcePath), 0o755); err != nil {
 		t.Fatalf("create resource parent directory: %v", err)
 	}
@@ -154,6 +154,32 @@ func TestClangParserArgumentsRejectNonDirectoryResourcePath(t *testing.T) {
 	_, err := clangParserArguments([]string{"-std=c++20"}, runtimeRoot)
 	if err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("clangParserArguments() error = %v, want not a directory", err)
+	}
+}
+
+func TestClangParserArgumentsRejectMultipleResourceDirectories(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	var resourceDirectories []string
+	for _, version := range []string{"18", "22"} {
+		resourceDirectory := filepath.Join(runtimeRoot, "lib", "clang", version, "include")
+		if err := os.MkdirAll(resourceDirectory, 0o755); err != nil {
+			t.Fatalf("create resource directory: %v", err)
+		}
+		resourceDirectories = append(resourceDirectories, resourceDirectory)
+	}
+
+	_, err := clangParserArguments([]string{"-std=c++20"}, runtimeRoot)
+	if err == nil {
+		t.Fatal("clangParserArguments() error = nil")
+	}
+	for _, resourceDirectory := range resourceDirectories {
+		if !strings.Contains(err.Error(), resourceDirectory) {
+			t.Fatalf(
+				"clangParserArguments() error = %q, want it to contain %q",
+				err,
+				resourceDirectory,
+			)
+		}
 	}
 }
 

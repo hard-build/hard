@@ -9,9 +9,9 @@ source tree and active `#include` relationships as the build description, so a
 project does not need a hand-written `CMakeLists.txt` or another project build
 file.
 
-The same interface formats sources, fetches dependencies, builds programs, runs
-them, and executes tests. Generated files, downloaded sources, and caches stay
-outside the project tree.
+The same interface describes the active toolchain, formats sources, fetches
+dependencies, builds programs, runs them, and executes tests. Generated files,
+downloaded sources, and caches stay outside the project tree.
 
 ## Quick Start
 
@@ -107,11 +107,12 @@ hard [--target=<name>] [-v|--verbose] [--no-color]
 `-jN` selects an exact worker count. Bare `-j`, bare `--jobs`, and zero use
 all logical CPUs. The default is one worker. `-v` prints permanent progress and
 the compiler, linker, or child commands that actually run. `--no-color`
-disables ANSI colors. Every command accepts `-s` or `--silent`.
+disables ANSI colors. Commands that scan sources accept `-s` or `--silent`.
 
-The public interface contains exactly five commands:
+The public interface contains exactly six commands:
 
 ```text
+hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [-s|--silent] [path...]
@@ -120,6 +121,25 @@ hard run    [--no-cache] [-s|--silent] [path...]
 hard test   [--list-tests] [--test=<selector>]...
             [--no-cache] [-s|--silent] [path...]
 ```
+
+### `hard environment`
+
+Prints the effective build environment without scanning sources or creating
+artifacts:
+
+```bash
+hard environment
+hard --target=linux64 environment
+```
+
+The report includes the hard runtime and cache roots, operating system, kernel,
+CPU and libc, resolved compiler and target, executable naming and runner
+settings, effective flags and entry points, and the libclang version and
+resource directory. A diagnostic that is not available on a particular system
+is shown as `unavailable` without hiding the rest of the report. Sections and
+labels are colored by default, fields are aligned, and compiler flags and entry
+points use one shell-quoted argument per line. Use `--no-color` to retain the
+same layout without ANSI styling.
 
 ### `hard format`
 
@@ -234,15 +254,16 @@ refreshed automatically.
 
 ## Targets
 
-The wrapper accepts `host`, the latest Ubuntu-based `linux64` image, a
-versioned `linux64:vX.Y-ubuntu.YY.MM` image, or a versioned static Alpine image
-named `linux64:vX.Y-alpine.A.B-static`. Both target-option forms are accepted
-anywhere before `--`:
+The wrapper accepts `host`, the latest `linux64` or `windows64` image, their
+documented versioned forms, or an arbitrary image prefixed with `docker://`.
+Both target-option forms are accepted anywhere before `--`:
 
 ```bash
 hard --target=host build src
 hard --target=linux64 build src
 hard test --target linux64:v3.0-ubuntu.22.04 tests
+hard --target=windows64 build src
+hard --target=docker://registry.example/toolchain:tag environment
 ```
 
 The portable installer leaves the target default absent, which selects `host`.
@@ -250,11 +271,12 @@ The portable installer leaves the target default absent, which selects `host`.
 the installed default.
 
 The `host` target executes the backend from the same installation prefix and
-uses the host compiler and dependencies. The unversioned target remains the
-Ubuntu environment and always checks for and runs its latest image:
+uses the host compiler and dependencies. Unversioned container targets always
+check for and run their latest images:
 
 ```text
 linux64 -> ghcr.io/hard-build/linux64:latest
+windows64 -> ghcr.io/hard-build/windows64:latest
 ```
 
 Explicit versions are immutable and downloaded only when they are missing:
@@ -264,7 +286,16 @@ linux64:v3.0-ubuntu.22.04
   -> ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
 linux64:v3.0-alpine.3.22-static
   -> ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static
+windows64:v4.0-llvm-mingw.20260616-ucrt
+  -> ghcr.io/hard-build/windows64:v4.0-llvm-mingw.20260616-ucrt
 ```
+
+For `docker://registry.example/toolchain:tag`, the wrapper strips only the
+`docker://` prefix and passes `registry.example/toolchain:tag` to Docker with
+`--pull=missing`. The image must provide a compatible entrypoint and its own
+`HARD_*` configuration while using `/hard` for persistent state and accepting
+the project at the mounted working-directory path. Empty image names and names
+beginning with `-` are rejected.
 
 The Ubuntu image contains the `hard` v3.0 portable runtime and an Ubuntu 22.04
 C++ build environment. Both its versioned tag and `latest` use
@@ -272,6 +303,13 @@ C++ build environment. Both its versioned tag and `latest` use
 Alpine image builds `hard` v3.0 natively against musl, uses its own
 `HARD_ENV=linux64:v3.0-alpine.3.22-static`, and links generated executables
 fully statically.
+
+The Windows image contains `hard` v4.0, LLVM-MinGW 20260616 with Clang 22.1.8
+and UCRT, and Wine. It sets the generic executable suffix to `.exe` and runner
+to `wine`; `hard` itself does not infer behavior from the `windows64` name or
+from `HARD_ENV`. The bundled C++ runtime is linked statically, but Windows
+system and UCRT DLL imports remain, so the result is not a fully static
+executable.
 
 The wrapper mounts `HARD_ROOT` at `/hard` and the current working directory at
 the same absolute container path. Source snapshots and caches therefore persist
@@ -283,8 +321,8 @@ symlinks outside both trees are unavailable in the container. Host `HARD_*`
 values other than the mount source are not forwarded; the image owns its
 toolchain configuration.
 
-`linux64` images are `linux/amd64`; generated programs require an x86-64-v3 CPU.
-Docker must be installed and running separately.
+Container images are `linux/amd64`; generated programs require an x86-64-v3
+CPU. Docker must be installed and running separately.
 
 ## Requirements
 
@@ -300,8 +338,9 @@ Host execution additionally needs tools required by the selected command:
 - network access when a required GitHub snapshot is not cached.
 
 The installer does not install these tools, Docker, or system packages. The
-`linux64` image contains its own compiler, GoogleTest, CMake, GNU Make,
-Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool toolchain.
+container images contain their own compiler, GoogleTest, CMake, GNU Make,
+Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool toolchain. The
+`windows64` image additionally contains Wine.
 
 Ubuntu 18.04's default GCC 7 does not satisfy the default C++20 build contract.
 Use `linux64` there or configure a suitable host toolchain.
@@ -318,15 +357,25 @@ Use `linux64` there or configure a suitable host toolchain.
 | `HARD_CFLAGS` | Project compiler and libclang flags | `-std=c++20 -O3 -flto=auto -Wall -Wextra` |
 | `HARD_LDFLAGS` | Linker flags | Compiler defaults plus `-static-libgcc -static-libstdc++` |
 | `HARD_ENTRYPOINTS` | Global entry-function names | `main _start` |
+| `HARD_EXECUTABLE_SUFFIX` | Suffix for inferred executable paths | Empty |
+| `HARD_EXECUTABLE_RUNNER` | Program used to execute built binaries | Empty (direct execution) |
 
 An explicit `HARD_CFLAGS` or `HARD_LDFLAGS` value replaces the complete
 default vector. The backend always adds its source-root include and runtime
 `hard.h` force include. An explicitly empty `HARD_ENTRYPOINTS` disables build
 entry linking.
 
-When a portable runtime contains `lib/clang/18/include`, the backend adds that
-directory to libclang analysis as an after-system include. This parser-only
-argument is not part of `HARD_CFLAGS` and does not appear in compiler commands.
+`HARD_EXECUTABLE_SUFFIX` must be empty or start with `.` and cannot contain a
+path separator. It is appended to internal binaries, default delivery paths,
+and names inferred below a directory `-o`; an exact file supplied with `-o`
+remains exact. `HARD_EXECUTABLE_RUNNER` is one executable name or path. When it
+is non-empty, `hard run`, test listing, and test execution invoke
+`<runner> <binary> ...`; otherwise binaries execute directly.
+
+When a portable runtime contains exactly one `lib/clang/<version>/include`
+directory, the backend adds it to libclang analysis as an after-system include.
+This parser-only argument is not part of `HARD_CFLAGS` and does not appear in
+compiler commands.
 
 `HARD_ENV` is the cache boundary for the compiler, standard library, libc,
 sysroot, ABI, container, and other immutable toolchain state. Select a
@@ -372,13 +421,15 @@ HARD_ROOT/
 └── env/
     ├── host/
     ├── linux64:v3.0-ubuntu.22.04/
-    └── linux64:v3.0-alpine.3.22-static/
+    ├── linux64:v3.0-alpine.3.22-static/
+    └── windows64:v4.0-llvm-mingw.20260616-ucrt/
 ```
 
 Generated forwards, objects, internal binaries, package installations, and
 cache records remain below the selected environment. Build binaries are copied
 according to `-o` or beside their entry sources; run and test binaries remain
-internal.
+internal. Executable suffixes and runners come from the corresponding generic
+configuration variables, not from `HARD_ENV`.
 
 Stale generated artifacts and downloaded snapshots are not removed
 automatically.

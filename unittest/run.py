@@ -89,6 +89,8 @@ class RunnerOptions:
     hard: str
     output: Path
     jobs: int
+    executable_suffix: str
+    executable_runner: str | None
 
 
 def require_mapping(value: Any, location: str) -> dict[str, Any]:
@@ -384,10 +386,11 @@ def run_application(
     scenario_directory: Path,
     scenario_output: Path,
     build_output: str | None,
+    options: RunnerOptions,
 ) -> None:
     if build_output is None:
         raise CheckError("run action has no preceding build output")
-    binary = scenario_output.joinpath(step["binary"])
+    binary = scenario_output.joinpath(step["binary"] + options.executable_suffix)
     copy_count = sum(
         1
         for entry in parse_progress(build_output)
@@ -403,6 +406,8 @@ def run_application(
         raise CheckError(f"binary is not executable: {binary}")
 
     command = [str(binary)]
+    if options.executable_runner is not None:
+        command.insert(0, options.executable_runner)
     print_command(command)
     try:
         completed = subprocess.run(
@@ -511,6 +516,7 @@ def run_scenario(
                 directory,
                 scenario_output,
                 latest_build_output,
+                options,
             )
         else:
             run_tests(step, directory, options)
@@ -573,6 +579,15 @@ def parse_arguments() -> argparse.Namespace:
         help="hard job count; zero uses all logical CPUs",
     )
     parser.add_argument(
+        "--executable-suffix",
+        default="",
+        help="suffix appended to application binary names",
+    )
+    parser.add_argument(
+        "--executable-runner",
+        help="program used to execute application binaries",
+    )
+    parser.add_argument(
         "scenarios",
         nargs="*",
         help="scenario directory names; all test.yaml directories by default",
@@ -587,6 +602,8 @@ def main() -> int:
         hard=arguments.hard,
         output=Path(arguments.output).resolve(),
         jobs=arguments.jobs,
+        executable_suffix=arguments.executable_suffix,
+        executable_runner=arguments.executable_runner,
     )
     try:
         directories = scenario_directories(root, arguments.scenarios)

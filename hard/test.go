@@ -54,6 +54,7 @@ type testRunJob struct {
 	index  int
 	source string
 	binary string
+	runner string
 }
 
 type testRunResult struct {
@@ -142,6 +143,50 @@ func testSourcesWithProgressSelection(
 	root string,
 	runtimeRoot string,
 	environment string,
+	compiler string,
+	cflags []string,
+	ldflags []string,
+	sources []string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	noColor bool,
+	progress *progressBar,
+	stdout io.Writer,
+	stderr io.Writer,
+	noCache bool,
+	listTests bool,
+	testSelectors []string,
+) error {
+	return testSourcesWithProgressSelectionExecutable(
+		root,
+		runtimeRoot,
+		environment,
+		"",
+		"",
+		compiler,
+		cflags,
+		ldflags,
+		sources,
+		jobs,
+		verbose,
+		silent,
+		noColor,
+		progress,
+		stdout,
+		stderr,
+		noCache,
+		listTests,
+		testSelectors,
+	)
+}
+
+func testSourcesWithProgressSelectionExecutable(
+	root string,
+	runtimeRoot string,
+	environment string,
+	executableSuffix string,
+	executableRunner string,
 	compiler string,
 	cflags []string,
 	ldflags []string,
@@ -294,9 +339,10 @@ func testSourcesWithProgressSelection(
 		return errors.Join(errors.Join(failures...), err, progress.finish())
 	}
 
-	linkJobs, linkPlanFailures := planTestLinkJobs(
+	linkJobs, linkPlanFailures := planTestLinkJobsWithSuffix(
 		root,
 		environment,
+		executableSuffix,
 		plans,
 		compileResults,
 		workingDirectory,
@@ -332,6 +378,7 @@ func testSourcesWithProgressSelection(
 			index:  len(runJobs),
 			source: linkJobs[index].source,
 			binary: linkJobs[index].artifact,
+			runner: executableRunner,
 		})
 	}
 
@@ -790,6 +837,24 @@ func planTestLinkJobs(
 	compileResults []*compileResult,
 	workingDirectory string,
 ) ([]testLinkJob, []error) {
+	return planTestLinkJobsWithSuffix(
+		root,
+		environment,
+		"",
+		plans,
+		compileResults,
+		workingDirectory,
+	)
+}
+
+func planTestLinkJobsWithSuffix(
+	root string,
+	environment string,
+	executableSuffix string,
+	plans []testPlan,
+	compileResults []*compileResult,
+	workingDirectory string,
+) ([]testLinkJob, []error) {
 	tasks := make([]testLinkJob, 0, len(plans))
 	artifacts := make(map[string]string)
 	var failures []error
@@ -849,7 +914,12 @@ func planTestLinkJobs(
 			continue
 		}
 		objects = append(objects, libraryArchivesByIndexes(plan.librariesBySource, objectIndexes)...)
-		artifact, err := binaryArtifactPath(root, environment, plan.source)
+		artifact, err := binaryArtifactPathWithSuffix(
+			root,
+			environment,
+			plan.source,
+			executableSuffix,
+		)
 		if err != nil {
 			failures = append(failures, err)
 			continue
@@ -1040,7 +1110,10 @@ func runTestsWithArguments(
 				)
 				var detail []byte
 				if verbose && !silent && !cached {
-					detail = append(detail, renderTestCommand(job.binary, arguments)...)
+					detail = append(
+						detail,
+						renderTestCommandWithRunner(job.runner, job.binary, arguments)...,
+					)
 					detail = append(detail, output...)
 				}
 				step := action + " " + sourceBinaryName(job.source)
@@ -1084,7 +1157,7 @@ func runTestWithCache(
 		var err error
 		input, err = cache.actionFingerprint(
 			"test",
-			"",
+			job.runner,
 			arguments,
 			[]string{job.binary},
 			workingDirectory,
@@ -1104,7 +1177,8 @@ func runTestWithCache(
 		}
 	}
 
-	command := exec.Command(job.binary, arguments...)
+	executable, executableArguments := programInvocation(job.runner, job.binary, arguments)
+	command := exec.Command(executable, executableArguments...)
 	command.Dir = workingDirectory
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -1288,7 +1362,12 @@ func writeTestCatalogs(
 }
 
 func renderTestCommand(binary string, arguments []string) []byte {
-	command := append([]string{binary}, arguments...)
+	return renderTestCommandWithRunner("", binary, arguments)
+}
+
+func renderTestCommandWithRunner(runner, binary string, arguments []string) []byte {
+	executable, executableArguments := programInvocation(runner, binary, arguments)
+	command := append([]string{executable}, executableArguments...)
 	for index, argument := range command {
 		command[index] = quoteShellArgument(argument)
 	}

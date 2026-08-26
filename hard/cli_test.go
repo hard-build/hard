@@ -127,6 +127,11 @@ func TestParseArguments(t *testing.T) {
 			want: arguments{command: "fetch", paths: []string{"."}},
 		},
 		{
+			name: "environment reports current configuration",
+			args: []string{"-v", "environment"},
+			want: arguments{command: "environment", verbose: true},
+		},
+		{
 			name: "fetch accepts silent flag and jobs",
 			args: []string{"fetch", "-s", "-j4", "src", "tests"},
 			want: arguments{
@@ -305,6 +310,8 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 		{name: "help command", args: []string{"help"}, wantErr: "unknown command"},
 		{name: "internal help command", args: []string{"_help"}, wantErr: "unknown command"},
 		{name: "unknown flag", args: []string{"build", "--workers", "4"}, wantErr: "unknown flag"},
+		{name: "environment rejects path", args: []string{"environment", "."}, wantErr: "unknown command"},
+		{name: "environment rejects negative jobs", args: []string{"environment", "--jobs=-1"}, wantErr: "jobs must not be negative"},
 		{name: "negative jobs", args: []string{"format", "--jobs=-1"}, wantErr: "jobs must not be negative"},
 		{name: "build rejects format flag", args: []string{"build", "--format=custom.v1"}, wantErr: "unknown flag"},
 		{name: "fetch rejects format flag", args: []string{"fetch", "--format=custom.v1"}, wantErr: "unknown flag"},
@@ -368,6 +375,7 @@ func TestShellCompletion(t *testing.T) {
 			args: []string{"__complete", ""},
 			want: []string{
 				"build\tBuild C++ sources",
+				"environment\tDescribe the build environment",
 				"fetch\tDownload C++ dependencies",
 				"format\tFormat C++ sources",
 				"run\tBuild and run a C++ program",
@@ -381,6 +389,7 @@ func TestShellCompletion(t *testing.T) {
 			args: []string{"__completeNoDesc", ""},
 			want: []string{
 				"build\n",
+				"environment\n",
 				"fetch\n",
 				"format\n",
 				"run\n",
@@ -491,6 +500,7 @@ func TestHelp(t *testing.T) {
 			args: []string{"--help"},
 			want: []string{
 				"build       Build C++ sources",
+				"environment Describe the build environment",
 				"fetch       Download C++ dependencies",
 				"format      Format C++ sources",
 				"run         Build and run a C++ program",
@@ -499,7 +509,17 @@ func TestHelp(t *testing.T) {
 				"(default 1)",
 				"--no-color",
 				"--target string",
-				"supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM, linux64:vX.Y-alpine.A.B-static",
+				"supported: host, linux64, windows64, versioned targets, docker://image",
+				"-v, --verbose",
+			},
+		},
+		{
+			name: "environment",
+			args: []string{"environment", "--help"},
+			want: []string{
+				"hard environment",
+				"-j, --jobs",
+				"--no-color",
 				"-v, --verbose",
 			},
 		},

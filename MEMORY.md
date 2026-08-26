@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-26.
+Last updated: 2026-08-27.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -77,6 +77,7 @@ hand-written project build file.
 
 The public operations are deliberately limited to:
 
+    hard environment
     hard format
     hard fetch
     hard build
@@ -100,6 +101,10 @@ Implemented:
 
 - Cobra-based argument parsing;
 - environment-backed configuration;
+- a source-independent `environment` report covering the runtime, operating
+  system, CPU, libc, compiler, target triple, effective flags, executable
+  naming/execution settings, and libclang, with aligned colored sections and a
+  plain `--no-color` form;
 - command-specific source discovery;
 - recursive traversal through directory symlinks with cycle prevention;
 - relative source display paths and canonical deduplication;
@@ -131,10 +136,15 @@ Implemented:
   stages, and informational hello-world toolchain recommendations;
 - generated Bash, Zsh, and Fish completion files, with target values owned by
   the wrapper and every other dynamic request dispatched to the host backend;
-- wrapper-owned `linux64` Docker targets that select the always-refreshed
-  Ubuntu-based GHCR `latest` tag, an immutable `linux64:vX.Y-ubuntu.YY.MM`
-  tag, or an immutable `linux64:vX.Y-alpine.A.B-static` tag while bind-mounting
-  the persistent source/cache root from the host;
+- wrapper-owned `linux64` and `windows64` Docker targets that select their
+  always-refreshed GHCR `latest` tags or immutable Ubuntu, Alpine static, and
+  LLVM-MinGW UCRT versions while bind-mounting the persistent source/cache
+  root from the host;
+- arbitrary `docker://image` wrapper targets with pull-if-missing behavior and
+  the same mounts, identity, workdir, and image-owned entrypoint contract;
+- generic `HARD_EXECUTABLE_SUFFIX` and `HARD_EXECUTABLE_RUNNER` behavior for
+  inferred artifact names and run/test process vectors, independent of
+  `HARD_ENV` spelling;
 - separate executable-relative runtime bundles for the host and container,
   with shared source snapshots and environment-specific caches below
   `HARD_ROOT`;
@@ -142,8 +152,9 @@ Implemented:
   while retaining its backend-managed force include;
 - a GitHub Actions workflow that publishes an image version only when a
   previously unseen `target/<image>/<version>.Dockerfile` is added to `main`,
-  keeps version tags immutable, and advances `latest` only for the newest
-  Ubuntu version;
+  keeps version tags immutable, advances `linux64:latest` only for the newest
+  Ubuntu version, and advances `windows64:latest` only for the newest
+  LLVM-MinGW UCRT version;
 - a release-tag GitHub workflow that builds the host backend against
   the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
   file.
@@ -169,16 +180,17 @@ cache entries and are not refreshed automatically.
 | `LICENSE` | MIT license |
 | `Makefile` | Builds the Go backend and installs the host wrapper, runtime bundle, and shell completions |
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
-| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, or a latest/versioned `linux64` image, and keeps completion dispatch on the host |
+| `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, a known container target, or an arbitrary `docker://image`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
 | `target/linux64/v2.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v2.0 portable runtime |
 | `target/linux64/v3.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v3.0 portable runtime |
 | `target/linux64/v3.0-alpine.3.22-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v3.0 against musl and producing fully static programs |
+| `target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 and producing Windows x86-64 UCRT executables with LLVM-MinGW 20260616 and Wine |
 | `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
 | `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
-| `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios |
+| `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios, with optional application suffix and runner settings for cross-target CI |
 | `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
 | `unittest/README.md` | Documents the YAML schema, commands, variables, and new-scenario workflow |
 | Twelve `unittest/001.*` through `unittest/012.*` directories | Self-contained C and C++ source scenarios whose local `test.yaml` files own every command argument and expectation |
@@ -200,6 +212,8 @@ cache entries and are not refreshed automatically.
 | `hard/clang.go` | Go-facing libclang analysis, arguments, normalization, diagnostics, and retry logic |
 | `hard/clang_bridge.h`, `hard/clang_bridge.cc` | C ABI and C++ libclang 18 bridge |
 | `hard/clang_test.go` | Includes, macros, conditional behavior, declarations, templates, and functions |
+| `hard/environment.go` | Detailed source-independent build-environment diagnostics |
+| `hard/environment_test.go` | Environment report, host-file parsing, unavailable probes, and output failures |
 | `hard/github.go` | Repository mapping, synchronized downloads, extraction, aliases, and cache |
 | `hard/github_test.go` | HTTP, extraction safety, aliases, caching, retries, and concurrency |
 | `hard/library.go` | Strict recipe parsing, vendor source/build preparation, package fingerprinting, manifests, and reachable static-library metadata |
@@ -212,6 +226,8 @@ cache entries and are not refreshed automatically.
 | `hard/cache.go` | Content fingerprints, atomic artifact and parse-result records, semantic-result integrity, and file comparison |
 | `hard/cache_test.go` | Artifact and parse cache keys, invalidation, no-cache, integrity, forward restoration, selector separation, and successful-test reuse |
 | `hard/build_test.go` | Dependency, forwards, objects, entry binaries, output, and integrations |
+| `hard/executable.go` | Generic executable suffix application and optional runner process vectors |
+| `hard/executable_test.go` | Generic artifact naming, exact output behavior, and runner-backed run/test execution |
 | `hard/run.go` | Build-compatible preparation, single-entry internal linking, live program execution, and exit propagation |
 | `hard/run_test.go` | Run streams, arguments, exit status, internal-only artifacts, cache behavior, and entry validation |
 | `hard/fetch.go` | Dependency-only source closure and external snapshot fetching |
@@ -300,6 +316,20 @@ builds `libgtest.a` and `libgtest_main.a` from the packaged sources.
 `HARD_LDFLAGS` adds `-static`, so generated C and C++ executables are fully
 static; the hard backend itself remains a dynamically linked musl program.
 
+The `windows64:v4.0-llvm-mingw.20260616-ucrt` target uses Ubuntu 22.04 and
+builds the hard backend from the exact revision of Git tag `v4.0` against the
+apt.llvm.org Jammy libclang 22.1.8 packages. It checksum-verifies the official
+LLVM-MinGW 20260616 UCRT Ubuntu 22.04 archive with SHA-256
+`534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda`.
+LLVM-MinGW supplies Clang/LLD/libc++ 22.1.8 and the Windows SDK. The image
+cross-builds static GoogleTest archives, provides
+`/opt/windows64/toolchain.cmake` to CMake recipes, installs the existing
+`PyYAML>=6,<7` integration-test dependency, and includes Wine 64-bit. Project
+compiler and linker flags include `-march=x86-64-v3 -mtune=generic`; linker
+flags also include `-static`, which embeds the LLVM-MinGW C++ runtime but does
+not remove Windows system and UCRT API-set DLL imports. Outputs are therefore
+not described as fully static.
+
 Runtime tools by command:
 
 - `clang-format` for `format`;
@@ -349,14 +379,14 @@ $HOME/.local/
 ```
 
 `hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host`, `linux64`,
-`linux64:vX.Y-ubuntu.YY.MM`, and `linux64:vX.Y-alpine.A.B-static` targets. It
-resolves the installation prefix from
+`linux64:vX.Y-ubuntu.YY.MM`, `linux64:vX.Y-alpine.A.B-static`, `windows64`,
+`windows64:vX.Y-llvm-mingw.YYYYMMDD-ucrt`, and `docker://image` targets. It resolves the installation prefix from
 its own path only when the target is absent or explicit host execution is
 selected. Without `--target`, it reads
 `<prefix>/libexec/hard/default-target`, falling back to `host` when the file is
 absent. Host mode prefixes the sibling runtime's `bin` directory to `PATH`,
 uses `exec` on `<prefix>/libexec/hard/hard`, and passes the remaining argument
-vector with `"$@"`. Linux target mode removes the wrapper option and uses
+vector with `"$@"`. Container target mode removes the wrapper option and uses
 `exec docker run`; the container image entrypoint runs its backend, and the
 wrapper does not resolve a host runtime. Empty, duplicate, legacy, malformed,
 and unknown targets are errors.
@@ -372,8 +402,8 @@ The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
 source of a bind mount targeting `/hard`. The physical current working
 directory is mounted at the same absolute container path and becomes the
 container workdir. Docker uses `--rm`, stdin forwarding, and the current
-numeric UID:GID. The mutable `linux64` target uses `--pull=always`; explicit
-versioned targets use `--pull=missing`. No host `HARD_*` value is forwarded
+numeric UID:GID. Mutable `linux64` and `windows64` targets use `--pull=always`;
+explicit versioned and arbitrary-image targets use `--pull=missing`. No host `HARD_*` value is forwarded
 into the container. A relative host `HARD_ROOT` is made absolute below the
 current working directory. Only the working directory and persistent root are
 mounted.
@@ -462,13 +492,18 @@ The wrapper maps its container target forms as follows:
     --target=linux64                         ghcr.io/hard-build/linux64:latest
     --target=linux64:v3.0-ubuntu.22.04       ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
     --target=linux64:v3.0-alpine.3.22-static ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static
+    --target=windows64                       ghcr.io/hard-build/windows64:latest
+    --target=windows64:v4.0-llvm-mingw.20260616-ucrt
+                                             ghcr.io/hard-build/windows64:v4.0-llvm-mingw.20260616-ucrt
+    --target=docker://registry/name:tag       registry/name:tag
 
 The older exact `linux64:v2.0-ubuntu.22.04` target remains valid and maps to
 the same tag below `ghcr.io/hard-build/linux64`.
 
-The mutable `linux64` alias is pulled before every run and remains the newest
-Ubuntu image. Exact version targets are pulled only when missing locally.
-Exact targets remain available for reproducible builds and persistent caches.
+Mutable `linux64` and `windows64` aliases are pulled before every run and
+remain their newest Ubuntu and LLVM-MinGW UCRT images respectively. Exact
+version targets are pulled only when missing locally. Exact targets remain
+available for reproducible builds and persistent caches.
 
 The v3.0 Ubuntu image installs the official `hard-v3.0.tar.gz` portable release,
 whose backend corresponds to Git tag `v3.0` at
@@ -509,16 +544,38 @@ It checksum-verifies the official v3.0 source archive at
 builds hard natively against musl, and uses Alpine's system libclang resource
 directory.
 
-Starting with hard v3.0, the backend checks for
-`<runtime-root>/lib/clang/18/include` and appends it as `-idirafter` only to
-libclang argument vectors. The configured and compiler-effective
-`HARD_CFLAGS` do not contain this internal parser argument. A native libclang,
-including Alpine's package, uses its already discoverable system resource
-directory and receives no extra flag.
+The Windows image builds the exact hard v4.0 Git revision supplied by the
+workflow, installs LLVM-MinGW 20260616 UCRT and Wine on Ubuntu 22.04, and owns
+this fixed environment:
+
+    HARD_ROOT=/hard
+    HARD_ENV=windows64:v4.0-llvm-mingw.20260616-ucrt
+    HARD_CC=x86_64-w64-mingw32-clang++
+    HARD_CFLAGS=-std=c++20 --target=x86_64-w64-mingw32 --sysroot=/opt/llvm-mingw/x86_64-w64-mingw32 -stdlib=libc++ -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
+    HARD_LDFLAGS=-std=c++20 --target=x86_64-w64-mingw32 --sysroot=/opt/llvm-mingw/x86_64-w64-mingw32 -stdlib=libc++ -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra -static
+    HARD_ENTRYPOINTS=main _start
+    HARD_EXECUTABLE_SUFFIX=.exe
+    HARD_EXECUTABLE_RUNNER=wine
+    CMAKE_TOOLCHAIN_FILE=/opt/windows64/toolchain.cmake
+    PKG_CONFIG_LIBDIR=/opt/windows64/lib/pkgconfig
+
+The generic executable variables make inferred application and test binaries
+use `.exe` and make `hard run` and `hard test` start them through Wine. The
+backend does not infer either behavior from `HARD_ENV`. Vendor builds continue to
+receive the authoritative `HARD_CC` through CMake but not project
+`HARD_CFLAGS` or `HARD_LDFLAGS`; the image-owned `CMAKE_TOOLCHAIN_FILE` carries
+the cross-compilation configuration.
+
+The backend scans immediate version directories below
+`<runtime-root>/lib/clang` and appends the single matching `include` directory
+as `-idirafter` only to libclang argument vectors. The configured and
+compiler-effective `HARD_CFLAGS` do not contain this internal parser argument.
+No matching directory is normal for native libclang; multiple matches are an
+error.
 
 The images are intentionally `linux/amd64` only, and generated programs require
-an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
-system, bundled hard version, or minimum-CPU changes require a new target
+an x86-64-v3 CPU. Docker and Wine do not add CPU emulation. Toolchain, ABI,
+base system, bundled hard version, or minimum-CPU changes require a new target
 version.
 
 The GHCR workflow is independent from release publication and has no manual
@@ -527,15 +584,18 @@ dispatch. On a push to `main`, it considers only newly added
 filename, requires the `vX.Y` prefix to name an existing Git tag, and records
 that tag's revision in the image. A path that occurred earlier in Git history is
 skipped, even if deleted and re-added. A newly added Dockerfile publishes an
-immutable version tag. Only a newly added Ubuntu Dockerfile can advance
-`latest`, and then only when it is the newest Ubuntu version. Alpine static
-images never change the unversioned target. Changing or deleting an existing
-Dockerfile, and ordinary pushes without a new Dockerfile, publish no image.
+immutable version tag. A newly added Ubuntu Dockerfile can advance
+`linux64:latest` only when it is the newest Ubuntu version. A newly added
+LLVM-MinGW UCRT Dockerfile can similarly advance `windows64:latest`. Alpine
+static images never change an unversioned target. Changing or deleting an
+existing Dockerfile, and ordinary pushes without a new Dockerfile, publish no image.
 Commit, edge, and release-only tags are not published. Before publication, the
 workflow loads the new image on the runner, builds and executes a C++20 smoke
 program, and checks static targets for both an ELF interpreter and `NEEDED`
-entries. Only a successful image is pushed. New Dockerfiles do not carry that
-smoke program as an image layer.
+entries. Windows smoke requires AMD64 PE and UCRT contract imports, executes
+the program through `hard run` and Wine, and runs all 12 declarative integration
+scenarios inside the image. Only a successful image is pushed. New Dockerfiles
+do not carry that smoke program as an image layer.
 
 The first externally published GitHub package defaults private and must be made
 public once by a maintainer before anonymous pulls work. Package visibility
@@ -546,6 +606,7 @@ workflow.
 
 The public command forms are:
 
+    hard environment
     hard format [--format=<name>] [-s|--silent] [path...]
     hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
     hard fetch  [-s|--silent] [path...]
@@ -556,9 +617,11 @@ The public command forms are:
 
 The installed wrapper additionally accepts `--target=host`,
 `--target=linux64`, `--target=linux64:vX.Y-ubuntu.YY.MM`,
-`--target=linux64:vX.Y-alpine.A.B-static`, or their separate-value forms
-anywhere before `--`. This selects how one of the same
-five public commands is executed; it does not add another public command. The
+`--target=linux64:vX.Y-alpine.A.B-static`, `--target=windows64`,
+`--target=windows64:vX.Y-llvm-mingw.YYYYMMDD-ucrt`,
+`--target=docker://image`, or their separate-value forms anywhere before `--`.
+This selects how one of the same six public commands is executed; it does not
+add another public command. The
 Go help template documents the wrapper option, while the wrapper owns its
 parsing, installed default, and Docker behavior.
 
@@ -577,7 +640,7 @@ flag handling is enabled.
 Command-local flags:
 
 - `format`: `--format=<name>`, default `format.v1`;
-- every public command: `-s`, `--silent`;
+- every source-processing command: `-s`, `--silent`;
 - `build`: `-o <path>`, `--output=<path>`;
 - `build`, `run`, and `test`: `--no-cache`;
 - `test`: `--list-tests` or repeatable `--test=<selector>`, which are
@@ -586,24 +649,28 @@ Command-local flags:
 
 Other CLI decisions:
 
-- each command accepts zero or more paths;
-- no path becomes `.`;
+- each source-processing command accepts zero or more paths;
+- no path for a source-processing command becomes `.`;
+- `environment` accepts no paths, performs no source discovery, and prints its
+  detailed report directly;
 - for `run` only, `--` ends hard arguments; later values populate the program
   argument vector unchanged, and no preceding path still defaults to `.`;
 - invoking no command is an error: `a command is required`;
 - unknown commands and flags are errors;
 - Cobra's `completion` generator is hidden from help but can generate Bash,
   Zsh, and Fish scripts for installation and release packaging;
-- dynamic completion lists only the five public commands and filters Cobra's
+- dynamic completion lists only the six public commands and filters Cobra's
   private `_help` suggestion;
-- the wrapper supplies fixed `host`, `linux64`,
-  `linux64:v3.0-ubuntu.22.04`, and
-  `linux64:v3.0-alpine.3.22-static` values for `--target`; the backend supplies
-  `format.v1`, flag names, commands, and default filesystem-path completion;
+- the wrapper supplies fixed `host`, `linux64`, `windows64`,
+  `linux64:v3.0-ubuntu.22.04`, `linux64:v3.0-alpine.3.22-static`, and
+  `windows64:v4.0-llvm-mingw.20260616-ucrt`, and `docker://` values for `--target`; the backend
+  supplies `format.v1`, flag names, commands, and default filesystem-path
+  completion;
 - the normal `help` command is not public; `help` and `_help` are rejected;
 - root and command `--help` succeed without configuration loading or source
   discovery;
-- root help exposes only `format`, `fetch`, `build`, `run`, and `test`.
+- root help exposes only `environment`, `format`, `fetch`, `build`, `run`, and
+  `test`.
 
 The parsed `arguments` value contains `command`, `paths`, `programArguments`,
 `verbose`, `silent`, `noColor`, `noCache`, `listTests`, `testSelectors`,
@@ -629,7 +696,9 @@ Environment variable names are ASCII:
 - `HARD_CC`;
 - `HARD_CFLAGS`;
 - `HARD_LDFLAGS`;
-- `HARD_ENTRYPOINTS`.
+- `HARD_ENTRYPOINTS`;
+- `HARD_EXECUTABLE_SUFFIX`;
+- `HARD_EXECUTABLE_RUNNER`.
 
 `HARD_CC` contains two ASCII `C` characters. Avoid visually similar Cyrillic
 characters.
@@ -650,6 +719,7 @@ characters.
   and user-provided system-include trees such as `-isystem` or `-idirafter`;
 - must change when that system state changes because system headers are not
   content-hashed by parse or object caches;
+- does not select an executable suffix or runner;
 - artifact path construction rejects values escaping `HARD_ROOT/env`, such as
   `../outside`.
 
@@ -692,12 +762,13 @@ compilation. Dependency and entry analysis add the working directory and
 default to C++ mode unless `-x` is already present. Vendor CMake builds do not
 receive `HARD_CFLAGS`.
 
-For libclang only, hard v3.0 also checks
-`<runtime-root>/lib/clang/18/include`. When present, it appends `-idirafter` and
-that directory to the analysis argument vector. The compiler-effective vector
-is unchanged, so verbose compiler commands never contain this runtime-only
-resource path. A missing directory is normal for native libclang
-installations; a present non-directory or inaccessible path is an error.
+For libclang only, hard scans immediate version directories below
+`<runtime-root>/lib/clang` for `include`. When exactly one exists, it appends
+`-idirafter` and that directory to the analysis argument vector. The
+compiler-effective vector is unchanged, so verbose compiler commands never
+contain this runtime-only resource path. No matching directory is normal for
+native libclang installations. A present non-directory or inaccessible path
+and multiple matching resource directories are errors.
 
 Build, run, and test canonicalize `<runtime-root>/hard.h` through symlinks and
 exclude declarations physically owned by that canonical target from source
@@ -735,6 +806,25 @@ object paths in every compiler-driver link command.
 - non-empty: parsed with the same shell-word and disabled-expansion rules;
 - only matching global function definitions make an entry source;
 - `test` ignores this variable because `gtest_main` supplies its entry point.
+
+### `HARD_EXECUTABLE_SUFFIX`
+
+- unset or empty: inferred executable paths are extensionless;
+- non-empty: must start with `.` and contain neither `/` nor `\\`;
+- appended to inferred internal application and test binaries, default build
+  delivery paths, and paths inferred below a directory `-o`;
+- not duplicated when the inferred path already has the exact suffix;
+- does not rewrite an exact file destination supplied through `-o`;
+- retained as one literal value without shell-word parsing.
+
+### `HARD_EXECUTABLE_RUNNER`
+
+- unset or empty: run and test binaries execute directly;
+- non-empty: one executable name or path, without shell-word parsing;
+- prefixes the binary and arguments for `hard run`, GoogleTest listing, and
+  GoogleTest execution;
+- participates in successful-test cache fingerprints;
+- is independent of `HARD_ENV` and of the executable filename.
 
 ## Source selection
 
@@ -782,8 +872,9 @@ Path rules:
 
 ## Shared progress and output
 
-Every public command creates one thread-safe progress object before source
-selection and starts with `Searching source files`.
+Every source-processing command creates one thread-safe progress object before
+source selection and starts with `Searching source files`. `hard environment`
+does not create a progress object or search for sources.
 
 Modes:
 
@@ -843,6 +934,32 @@ Errors and diagnostics use stderr. Top-level errors are rendered as:
 and cause status 1. A normally started program that exits nonzero under
 `hard run` instead propagates its exit status without adding a top-level
 `hard:` diagnostic.
+
+## `hard environment`
+
+`environment` is a detailed human-readable diagnostic command. It accepts no
+paths and does not discover sources, initialize caches, or create artifacts.
+After ordinary configuration and runtime-root loading it reports:
+
+- the resolved backend executable, runtime root, `HARD_ENV`, and `HARD_ROOT`;
+- `/etc/os-release` identity, `uname` kernel and architecture, the first CPU
+  model in `/proc/cpuinfo`, logical CPU count, and libc from `getconf` with
+  `ldd --version` fallback;
+- configured `HARD_CC`, resolved compiler path, first `--version` line, and
+  `-dumpmachine` target;
+- `HARD_EXECUTABLE_SUFFIX` and `HARD_EXECUTABLE_RUNNER`, displaying empty
+  values as `none` and `direct`;
+- shell-rendered effective CFLAGS, LDFLAGS, and entry points, with one argument
+  per line;
+- `clang_getClangVersion()` and the shared portable resource-directory
+  discovery result, with no runtime directory reported as `system default`.
+
+Individual unavailable host/compiler probes render `unavailable` and do not
+abort the remaining report. Invalid configuration and output-write failures
+remain fatal. The report uses a bold cyan title and rule, bold green section
+headings, cyan labels, and yellow special values by default. `--no-color`
+preserves the aligned layout without ANSI sequences. The command intentionally
+has no `--silent` option.
 
 ## `hard format`
 
@@ -1247,6 +1364,10 @@ mirrored lexical absolute path:
     /home/user/project/src/application.cpp
       -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/application
 
+Hard appends `HARD_EXECUTABLE_SUFFIX` to the inferred internal path. An exact
+suffix already present at the end is not duplicated. `HARD_ENV` does not
+select this behavior.
+
 Internal collisions, including same-directory `application.c` and
 `application.cpp`, are errors. A source with an empty stem cannot create a
 binary. Link jobs use the resolved worker count. Compiler exit failures are
@@ -1278,6 +1399,10 @@ internal artifact remains.
 - an existing regular file may be atomically replaced;
 - a final symlink, directory, or other non-regular target is rejected;
 - with no entry source, `-o` is not validated and no binary is produced.
+
+No-`-o` delivery and directory output append `HARD_EXECUTABLE_SUFFIX` to the
+inferred destination. A file destination supplied with `-o path` remains exact
+and is never rewritten.
 
 Preserving directory structure fixed the former collision where root builds
 containing `001.helloworld/example.cpp` and `003.unittest/example.cpp` both
@@ -1333,6 +1458,11 @@ The program is started after a successful link with:
 - the invocation's current working directory;
 - stdin, stdout, and stderr inherited from the hard process;
 - every post-`--` argument unchanged.
+
+The internal binary uses `HARD_EXECUTABLE_SUFFIX`. A non-empty
+`HARD_EXECUTABLE_RUNNER` produces the process vector
+`<runner> <binary> <program arguments...>`; an empty runner executes the binary
+directly. Neither choice depends on `HARD_ENV`.
 
 Program output is live rather than captured. Verbose mode prints the
 shell-escaped run command after build progress finishes. Silent mode hides only
@@ -1473,6 +1603,11 @@ The link shape is:
 receives the normal linker failure. Test binaries use the same mirrored
 internal binary path rule, remain in the environment build tree, and are never
 copied into the project. Test does not accept `-o`.
+
+Test binaries use `HARD_EXECUTABLE_SUFFIX`; listing and testing use
+`HARD_EXECUTABLE_RUNNER`. The successful-test cache remains separated by
+`HARD_ENV`, includes the resulting binary path and digest, and also fingerprints
+the runner.
 
 A compilation failure skips every test needing that object. A link failure
 skips only that test's execution. A process-start error or nonzero test status
@@ -1696,8 +1831,8 @@ to leave the library unchanged for now.
   contract lives in `docs/reference.md`; maintainer and implementation history
   remains in this memory.
 - MIT was selected, with the current copyright identity.
-- README is English and exposes only `format`, `fetch`, `build`, `run`, and
-  `test`.
+- README is English and exposes only `environment`, `format`, `fetch`, `build`,
+  `run`, and `test`.
 - Go 1.23 is required.
 - Cobra was selected rather than a handwritten parser.
 - `HARD_ROOT`, `HARD_ENV`, `HARD_CC`, `HARD_CFLAGS`, `HARD_LDFLAGS`, and
@@ -1755,8 +1890,8 @@ to leave the library unchanged for now.
   headers.
 - libclang was selected as the unified mechanism for header discovery,
   dependency graphs, declaration extraction, and entry detection.
-- Every command reports searching; build, fetch, run, and test report parsing
-  before potentially long analysis.
+- Every source-processing command reports searching; build, fetch, run, and
+  test report parsing before potentially long analysis.
 - Multiple repositories downloaded in one invocation share one progress step,
   and each Downloading message is displayed before its request starts.
 - Declarations owned by the canonical runtime support `hard.h` are excluded
@@ -1766,11 +1901,11 @@ to leave the library unchanged for now.
   its own location. `hard.h` and formats are installed beside that backend,
   while persistent source and caches remain in `PREFIX/share/hard` for the
   default user-local prefix.
-- The wrapper supports a mutable `--target=linux64` alias and explicit
-  `--target=linux64:vX.Y-ubuntu.YY.MM` and
-  `--target=linux64:vX.Y-alpine.A.B-static` versions. They run the Ubuntu-based
-  `ghcr.io/hard-build/linux64:latest` or the corresponding exact GHCR tag with
-  `--pull=always` and `--pull=missing`, respectively. The wrapper does not
+- The wrapper supports mutable `--target=linux64` and `--target=windows64`
+  aliases, explicit Ubuntu, Alpine static, and LLVM-MinGW UCRT versions, and
+  arbitrary `--target=docker://image` references.
+  They run the corresponding `ghcr.io/hard-build/<target>:latest` or exact
+  GHCR tag with `--pull=always` and `--pull=missing`, respectively. The wrapper does not
   resolve the host runtime or build images; the image entrypoint starts the
   container backend, persistent state is bind-mounted, and `make install`
   remains host-only.
@@ -1790,7 +1925,7 @@ to leave the library unchanged for now.
   wrapper fallback, and configures `$HOME/.local/bin` for the user's shell.
 - Bash, Zsh, and Fish completion scripts are generated from the same Cobra
   command tree during installation and release packaging. They are data files
-  below standard `share/` paths, not a sixth public command. The Go tree keeps
+  below standard `share/` paths, not a seventh public command. The Go tree keeps
   a synthetic `--target` declaration only so those scripts understand the
   wrapper flag. Concrete target candidates live in `hard.sh`; target-value
   requests are answered there, while all other dynamic completion requests use
@@ -1842,19 +1977,26 @@ to leave the library unchanged for now.
 
 ## Test inventory
 
-- `hard/cli_test.go`: command defaults, paths, interspersed and no-cache flags,
-  silent options, all job syntaxes, invalid input, help, hidden commands,
+- `hard/cli_test.go`: command defaults, paths, the source-independent
+  environment command, interspersed and no-cache flags, silent options, all job
+  syntaxes, invalid input, help, hidden commands,
   backend completion directives without concrete target ownership, and
   Bash/Zsh/Fish script generation.
-- `hard/config_test.go`: all defaults and overrides, environment choice, default
-  source include and runtime support include, present-empty flags, safe
+- `hard/config_test.go`: all defaults and overrides, environment choice,
+  executable suffix and runner, default source include and runtime support
+  include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
 - `hard/wrapper_test.go`: host passthrough, both target spellings and positions,
   installed target defaults, bundled host tool lookup, mutable and exact
-  `linux64` image mappings and pull policies, Docker arguments and mounts,
+  known and arbitrary Docker image mappings and pull policies, Docker arguments and mounts,
   default persistent root, argument preservation, no host `HARD_*` forwarding,
   wrapper-owned target completion, host-only dispatch for other completion
   requests, and invalid target diagnostics.
+- `hard/environment_test.go`: exact aligned plain layout, ANSI palette and
+  removal, detailed sections and configured values, compiler diagnostics,
+  OS/CPU parsing, unavailable probes, and output errors.
+- `hard/executable_test.go`: generic suffix application, inferred versus exact
+  output names, `HARD_ENV` independence, and runner-backed run/test processes.
 - `hard/install_test.go`: checksum-gated installation, portable runtime file
   modes, symlinks, and completion data files, absent installed `default-target`,
   strict `vX.Y` release resolution and exact versioned asset URLs, Bash, Zsh,
@@ -2001,7 +2143,7 @@ From the repository root:
 
 For documentation work, reread `README.md`, `AGENTS.md`, and `MEMORY.md`
 completely, plus `docs/reference.md` when it is affected; verify English
-language, five-command public scope, local links,
+language, six-command public scope, local links,
 versions, flags, paths, defaults, implemented/target distinctions, and known
 gaps.
 
@@ -2807,6 +2949,120 @@ block, documentation path and link checks, Dockerfile whitespace checks, and
 The exact GHCR references currently exist only as local tags. These repository
 changes are not committed, pushed, or published remotely, and no package
 visibility setting has been changed.
+
+## Windows cross-compilation target preparation
+
+On 2026-08-26, a new immutable target was prepared as
+`windows64:v4.0-llvm-mingw.20260616-ucrt`, with `windows64` as its moving
+wrapper alias. Its image reference is
+`ghcr.io/hard-build/windows64:v4.0-llvm-mingw.20260616-ucrt`; the exact target
+uses pull-if-missing while the short alias always checks GHCR for the newest
+published image. The Dockerfile is based on Ubuntu 22.04 and builds the exact
+future `v4.0` source revision rather than installing a prebuilt host archive.
+
+The image pins LLVM-MinGW's
+`llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64` archive with SHA-256
+`534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda`.
+It uses Clang, LLD, libc++, and the UCRT-flavoured MinGW runtime from that
+archive, and Ubuntu's exact LLVM/libclang 22.1.8 packages for parsing and for
+building `hard`. Target compiler flags include `-march=x86-64-v3` and
+`-mtune=generic`; linker flags include `-static` so the bundled C++ runtime is
+embedded, while Windows system and UCRT API-set imports remain. The image also
+contains Wine and a cross-built static GoogleTest, and exposes a CMake
+toolchain file to recipe builds without passing project `HARD_CFLAGS` or
+`HARD_LDFLAGS` into them.
+
+The initial preparation inferred `.exe` and Wine from a `windows64` environment
+prefix. Directory and default build outputs preserved that suffix, while an
+exact file passed to `-o` remained exactly the caller's path. That target-name
+coupling was superseded by the generic configuration recorded below. Libclang resource discovery
+now accepts the single version directory found below
+`<runtime-root>/lib/clang`, so the same backend supports the portable LLVM 18
+runtime and the image's LLVM 22 runtime; an ambiguous multi-version layout is
+rejected. The declarative integration runner gained explicit executable suffix
+and runner options so container CI can validate Windows output without
+changing the Linux scenarios.
+
+A production-equivalent local Dockerfile was verified with the repository
+working tree copied into the builder because the required `v4.0` tag does not
+exist yet; the committed Dockerfile differs there by downloading the exact
+future tag revision. The resulting local image ID is
+`sha256:8f2d4b5cb5e3f014707fe3f036824467138bf8649a87693366da823fbe3611a0`.
+Inspection confirmed x86-64 PE/COFF output, the AMD64 machine type, UCRT API-set
+imports, the absence of separate libc++ runtime DLL dependencies, and PyYAML
+6.0.3 in the final image. Build and run also succeeded under an arbitrary
+non-root UID/GID while leaving the shared cache owned by that caller.
+
+The locally built image passed `hard run`, `hard test`, and all 12 declarative
+integration scenarios through Wine. This includes all supported source and
+test extensions, GoogleTest, shared production dependencies, the embedded
+TinyXML2 CMake recipe, and the well-known TinyXML2 recipe. Required Go checks
+also passed: clean gofmt output, ordinary and race tests, vet, an out-of-tree
+build, and module verification. Wrapper and Python syntax, workflow YAML and
+every nested Bash run block were checked. The Windows Dockerfile, workflow,
+backend, wrapper, documentation, and tests remain uncommitted; no `v4.0` tag,
+push, image publication, or external package-visibility change was performed.
+
+## Generic executable configuration, arbitrary images, and environment report
+
+On 2026-08-27, the backend stopped recognizing `linux64` and `windows64`
+environment names. `HARD_ENV` remains only the persistent artifact and
+immutable-toolchain cache boundary. `HARD_EXECUTABLE_SUFFIX` now controls all
+inferred internal, default-delivery, and directory-output executable names;
+`HARD_EXECUTABLE_RUNNER` independently controls the process prefix for run,
+test listing, and test execution. The Windows Dockerfile explicitly owns
+`.exe` and `wine`, while host and Linux images leave both values empty.
+
+The wrapper now accepts `docker://<image>` in addition to known target aliases
+and exact tags. It strips only that prefix, uses `--pull=missing`, preserves the
+ordinary `/hard` and working-directory mounts and numeric user, and leaves the
+entrypoint and all target configuration to the image. Empty images and values
+beginning with `-` are rejected before Docker starts. `docker://` is a fixed
+shell-completion candidate; other target completion behavior remains on the
+host.
+
+`hard environment` became the sixth public command. It loads the same runtime
+and `HARD_*` configuration as a build, but does not create progress, discover
+sources, or touch build state. Its report combines hard paths, operating-system
+and CPU diagnostics, libc, resolved compiler/version/triple, suffix/runner,
+effective flags, entry points, libclang version, and portable resource
+directory. Missing individual probes render `unavailable`; configuration and
+output failures remain fatal.
+
+A production-equivalent verification layer was built on the prior local
+Windows image with the current untagged backend. Its image ID is
+`sha256:6555902a410fe02b7a2477921ff8d7bb216c774bf014a5d56d084966ea3e18cf`.
+Inspection showed amd64, the hard entrypoint, `.exe`, and `wine`; the real
+environment report showed Ubuntu 22.04, glibc 2.35, LLVM-MinGW Clang 22.1.8,
+`x86_64-w64-windows-gnu`, libclang 22.1.8, and the runtime Clang 22 resource
+directory. The source wrapper successfully ran that local image through
+`--target=docker://hard-windows64-current:test`.
+
+All 12 declarative scenarios built their expected PE32+ x86-64 application and
+GoogleTest outputs and ran them through Wine. A completely fresh Wine prefix
+wrote its one-time setup diagnostics to the first scenario's stderr, so that
+initial aggregate run returned nonzero even though scenarios 002–012 passed;
+rerunning 001 after the prefix initialization passed cleanly. A separate real
+`hard run` used the internal `.exe` through the configured Wine runner. The
+isolated root contained only the expected
+`env/windows64:v4.0-llvm-mingw.20260616-ucrt` directory.
+
+The complete required Go check set, both POSIX shell syntax checks, staged
+Make build/install, runtime file modes, host `hard environment`, generated
+target completion including `docker://`, Bash syntax, and clean Bash completion
+registration passed. No tag, push, image publication, package visibility
+change, or removal of an existing image was performed.
+
+Later on 2026-08-27, the environment report gained its final terminal layout:
+a bold cyan title and rule, bold green runtime/system/compiler/build/parser
+section names, cyan aligned labels, and yellow special states. CFLAGS, LDFLAGS,
+and entry points now render as one shell-quoted argument per line. The default
+output is colored, while `--no-color` preserves byte-for-byte equivalent text
+after ANSI removal. Exact plain-layout, palette-presence, ANSI-removal, and
+output-error tests passed together with clean gofmt output, ordinary and race
+tests, vet, an out-of-tree backend build, and module verification. A real host
+report showed Ubuntu 24.04.4, glibc 2.39, GCC 13.3.0, and libclang 18.1.3; its
+plain form contained no escape character.
 
 ## Last known verification of installer output
 

@@ -38,6 +38,50 @@ func runSourcesWithProgress(
 	stderr io.Writer,
 	noCache bool,
 ) error {
+	return runSourcesWithProgressExecutable(
+		root,
+		runtimeRoot,
+		environment,
+		"",
+		"",
+		compiler,
+		cflags,
+		ldflags,
+		configuredEntryPoints,
+		sources,
+		arguments,
+		jobs,
+		verbose,
+		silent,
+		progress,
+		stdin,
+		stdout,
+		stderr,
+		noCache,
+	)
+}
+
+func runSourcesWithProgressExecutable(
+	root string,
+	runtimeRoot string,
+	environment string,
+	executableSuffix string,
+	executableRunner string,
+	compiler string,
+	cflags []string,
+	ldflags []string,
+	configuredEntryPoints []string,
+	sources []string,
+	arguments []string,
+	jobs int,
+	verbose bool,
+	silent bool,
+	progress *progressBar,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+	noCache bool,
+) error {
 	if len(sources) == 0 {
 		return errors.Join(validateRunLinks(nil), progress.finish())
 	}
@@ -103,9 +147,10 @@ func runSourcesWithProgress(
 	if err := errors.Join(failures...); err != nil {
 		return errors.Join(err, progress.finish())
 	}
-	link, err := planRunLinkWithLibraries(
+	link, err := planRunLinkWithLibrariesExecutable(
 		root,
 		environment,
+		executableSuffix,
 		sources,
 		dependenciesBySource,
 		librariesBySource,
@@ -171,11 +216,19 @@ func runSourcesWithProgress(
 	}
 
 	if verbose && !silent {
-		if _, err := stdout.Write(renderRunCommand(link.artifact, arguments)); err != nil {
+		if _, err := stdout.Write(renderRunCommandWithRunner(executableRunner, link.artifact, arguments)); err != nil {
 			return fmt.Errorf("write run command: %w", err)
 		}
 	}
-	return runProgram(link.artifact, arguments, workingDirectory, stdin, stdout, stderr)
+	return runProgramWithRunner(
+		executableRunner,
+		link.artifact,
+		arguments,
+		workingDirectory,
+		stdin,
+		stdout,
+		stderr,
+	)
 }
 
 func planRunLink(
@@ -202,6 +255,30 @@ func planRunLink(
 func planRunLinkWithLibraries(
 	root string,
 	environment string,
+	sources []string,
+	dependenciesBySource [][]string,
+	librariesBySource [][]libraryArtifact,
+	entryPointsBySource []string,
+	rootSourceCount int,
+	workingDirectory string,
+) (linkJob, error) {
+	return planRunLinkWithLibrariesExecutable(
+		root,
+		environment,
+		"",
+		sources,
+		dependenciesBySource,
+		librariesBySource,
+		entryPointsBySource,
+		rootSourceCount,
+		workingDirectory,
+	)
+}
+
+func planRunLinkWithLibrariesExecutable(
+	root string,
+	environment string,
+	executableSuffix string,
 	sources []string,
 	dependenciesBySource [][]string,
 	librariesBySource [][]libraryArtifact,
@@ -270,7 +347,12 @@ func planRunLinkWithLibraries(
 		objects = append(objects, object)
 	}
 	objects = append(objects, libraryArchivesByIndexes(librariesBySource, objectIndexes)...)
-	artifact, err := binaryArtifactPath(root, environment, sources[entryIndex])
+	artifact, err := binaryArtifactPathWithSuffix(
+		root,
+		environment,
+		sources[entryIndex],
+		executableSuffix,
+	)
 	if err != nil {
 		return linkJob{}, err
 	}
@@ -314,7 +396,28 @@ func runProgram(
 	stdout io.Writer,
 	stderr io.Writer,
 ) error {
-	command := exec.Command(binary, arguments...)
+	return runProgramWithRunner(
+		"",
+		binary,
+		arguments,
+		workingDirectory,
+		stdin,
+		stdout,
+		stderr,
+	)
+}
+
+func runProgramWithRunner(
+	runner string,
+	binary string,
+	arguments []string,
+	workingDirectory string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	executable, executableArguments := programInvocation(runner, binary, arguments)
+	command := exec.Command(executable, executableArguments...)
 	command.Dir = workingDirectory
 	command.Stdin = stdin
 	command.Stdout = stdout
@@ -341,7 +444,12 @@ func runProgramExitCode(err error) (int, bool) {
 }
 
 func renderRunCommand(binary string, arguments []string) []byte {
-	command := append([]string{binary}, arguments...)
+	return renderRunCommandWithRunner("", binary, arguments)
+}
+
+func renderRunCommandWithRunner(runner, binary string, arguments []string) []byte {
+	executable, executableArguments := programInvocation(runner, binary, arguments)
+	command := append([]string{executable}, executableArguments...)
 	for index, argument := range command {
 		command[index] = quoteShellArgument(argument)
 	}

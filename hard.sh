@@ -50,6 +50,23 @@ is_versioned_linux64_target() {
 	is_numeric_version "$hard_version" && is_numeric_version "$platform_version"
 }
 
+is_versioned_windows64_target() {
+	case "$1" in
+		windows64:v*-llvm-mingw.*-ucrt) ;;
+		*) return 1 ;;
+	esac
+	windows64_version=${1#windows64:v}
+	hard_version=${windows64_version%%-*}
+	toolchain=${windows64_version#*-}
+	llvm_mingw_version=${toolchain#llvm-mingw.}
+	llvm_mingw_version=${llvm_mingw_version%-ucrt}
+	case "$llvm_mingw_version" in
+		[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+		*) return 1 ;;
+	esac
+	is_numeric_version "$hard_version"
+}
+
 complete_target() {
 	completion_enabled=1
 	completion_match=0
@@ -89,7 +106,10 @@ complete_target() {
 		host \
 		linux64 \
 		linux64:v3.0-ubuntu.22.04 \
-		linux64:v3.0-alpine.3.22-static; do
+		linux64:v3.0-alpine.3.22-static \
+		windows64 \
+		windows64:v4.0-llvm-mingw.20260616-ucrt \
+		docker://; do
 		case "$completion_target" in
 			"$completion_prefix"*) printf '%s\n' "$completion_target" ;;
 		esac
@@ -203,8 +223,20 @@ case "$target" in
 		image=ghcr.io/hard-build/linux64:latest
 		pull=always
 		;;
+	windows64)
+		image=ghcr.io/hard-build/windows64:latest
+		pull=always
+		;;
+	docker://*)
+		image=${target#docker://}
+		case "$image" in
+		"" | -*) fail "invalid Docker image target: $target" ;;
+		esac
+		pull=missing
+		;;
 	*)
-		if is_versioned_linux64_target "$target"; then
+		if is_versioned_linux64_target "$target" ||
+			is_versioned_windows64_target "$target"; then
 			image=ghcr.io/hard-build/$target
 			pull=missing
 		else

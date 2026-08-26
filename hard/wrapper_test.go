@@ -185,6 +185,9 @@ func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
 				"linux64",
 				"linux64:v3.0-ubuntu.22.04",
 				"linux64:v3.0-alpine.3.22-static",
+				"windows64",
+				"windows64:v4.0-llvm-mingw.20260616-ucrt",
+				"docker://",
 				":4",
 			},
 		},
@@ -285,7 +288,7 @@ func TestWrapperUsesInstalledLinuxDefaultTarget(t *testing.T) {
 	}
 }
 
-func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
+func TestWrapperRunsTargetInDocker(t *testing.T) {
 	tests := []struct {
 		name  string
 		args  []string
@@ -321,6 +324,48 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 			pull:  "missing",
 			want:  []string{"build"},
 		},
+		{
+			name:  "latest Windows target",
+			args:  []string{"--target=windows64", "run", "source.cpp"},
+			image: "ghcr.io/hard-build/windows64:latest",
+			pull:  "always",
+			want:  []string{"run", "source.cpp"},
+		},
+		{
+			name:  "versioned Windows target",
+			args:  []string{"test", "--target=windows64:v4.0-llvm-mingw.20260616-ucrt"},
+			image: "ghcr.io/hard-build/windows64:v4.0-llvm-mingw.20260616-ucrt",
+			pull:  "missing",
+			want:  []string{"test"},
+		},
+		{
+			name:  "future versioned Windows target",
+			args:  []string{"--target=windows64:v12.34-llvm-mingw.20270101-ucrt", "build"},
+			image: "ghcr.io/hard-build/windows64:v12.34-llvm-mingw.20270101-ucrt",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
+			name:  "arbitrary tagged image",
+			args:  []string{"--target=docker://registry.example/hard-build/toolchain:latest", "environment"},
+			image: "registry.example/hard-build/toolchain:latest",
+			pull:  "missing",
+			want:  []string{"environment"},
+		},
+		{
+			name:  "arbitrary image digest",
+			args:  []string{"build", "--target=docker://registry.example/toolchain@sha256:1234"},
+			image: "registry.example/toolchain@sha256:1234",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
+			name:  "local arbitrary image",
+			args:  []string{"--target=docker://hard-local:test", "build"},
+			image: "hard-local:test",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -342,14 +387,16 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 			command := exec.Command(wrapper, tt.args...)
 			command.Dir = project
 			command.Env = wrapperTestEnvironment(map[string]string{
-				"HARD_CC":          "host-compiler-must-not-be-forwarded",
-				"HARD_CFLAGS":      "host-cflags-must-not-be-forwarded",
-				"HARD_ENTRYPOINTS": "host-entrypoints-must-not-be-forwarded",
-				"HARD_ENV":         "host-environment-must-not-be-forwarded",
-				"HARD_LDFLAGS":     "host-ldflags-must-not-be-forwarded",
-				"HARD_ROOT":        hardRoot,
-				"HOME":             home,
-				"PATH":             binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"HARD_CC":                "host-compiler-must-not-be-forwarded",
+				"HARD_CFLAGS":            "host-cflags-must-not-be-forwarded",
+				"HARD_ENTRYPOINTS":       "host-entrypoints-must-not-be-forwarded",
+				"HARD_ENV":               "host-environment-must-not-be-forwarded",
+				"HARD_EXECUTABLE_RUNNER": "host-runner-must-not-be-forwarded",
+				"HARD_EXECUTABLE_SUFFIX": "host-suffix-must-not-be-forwarded",
+				"HARD_LDFLAGS":           "host-ldflags-must-not-be-forwarded",
+				"HARD_ROOT":              hardRoot,
+				"HOME":                   home,
+				"PATH":                   binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
 			})
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("target wrapper error = %v, output = %q", err, output)
@@ -409,6 +456,8 @@ func TestWrapperRejectsInvalidTarget(t *testing.T) {
 	}{
 		{name: "missing value", args: []string{"build", "--target"}, wantErr: "--target requires a value"},
 		{name: "empty value", args: []string{"--target=", "build"}, wantErr: "--target requires a value"},
+		{name: "empty Docker image", args: []string{"--target=docker://", "build"}, wantErr: "invalid Docker image target: docker://"},
+		{name: "Docker option injection", args: []string{"--target=docker://--privileged", "build"}, wantErr: "invalid Docker image target: docker://--privileged"},
 		{
 			name:    "duplicate target",
 			args:    []string{"--target=linux64", "build", "--target", "linux64:v2.0-ubuntu.22.04"},
@@ -427,6 +476,21 @@ func TestWrapperRejectsInvalidTarget(t *testing.T) {
 			name:    "invalid Alpine version",
 			args:    []string{"--target=linux64:v2.0-alpine.3-static", "build"},
 			wantErr: "unknown target: linux64:v2.0-alpine.3-static",
+		},
+		{
+			name:    "Windows target without UCRT suffix",
+			args:    []string{"--target=windows64:v4.0-llvm-mingw.20260616", "build"},
+			wantErr: "unknown target: windows64:v4.0-llvm-mingw.20260616",
+		},
+		{
+			name:    "invalid LLVM-MinGW version",
+			args:    []string{"--target=windows64:v4.0-llvm-mingw.2026061-ucrt", "build"},
+			wantErr: "unknown target: windows64:v4.0-llvm-mingw.2026061-ucrt",
+		},
+		{
+			name:    "invalid Windows hard version",
+			args:    []string{"--target=windows64:v4.x-llvm-mingw.20260616-ucrt", "build"},
+			wantErr: "unknown target: windows64:v4.x-llvm-mingw.20260616-ucrt",
 		},
 	}
 
