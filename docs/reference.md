@@ -46,11 +46,13 @@ Command completion is installed at the shell-standard user-local paths:
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
 the five public commands, command flags, filesystem paths, `host`, `linux64`,
-the current `linux64:v2.0-ubuntu.22.04` version, and the default `format.v1`
-format. Its internal requests always execute the installed host backend, even
-when a container target is the installed default, so pressing Tab never starts
-or pulls a Docker container. POSIX shells without programmable completion and
-PowerShell do not receive a completion integration.
+the planned `linux64:v3.0-ubuntu.22.04` and
+`linux64:v3.0-alpine.3.22-static` versions, and the default `format.v1` format.
+The wrapper itself supplies target values. Other dynamic requests always
+execute the installed host backend, even when a container target is the
+installed default, so pressing Tab never starts or pulls a Docker container.
+POSIX shells without programmable completion and PowerShell do not receive a
+completion integration.
 
 The release archive can also be unpacked and used without installation:
 
@@ -77,8 +79,9 @@ The portable release requires Linux x86-64 and glibc 2.27 or newer. Its host
 backend, libclang 18.1.8, Clang resource headers, clang-format, and the required
 `libtinfo` compatibility library are installed together. Release CI builds the
 backend in a pinned Ubuntu 18.04 environment, rejects a runtime GLIBC symbol
-requirement above 2.27, and smoke-tests the archive on Ubuntu 18.04, 22.04, and
-24.04.
+requirement above 2.27, smoke-tests launching and formatting on Ubuntu 18.04,
+22.04, and 24.04, and additionally builds a C++20 program on the supported
+Ubuntu 22.04 and 24.04 host toolchains.
 
 That glibc floor covers launching the bundled backend and formatter. Native
 dependency analysis, compilation, linking, and tests still require C++20
@@ -149,8 +152,9 @@ hard test   [--list-tests] [--test=<selector>]...
 
 The POSIX wrapper accepts `--target=<name>` and `--target <name>` anywhere
 before `--`. `host` executes the private backend from the same installation
-prefix. Container execution accepts either the newest `linux64` image or an
-explicit version matching `linux64:vX.Y-ubuntu.YY.MM`:
+prefix. Container execution accepts the latest Ubuntu-based `linux64` image,
+an explicit `linux64:vX.Y-ubuntu.YY.MM` version, or an explicit static Alpine
+version matching `linux64:vX.Y-alpine.A.B-static`:
 
 ```bash
 hard --target=host build src
@@ -171,20 +175,21 @@ are errors. The legacy `linux.v1` spelling is not supported.
 
 For a container target, the wrapper only executes `docker run`; it never builds
 an image or resolves the host runtime. The image entrypoint runs the container
-backend. The unversioned form checks for a newer image on every invocation:
+backend. The unversioned Ubuntu form checks for a newer image on every
+invocation:
 
 ```text
 linux64 -> ghcr.io/hard-build/linux64:latest     (--pull=always)
 ```
 
-The explicit form names an immutable image and downloads it only when missing:
+Explicit forms name immutable images and download them only when missing:
 
 ```text
 linux64:v2.0-ubuntu.22.04
   -> ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04  (--pull=missing)
 ```
 
-The current image definition is
+The Ubuntu image definition is
 `target/linux64/v2.0-ubuntu.22.04.Dockerfile`. It downloads the official
 `hard-v2.0.tar.gz` portable release, verifies SHA-256
 `da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`,
@@ -203,25 +208,27 @@ Distribution package revisions are resolved when the image is built. Ubuntu
 22.04 standard security maintenance ends in May 2027.
 
 An image version is published only when its previously unseen Dockerfile is
-added. CI publishes the immutable version tag and advances `latest` only when
-that file is the newest version for its image repository. Modifying, deleting,
-or re-adding a known Dockerfile does not rebuild or republish it.
+added. Only the newest Ubuntu version can advance `latest`; adding an Alpine
+static image leaves the unversioned target unchanged. Modifying, deleting, or
+re-adding a known Dockerfile does not rebuild or republish it. CI loads each
+new image locally, builds and executes a C++20 smoke program, and only then
+pushes its tags. For a `*-static` image, the same pre-publication step rejects
+an ELF interpreter or `NEEDED` shared library.
 
 The wrapper bind-mounts the host `${HARD_ROOT:-$HOME/.local/share/hard}` at
 `/hard` and the current working directory at the same absolute path inside the
-container. The current image uses `/hard/source` and
-`/hard/env/linux64:v2.0-ubuntu.22.04/build`. Both its versioned tag and the
-corresponding `latest` tag therefore share compatible artifacts. A future image
-sets its own versioned `HARD_ENV`, preserving the shared source snapshots while
-isolating its build artifacts from this image and `env/host`.
+container. The Ubuntu tags use
+`/hard/env/linux64:v2.0-ubuntu.22.04/build`. Every image preserves the shared
+source snapshots while isolating its build artifacts from other target
+versions and `env/host`.
 
 The container runs with the current numeric UID and GID, preventing root-owned
 build outputs, and forwards stdin without allocating a TTY. Only the working
 directory and `HARD_ROOT` are mounted. Explicit inputs or resolved symlinks
 outside both trees are therefore unavailable in the container. A non-empty
 host `HARD_ROOT` selects the bind-mount source but is not copied into the
-container environment. Other host `HARD_*` values are not forwarded: the image
-fixes its complete target configuration as follows:
+container environment. Other host `HARD_*` values are not forwarded. The
+Ubuntu image fixes its complete target configuration as follows:
 
 ```text
 HARD_ROOT=/hard
@@ -239,15 +246,16 @@ The backend always adds `-I/hard/source` and
 `-include /usr/local/libexec/hard/hard.h` internally. These are hard-managed
 include mechanics rather than part of the image `HARD_CFLAGS` value.
 
-The final `-idirafter` path exposes the relocated LLVM 18 resource headers to
-the bundled libclang used for dependency analysis. Because it is searched after
-the compiler's regular system directories, GCC continues to use its own builtin
-headers during compilation. The Docker build compiles a minimal C++ source with
-this configuration before the image can be published.
+The v2.0 image's final `-idirafter` value exposes the relocated LLVM 18
+resource headers to its bundled libclang. Starting with hard v3.0, the backend
+adds `<runtime-root>/lib/clang/18/include` only to libclang arguments when that
+directory exists. It is not part of `HARD_CFLAGS` and is never passed to GCC.
+The after-system position lets GCC-compatible standard-library discovery keep
+using the compiler's builtin headers during analysis.
 
 `linux64` images use the `linux/amd64` platform. Programs built by the current
-image require an x86-64-v3 processor; Docker does not emulate missing CPU
-instructions.
+images require an x86-64-v3 processor; Docker does not emulate missing CPU
+instructions. Static Alpine outputs use musl rather than glibc.
 
 If no path is supplied, `.` is used. Directories are scanned recursively. If
 paths are supplied, only explicitly named matching files and matching files
@@ -330,8 +338,9 @@ configured entry functions, links reachable objects, and delivers binaries.
 Every root or automatically discovered translation unit is analyzed through
 libclang 18. `hard` passes the effective compiler flags: configured
 `HARD_CFLAGS`, the hard-managed source and runtime-header includes, and any
-active package includes. It also passes the project working directory and C++
-language mode unless the configured flags already select a language. The
+active package includes. A portable runtime's LLVM 18 resource directory is
+added only for analysis. `hard` also passes the project working directory and
+C++ language mode unless the configured flags already select a language. The
 detailed preprocessing record supplies one active, preprocessor-aware include
 graph for direct, transitive, macro-expanded, conditional, and force-included
 headers.
@@ -1095,7 +1104,7 @@ its ANSI colors in verbose output and when a failed test's output is reported.
 | `HARD_ROOT` | Persistent source and artifact root | `~/.local/share/hard` |
 | `HARD_ENV` | Isolated build-environment name | `host` |
 | `HARD_CC` | Compiler executable | `c++` |
-| `HARD_CFLAGS` | User toolchain flags for libclang and object compilation | See below |
+| `HARD_CFLAGS` | Project toolchain flags for libclang and object compilation | See below |
 | `HARD_LDFLAGS` | Executable linker flags | See below |
 | `HARD_ENTRYPOINTS` | Global entry-function names | `main _start` |
 
@@ -1118,6 +1127,12 @@ physical path of the running backend executable. This keeps source resolution
 and the runtime support header available even when `HARD_CFLAGS` is explicitly
 empty, while allowing the host runtime bundle and container image to remain
 self-contained.
+
+If `<runtime-root>/lib/clang/18/include` exists, hard appends it as an
+`-idirafter` directory only to libclang analysis. The argument is not part of
+the configured or compiler-effective `HARD_CFLAGS`, so verbose compiler
+commands do not contain it. A system-installed libclang whose resource
+directory is already discoverable needs no additional argument.
 
 Default linker flags:
 
@@ -1203,6 +1218,14 @@ installed default target. Without `--target`, it reads
 bundled tool directory to `PATH`. `--target=linux64` or an explicit version
 executes the documented `docker run` invocation without resolving the host
 runtime. It never builds an image.
+
+The wrapper also owns the fixed completion values for `--target`. It answers
+that value position directly for both Cobra completion protocols. Other
+completion requests are forwarded to the installed host backend, regardless
+of `default-target`, so completion never invokes Docker. The Go backend keeps
+only the synthetic target flag declaration needed when generating the Bash,
+Zsh, and Fish completion scripts; concrete target values are not compiled
+into it.
 
 `PREFIX` defaults to `$HOME/.local`, `BUILD_DIR` defaults to `build`, and
 `DESTDIR` can stage an installation without changing its logical prefix.

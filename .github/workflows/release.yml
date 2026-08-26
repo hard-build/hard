@@ -206,11 +206,32 @@ jobs:
                 HOME=/tmp/home "$hard" __complete --target= > /tmp/targets
                 grep -qx host /tmp/targets
                 grep -qx linux64 /tmp/targets
-                grep -qx 'linux64:v2.0-ubuntu.22.04' /tmp/targets
+                grep -qx 'linux64:v3.0-ubuntu.22.04' /tmp/targets
+                grep -qx 'linux64:v3.0-alpine.3.22-static' /tmp/targets
                 ! grep -qx linux.v1 /tmp/targets
                 HOME=/tmp/home bash --noprofile --norc -c \
                   '. "$1"; complete -p hard' \
                   _ /tmp/release/hard-linux-amd64/share/bash-completion/completions/hard
+
+                . /etc/os-release
+                case "$VERSION_ID" in
+                  18.04) ;;
+                  *)
+                    apt-get update
+                    apt-get install -y --no-install-recommends build-essential
+                    printf "%s\n" \
+                      "#include <cstddef>" \
+                      "#include <iostream>" \
+                      "" \
+                      "int main()" \
+                      "{" \
+                      "    std::cout << (sizeof(std::max_align_t) > 0 ? \"ok\" : \"invalid\");" \
+                      "}" \
+                      > /tmp/project/build.cpp
+                    HOME=/tmp/home "$hard" --target=host build -s /tmp/project/build.cpp
+                    test "$(/tmp/project/build)" = ok
+                    ;;
+                esac
               '
           done
 

@@ -124,8 +124,79 @@ func TestWrapperRunsHostBackendThroughPath(t *testing.T) {
 
 func TestWrapperRunsCompletionThroughHostBackend(t *testing.T) {
 	for _, request := range []string{"__complete", "__completeNoDesc"} {
-		t.Run(request, func(t *testing.T) {
-			home := t.TempDir()
+		for _, arguments := range [][]string{{request, "bu"}, {request, "run", "--", "--target="}} {
+			arguments := arguments
+			t.Run(request+"/"+strings.Join(arguments[1:], "_"), func(t *testing.T) {
+				home := t.TempDir()
+				prefix := filepath.Join(t.TempDir(), "installed hard")
+				wrapper := installWrapperAtPrefix(t, prefix)
+				runtimeRoot := filepath.Join(prefix, "libexec", "hard")
+				backend := filepath.Join(runtimeRoot, "hard")
+				if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+					t.Fatalf("create runtime directory: %v", err)
+				}
+				writeWrapperExecutable(
+					t,
+					backend,
+					"#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$BACKEND_LOG\"\n",
+				)
+				if err := os.WriteFile(
+					filepath.Join(runtimeRoot, "default-target"),
+					[]byte("linux64\n"),
+					0o644,
+				); err != nil {
+					t.Fatalf("write default target: %v", err)
+				}
+				backendLog := filepath.Join(t.TempDir(), "backend.log")
+				dockerLog := filepath.Join(t.TempDir(), "docker.log")
+				binDirectory := installFakeWrapperDocker(t, dockerLog)
+
+				command := exec.Command(wrapper, arguments...)
+				command.Env = wrapperTestEnvironment(map[string]string{
+					"BACKEND_LOG": backendLog,
+					"HOME":        home,
+					"PATH":        binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+				})
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("completion wrapper error = %v, output = %q", err, output)
+				}
+				if got := readWrapperArguments(t, backendLog); !reflect.DeepEqual(got, arguments) {
+					t.Fatalf("host backend arguments = %#v, want %#v", got, arguments)
+				}
+				if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("docker log error = %v, want not exist", err)
+				}
+			})
+		}
+	}
+}
+
+func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "attached value",
+			args: []string{"__complete", "--target="},
+			want: []string{
+				"host",
+				"linux64",
+				"linux64:v3.0-ubuntu.22.04",
+				"linux64:v3.0-alpine.3.22-static",
+				":4",
+			},
+		},
+		{
+			name: "separate prefixed value without descriptions",
+			args: []string{"__completeNoDesc", "--target", "linux64:v3.0-a"},
+			want: []string{"linux64:v3.0-alpine.3.22-static", ":4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			prefix := filepath.Join(t.TempDir(), "installed hard")
 			wrapper := installWrapperAtPrefix(t, prefix)
 			runtimeRoot := filepath.Join(prefix, "libexec", "hard")
@@ -148,19 +219,23 @@ func TestWrapperRunsCompletionThroughHostBackend(t *testing.T) {
 			backendLog := filepath.Join(t.TempDir(), "backend.log")
 			dockerLog := filepath.Join(t.TempDir(), "docker.log")
 			binDirectory := installFakeWrapperDocker(t, dockerLog)
-			arguments := []string{request, "--target=linux64:", ""}
 
-			command := exec.Command(wrapper, arguments...)
+			command := exec.Command(wrapper, tt.args...)
 			command.Env = wrapperTestEnvironment(map[string]string{
 				"BACKEND_LOG": backendLog,
-				"HOME":        home,
+				"HOME":        t.TempDir(),
 				"PATH":        binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
 			})
-			if output, err := command.CombinedOutput(); err != nil {
+			output, err := command.CombinedOutput()
+			if err != nil {
 				t.Fatalf("completion wrapper error = %v, output = %q", err, output)
 			}
-			if got := readWrapperArguments(t, backendLog); !reflect.DeepEqual(got, arguments) {
-				t.Fatalf("host backend arguments = %#v, want %#v", got, arguments)
+			got := strings.Split(strings.TrimSpace(string(output)), "\n")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("completion output = %#v, want %#v", got, tt.want)
+			}
+			if _, err := os.Stat(backendLog); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("backend log error = %v, want not exist", err)
 			}
 			if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("docker log error = %v, want not exist", err)
@@ -236,6 +311,13 @@ func TestWrapperRunsLinuxTargetInDocker(t *testing.T) {
 			name:  "future versioned target",
 			args:  []string{"--target=linux64:v12.34-ubuntu.24.04", "build"},
 			image: "ghcr.io/hard-build/linux64:v12.34-ubuntu.24.04",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
+			name:  "Alpine static target",
+			args:  []string{"build", "--target=linux64:v2.0-alpine.3.22-static"},
+			image: "ghcr.io/hard-build/linux64:v2.0-alpine.3.22-static",
 			pull:  "missing",
 			want:  []string{"build"},
 		},
@@ -336,6 +418,16 @@ func TestWrapperRejectsInvalidTarget(t *testing.T) {
 		{name: "missing image version", args: []string{"--target=linux64:v2.0", "build"}, wantErr: "unknown target: linux64:v2.0"},
 		{name: "invalid hard version", args: []string{"--target=linux64:v2.x-ubuntu.22.04", "build"}, wantErr: "unknown target: linux64:v2.x-ubuntu.22.04"},
 		{name: "invalid Ubuntu version", args: []string{"--target=linux64:v2.0-ubuntu.22", "build"}, wantErr: "unknown target: linux64:v2.0-ubuntu.22"},
+		{
+			name:    "Alpine target without static suffix",
+			args:    []string{"--target=linux64:v2.0-alpine.3.22", "build"},
+			wantErr: "unknown target: linux64:v2.0-alpine.3.22",
+		},
+		{
+			name:    "invalid Alpine version",
+			args:    []string{"--target=linux64:v2.0-alpine.3-static", "build"},
+			wantErr: "unknown target: linux64:v2.0-alpine.3-static",
+		},
 	}
 
 	for _, tt := range tests {

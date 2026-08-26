@@ -27,16 +27,74 @@ is_numeric_version() {
 
 is_versioned_linux64_target() {
 	case "$1" in
-		linux64:v*-ubuntu.*) ;;
+		linux64:v*-ubuntu.* | linux64:v*-alpine.*-static) ;;
 		*) return 1 ;;
 	esac
 	linux64_version=${1#linux64:v}
-	hard_version=${linux64_version%%-ubuntu.*}
-	ubuntu_version=${linux64_version#*-ubuntu.}
-	if [ "$ubuntu_version" = "$linux64_version" ]; then
+	hard_version=${linux64_version%%-*}
+	platform=${linux64_version#*-}
+	case "$platform" in
+		ubuntu.*)
+			platform_version=${platform#ubuntu.}
+			;;
+		alpine.*-static)
+			platform_version=${platform#alpine.}
+			version_without_static=${platform_version%-static}
+			if [ "$version_without_static" = "$platform_version" ]; then
+				return 1
+			fi
+			platform_version=$version_without_static
+			;;
+		*) return 1 ;;
+	esac
+	is_numeric_version "$hard_version" && is_numeric_version "$platform_version"
+}
+
+complete_target() {
+	completion_enabled=1
+	completion_match=0
+	completion_prefix=
+	completion_previous=
+	for completion_argument in "$@"; do
+		if [ "$completion_enabled" -eq 0 ]; then
+			completion_match=0
+			completion_previous=$completion_argument
+			continue
+		fi
+		case "$completion_argument" in
+			--)
+				completion_enabled=0
+				completion_match=0
+				;;
+			--target=*)
+				completion_match=1
+				completion_prefix=${completion_argument#--target=}
+				;;
+			*)
+				if [ "$completion_previous" = --target ]; then
+					completion_match=1
+					completion_prefix=$completion_argument
+				else
+					completion_match=0
+				fi
+				;;
+		esac
+		completion_previous=$completion_argument
+	done
+	if [ "$completion_match" -eq 0 ]; then
 		return 1
 	fi
-	is_numeric_version "$hard_version" && is_numeric_version "$ubuntu_version"
+
+	for completion_target in \
+		host \
+		linux64 \
+		linux64:v3.0-ubuntu.22.04 \
+		linux64:v3.0-alpine.3.22-static; do
+		case "$completion_target" in
+			"$completion_prefix"*) printf '%s\n' "$completion_target" ;;
+		esac
+	done
+	printf ':4\n'
 }
 
 installation_root=
@@ -60,6 +118,12 @@ resolve_installation_root() {
 
 case "${1:-}" in
 	__complete | __completeNoDesc)
+		completion_request=$1
+		shift
+		if complete_target "$@"; then
+			exit 0
+		fi
+		set -- "$completion_request" "$@"
 		resolve_installation_root
 		runtime_root=$installation_root/libexec/hard
 		PATH=$runtime_root/bin${PATH:+:$PATH}

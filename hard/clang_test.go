@@ -108,6 +108,55 @@ func TestAnalyzeClangFilePreservesUnresolvedIncludeSpelling(t *testing.T) {
 	t.Fatalf("unresolved include was not found: %#v; diagnostics: %#v", analysis.includes, analysis.diagnostics)
 }
 
+func TestClangParserArgumentsUsePortableResourceDirectory(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	resourceDirectory := filepath.Join(runtimeRoot, "lib", "clang", "18", "include")
+	if err := os.MkdirAll(resourceDirectory, 0o755); err != nil {
+		t.Fatalf("create resource directory: %v", err)
+	}
+	arguments := []string{"-std=c++20"}
+
+	got, err := clangParserArguments(arguments, runtimeRoot)
+	if err != nil {
+		t.Fatalf("clangParserArguments() error = %v", err)
+	}
+	want := []string{"-std=c++20", "-idirafter", resourceDirectory}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("clangParserArguments() = %#v, want %#v", got, want)
+	}
+	if want := []string{"-std=c++20"}; !reflect.DeepEqual(arguments, want) {
+		t.Fatalf("input arguments = %#v, want %#v", arguments, want)
+	}
+}
+
+func TestClangParserArgumentsIgnoreMissingSystemResourceDirectory(t *testing.T) {
+	arguments := []string{"-std=c++20"}
+
+	got, err := clangParserArguments(arguments, t.TempDir())
+	if err != nil {
+		t.Fatalf("clangParserArguments() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, arguments) {
+		t.Fatalf("clangParserArguments() = %#v, want %#v", got, arguments)
+	}
+}
+
+func TestClangParserArgumentsRejectNonDirectoryResourcePath(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	resourcePath := filepath.Join(runtimeRoot, "lib", "clang", "18", "include")
+	if err := os.MkdirAll(filepath.Dir(resourcePath), 0o755); err != nil {
+		t.Fatalf("create resource parent directory: %v", err)
+	}
+	if err := os.WriteFile(resourcePath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write resource path: %v", err)
+	}
+
+	_, err := clangParserArguments([]string{"-std=c++20"}, runtimeRoot)
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("clangParserArguments() error = %v, want not a directory", err)
+	}
+}
+
 func TestAnalyzeClangFileResolvesMacroNamespacesAndTemplates(t *testing.T) {
 	directory := t.TempDir()
 	header := writeClangTestFile(

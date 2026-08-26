@@ -128,11 +128,12 @@ Implemented:
 - a no-argument `curl | sh` installer for the latest checksum-verified portable
   `linux/amd64` release, with user-local staged replacement and idempotent Bash,
   Zsh, Fish, or POSIX-shell `PATH` startup configuration;
-- generated Bash, Zsh, and Fish completion files, including wrapper target
-  values and host-only dynamic completion dispatch;
-- wrapper-owned `linux64` Docker targets that select either the always-refreshed
-  GHCR `latest` tag or an immutable `linux64:vX.Y-ubuntu.YY.MM` tag while
-  bind-mounting the persistent source/cache root from the host;
+- generated Bash, Zsh, and Fish completion files, with target values owned by
+  the wrapper and every other dynamic request dispatched to the host backend;
+- wrapper-owned `linux64` Docker targets that select the always-refreshed
+  Ubuntu-based GHCR `latest` tag, an immutable `linux64:vX.Y-ubuntu.YY.MM`
+  tag, or an immutable `linux64:vX.Y-alpine.A.B-static` tag while bind-mounting
+  the persistent source/cache root from the host;
 - separate executable-relative runtime bundles for the host and container,
   with shared source snapshots and environment-specific caches below
   `HARD_ROOT`;
@@ -141,7 +142,7 @@ Implemented:
 - a GitHub Actions workflow that publishes an image version only when a
   previously unseen `target/<image>/<version>.Dockerfile` is added to `main`,
   keeps version tags immutable, and advances `latest` only for the newest
-  version;
+  Ubuntu version;
 - a release-tag GitHub workflow that builds the host backend against
   the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
   file.
@@ -284,6 +285,14 @@ pkg-config, Autoconf, Automake, and Libtool. libgcc and libstdc++ are linked
 statically into generated programs by the fixed linker flags, but glibc
 remains dynamic.
 
+An Alpine 3.22 static prototype was built and verified locally with hard v2.0,
+but it was superseded before commit or publication. Its Dockerfile is not a
+current repository target. The accepted replacement is
+`linux64:v3.0-alpine.3.22-static`, added only after the v3.0 Git tag and release
+artifact exist. The planned image builds hard natively against musl and
+Alpine's system libclang, while `HARD_LDFLAGS` makes generated C++ executables
+fully static.
+
 Runtime tools by command:
 
 - `clang-format` for `format`;
@@ -332,8 +341,9 @@ $HOME/.local/
     └── hard/                          persistent state root
 ```
 
-`hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host`, `linux64`, and
-`linux64:vX.Y-ubuntu.YY.MM` targets. It resolves the installation prefix from
+`hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host`, `linux64`,
+`linux64:vX.Y-ubuntu.YY.MM`, and `linux64:vX.Y-alpine.A.B-static` targets. It
+resolves the installation prefix from
 its own path only when the target is absent or explicit host execution is
 selected. Without `--target`, it reads
 `<prefix>/libexec/hard/default-target`, falling back to `host` when the file is
@@ -345,11 +355,11 @@ wrapper does not resolve a host runtime. Empty, duplicate, legacy, malformed,
 and unknown targets are errors.
 Values after `--` remain untouched.
 
-The private Cobra `__complete` and `__completeNoDesc` protocols are routed
-directly to the sibling host backend before target parsing. Their argument
-vectors, including partial `--target` values, remain intact. Completion
-therefore never starts or pulls Docker even when `default-target` selects a
-container target.
+For the private Cobra `__complete` and `__completeNoDesc` protocols, `hard.sh`
+answers a final partial `--target` value itself. It routes every other
+completion request to the sibling host backend before normal target parsing.
+Completion therefore never starts or pulls Docker even when `default-target`
+selects a container target.
 
 The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
 source of a bind mount targeting `/hard`. The physical current working
@@ -425,16 +435,22 @@ discovers its vendor file automatically. The POSIX fallback receives only the
 
 ### Container image and publication
 
-The wrapper maps its two container target forms as follows:
+The wrapper maps its container target forms as follows:
 
     --target=linux64                         ghcr.io/hard-build/linux64:latest
     --target=linux64:v2.0-ubuntu.22.04      ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04
 
-The mutable `linux64` alias is pulled before every run, so it follows the newest
-available image. Exact version targets are pulled only when missing locally.
+The v3.0 wrapper completion also advertises the staged targets that will be
+published after the v3.0 release artifact exists:
+
+    --target=linux64:v3.0-ubuntu.22.04       ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
+    --target=linux64:v3.0-alpine.3.22-static ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static
+
+The mutable `linux64` alias is pulled before every run and remains the newest
+Ubuntu image. Exact version targets are pulled only when missing locally.
 Exact targets remain available for reproducible builds and persistent caches.
 
-The current image installs the official `hard-v2.0.tar.gz` portable release,
+The current Ubuntu image installs the official `hard-v2.0.tar.gz` portable release,
 whose backend corresponds to Git tag `v2.0` at
 `100406872f99fd4fcdb23425d21f638d58368237`. The archive checksum is pinned to
 `da51adc54d56219e427f198e610036b8c42d0306abfcfec58ea2c60033f42200`.
@@ -453,7 +469,7 @@ pin `v2.0`, mutates shell configuration, and installs below `$HOME/.local`.
 Installing the versioned archive directly gives the image an immutable input and
 fails the build if either the archive or expected version changes.
 
-The image's fixed target environment is:
+The Ubuntu image's fixed target environment is:
 
     HARD_ROOT=/hard
     HARD_ENV=linux64:v2.0-ubuntu.22.04
@@ -468,6 +484,13 @@ would make GCC prefer Clang's `stddef.h` and `stdarg.h`; the after-path lets GCC
 keep its own builtin headers. The Dockerfile compiles a minimal C++ source during
 the build so a missing resource path fails image publication.
 
+Starting with hard v3.0, the backend checks for
+`<runtime-root>/lib/clang/18/include` and appends it as `-idirafter` only to
+libclang argument vectors. The configured and compiler-effective
+`HARD_CFLAGS` do not contain this internal parser argument. A native libclang,
+including Alpine's package, uses its already discoverable system resource
+directory and receives no extra flag.
+
 The image is intentionally `linux/amd64` only, and generated programs require
 an x86-64-v3 CPU. Docker does not add CPU emulation. Toolchain, ABI, base
 system, bundled hard version, or minimum-CPU changes require a new target
@@ -479,10 +502,15 @@ dispatch. On a push to `main`, it considers only newly added
 filename, requires the `vX.Y` prefix to name an existing Git tag, and records
 that tag's revision in the image. A path that occurred earlier in Git history is
 skipped, even if deleted and re-added. A newly added Dockerfile publishes an
-immutable version tag. It also advances `latest` only when that file is the
-newest version currently present for its image. Changing or deleting an existing
+immutable version tag. Only a newly added Ubuntu Dockerfile can advance
+`latest`, and then only when it is the newest Ubuntu version. Alpine static
+images never change the unversioned target. Changing or deleting an existing
 Dockerfile, and ordinary pushes without a new Dockerfile, publish no image.
-Commit, edge, and release-only tags are not published.
+Commit, edge, and release-only tags are not published. Before publication, the
+workflow loads the new image on the runner, builds and executes a C++20 smoke
+program, and checks static targets for both an ELF interpreter and `NEEDED`
+entries. Only a successful image is pushed. New Dockerfiles do not carry that
+smoke program as an image layer.
 
 The first externally published GitHub package defaults private and must be made
 public once by a maintainer before anonymous pulls work. Package visibility
@@ -502,8 +530,9 @@ The public command forms are:
                 [--no-cache] [-s|--silent] [path...]
 
 The installed wrapper additionally accepts `--target=host`,
-`--target=linux64`, `--target=linux64:vX.Y-ubuntu.YY.MM`, or their
-separate-value forms anywhere before `--`. This selects how one of the same
+`--target=linux64`, `--target=linux64:vX.Y-ubuntu.YY.MM`,
+`--target=linux64:vX.Y-alpine.A.B-static`, or their separate-value forms
+anywhere before `--`. This selects how one of the same
 five public commands is executed; it does not add another public command. The
 Go help template documents the wrapper option, while the wrapper owns its
 parsing, installed default, and Docker behavior.
@@ -542,9 +571,10 @@ Other CLI decisions:
   Zsh, and Fish scripts for installation and release packaging;
 - dynamic completion lists only the five public commands and filters Cobra's
   private `_help` suggestion;
-- completion supplies fixed `host`, `linux64`, and
-  `linux64:v2.0-ubuntu.22.04` values for `--target`, `format.v1` for `--format`,
-  flag names, and default filesystem-path completion for positional arguments;
+- the wrapper supplies fixed `host`, `linux64`,
+  `linux64:v3.0-ubuntu.22.04`, and
+  `linux64:v3.0-alpine.3.22-static` values for `--target`; the backend supplies
+  `format.v1`, flag names, commands, and default filesystem-path completion;
 - the normal `help` command is not public; `help` and `_help` are rejected;
 - root and command `--help` succeed without configuration loading or source
   discovery;
@@ -636,6 +666,13 @@ libclang dependency, source-forward, and entry analyses and by `HARD_CC` object
 compilation. Dependency and entry analysis add the working directory and
 default to C++ mode unless `-x` is already present. Vendor CMake builds do not
 receive `HARD_CFLAGS`.
+
+For libclang only, hard v3.0 also checks
+`<runtime-root>/lib/clang/18/include`. When present, it appends `-idirafter` and
+that directory to the analysis argument vector. The compiler-effective vector
+is unchanged, so verbose compiler commands never contain this runtime-only
+resource path. A missing directory is normal for native libclang
+installations; a present non-directory or inaccessible path is an error.
 
 Build, run, and test canonicalize `<runtime-root>/hard.h` through symlinks and
 exclude declarations physically owned by that canonical target from source
@@ -1705,8 +1742,9 @@ to leave the library unchanged for now.
   while persistent source and caches remain in `PREFIX/share/hard` for the
   default user-local prefix.
 - The wrapper supports a mutable `--target=linux64` alias and explicit
-  `--target=linux64:vX.Y-ubuntu.YY.MM` versions. They run
-  `ghcr.io/hard-build/linux64:latest` and the corresponding exact GHCR tag with
+  `--target=linux64:vX.Y-ubuntu.YY.MM` and
+  `--target=linux64:vX.Y-alpine.A.B-static` versions. They run the Ubuntu-based
+  `ghcr.io/hard-build/linux64:latest` or the corresponding exact GHCR tag with
   `--pull=always` and `--pull=missing`, respectively. The wrapper does not
   resolve the host runtime or build images; the image entrypoint starts the
   container backend, persistent state is bind-mounted, and `make install`
@@ -1727,10 +1765,11 @@ to leave the library unchanged for now.
   wrapper fallback, and configures `$HOME/.local/bin` for the user's shell.
 - Bash, Zsh, and Fish completion scripts are generated from the same Cobra
   command tree during installation and release packaging. They are data files
-  below standard `share/` paths, not a sixth public command. Wrapper target
-  completion is present, but all dynamic completion requests bypass target
-  selection and use the installed host backend so interactive completion cannot
-  start Docker.
+  below standard `share/` paths, not a sixth public command. The Go tree keeps
+  a synthetic `--target` declaration only so those scripts understand the
+  wrapper flag. Concrete target candidates live in `hard.sh`; target-value
+  requests are answered there, while all other dynamic completion requests use
+  the installed host backend. Interactive completion cannot start Docker.
 - Before its first external publication, the former `linux.v1` image was
   rebaselined from provisional Ubuntu 24.04 to Ubuntu 22.04. The finalized
   target keeps GCC 11 and glibc 2.35 from Jammy while preserving libclang and
@@ -1780,7 +1819,8 @@ to leave the library unchanged for now.
 
 - `hard/cli_test.go`: command defaults, paths, interspersed and no-cache flags,
   silent options, all job syntaxes, invalid input, help, hidden commands,
-  completion values and directives, and Bash/Zsh/Fish script generation.
+  backend completion directives without concrete target ownership, and
+  Bash/Zsh/Fish script generation.
 - `hard/config_test.go`: all defaults and overrides, environment choice, default
   source include and runtime support include, present-empty flags, safe
   shell parsing, disabled expansion, malformed values, and home failures.
@@ -1788,7 +1828,8 @@ to leave the library unchanged for now.
   installed target defaults, bundled host tool lookup, mutable and exact
   `linux64` image mappings and pull policies, Docker arguments and mounts,
   default persistent root, argument preservation, no host `HARD_*` forwarding,
-  host-only completion dispatch, and invalid target diagnostics.
+  wrapper-owned target completion, host-only dispatch for other completion
+  requests, and invalid target diagnostics.
 - `hard/install_test.go`: checksum-gated installation, portable runtime file
   modes, symlinks, and completion data files, absent installed `default-target`,
   strict `vX.Y` release resolution and exact versioned asset URLs, Bash, Zsh,
@@ -2573,6 +2614,85 @@ The real wrapper built and ran an iostream program twice with poisoned host
 `HARD_*` values; the repeat reported cached parsing, compilation, linking, and
 delivery, and artifacts existed only below
 `env/linux64:v2.0-ubuntu.22.04`.
+
+## Last known verification of the Alpine static prototype
+
+On 2026-08-26, `linux64:v2.0-alpine.3.22-static` was implemented and verified
+locally as an exact-only prototype. Before commit or publication, the user
+chose to prepare hard v3.0 so relocated LLVM resource headers could become an
+internal parser-only concern. The prototype Dockerfile was removed from the
+working tree; the replacement target will be
+`linux64:v3.0-alpine.3.22-static` after the v3.0 tag exists.
+
+The final local `linux/amd64` image ID was
+`sha256:992af7837911ccd00fd2864db7d64c8a1158066e705e9209b1e85aef84f9ec60`.
+Its backend is a dynamic musl executable, its `VERSION` is `v2.0`, its OCI
+revision is `100406872f99fd4fcdb23425d21f638d58368237`, and its entrypoint is
+`/usr/local/libexec/hard/hard`. The image contains the expected compiler,
+format, recipe-build, test, license, and LLVM runtime files.
+
+The first full integration run exposed that Alpine's packaged GoogleTest
+libraries were shared-only for linker purposes. The prototype Dockerfile built
+`libgtest.a` and `libgtest_main.a` from the official `gtest-src` package. After
+that change all 12 declarative integration scenarios passed, including the
+GoogleTest, embedded TinyXML2 recipe, and well-known TinyXML2 recipe scenarios.
+A GoogleTest executable and an ordinary delivered executable were both
+verified with `file` and `readelf` to be statically linked, with neither an ELF
+interpreter nor `NEEDED` shared libraries.
+
+The real installed wrapper built and ran an application twice with poisoned
+host `HARD_*` values. The repeat reported cached parsing, compilation, linking,
+and delivery, and the only environment directory was
+`env/linux64:v2.0-alpine.3.22-static`. Isolated workflow checks accepted both
+supported filename forms, rejected malformed static forms, extracted `v2.0`,
+discovered the new Alpine Dockerfile, and kept `publish_latest=false`.
+
+The required ordinary and race Go tests, vet, out-of-tree build, module
+verification, gofmt check, shell and workflow syntax checks, documentation
+validation, and diff checks passed for the prototype. These results establish
+the Alpine package/toolchain design but do not verify the future v3.0 image.
+
+## v3.0 preparation status
+
+On 2026-08-26, v3.0 preparation moved the portable LLVM 18 resource include
+out of image `HARD_CFLAGS`. `hard` now detects
+`<runtime-root>/lib/clang/18/include` and appends it only to libclang arguments.
+Unit coverage verifies both the portable-directory and native-system cases and
+that the caller's compiler flags are not mutated.
+
+The concrete target candidates also moved out of the Go backend. `hard.sh`
+answers attached and separate target-value completion directly with `host`,
+`linux64`, `linux64:v3.0-ubuntu.22.04`, and
+`linux64:v3.0-alpine.3.22-static`. Other completion requests still execute the
+host backend and cannot start Docker.
+
+Container publication now builds and loads a newly discovered image locally,
+runs a C++20 program using `<cstddef>` and `<iostream>`, verifies static ELF
+metadata for `*-static`, and pushes tags only after success. The smoke source
+belongs to CI rather than new Dockerfiles. Release smoke additionally builds
+that C++20 program on Ubuntu 22.04 and 24.04; Ubuntu 18.04 remains a portable
+runtime launch and formatting check because its default compiler is outside
+the supported host contract.
+
+Local verification passed the required gofmt, ordinary and race Go tests, vet,
+out-of-tree build, module verification, wrapper and installer syntax, staged
+installation, all three completion files, generated Bash target completion,
+workflow YAML and nested-shell syntax, and diff checks. A portable-shaped
+runtime with an adjacent LLVM 18 resource directory built and ran a C++
+application while its verbose compiler command contained no parser-only path.
+All 12 declarative integration scenarios passed with that backend. The new CI
+smoke also passed against the existing local v2.0 Ubuntu image and the removed
+Alpine prototype, including the static ELF checks; this validates the workflow
+command sequence, not either future v3.0 image.
+
+The preparation is committed, and the local annotated `v3.0` tag points at
+that commit. Neither the branch nor the tag has been pushed, so no v3.0 release
+artifact, Dockerfile, image, or publication exists yet. The next stage is to
+push the commit and tag, let the portable `hard-v3.0.tar.gz` artifact be
+published, pin its checksum in
+`target/linux64/v3.0-ubuntu.22.04.Dockerfile`, add
+`target/linux64/v3.0-alpine.3.22-static.Dockerfile`, and run the full image and
+integration verification before publication.
 
 ## Workspace safety snapshot
 

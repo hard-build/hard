@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -85,6 +86,15 @@ func analyzeClangFile(
 	arguments []string,
 	options clangAnalysisOptions,
 ) (clangAnalysis, error) {
+	runtimeRoot, err := executableRuntimeRoot()
+	if err != nil {
+		return clangAnalysis{}, err
+	}
+	arguments, err = clangParserArguments(arguments, runtimeRoot)
+	if err != nil {
+		return clangAnalysis{}, err
+	}
+
 	cSource := C.CString(source)
 	defer C.free(unsafe.Pointer(cSource))
 
@@ -126,6 +136,23 @@ func analyzeClangFile(
 	}
 
 	return copyClangAnalysis(analysis), nil
+}
+
+func clangParserArguments(arguments []string, runtimeRoot string) ([]string, error) {
+	resourceDirectory := filepath.Join(runtimeRoot, "lib", "clang", "18", "include")
+	info, err := os.Stat(resourceDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		return arguments, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect libclang resource directory %s: %w", resourceDirectory, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("libclang resource path is not a directory: %s", resourceDirectory)
+	}
+
+	result := append([]string(nil), arguments...)
+	return append(result, "-idirafter", resourceDirectory), nil
 }
 
 func boolToInt(value bool) int {

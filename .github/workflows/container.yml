@@ -51,8 +51,12 @@ jobs:
             filename=${relative#*/}
             version=${filename%.Dockerfile}
             if [[ "$dockerfile" != "target/$image/$version.Dockerfile" ]] || \
-               [[ ! "$image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] || \
-               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-ubuntu\.[0-9]+\.[0-9]+$ ]]; then
+               [[ ! "$image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+              echo "invalid target Dockerfile name: $dockerfile" >&2
+              exit 1
+            fi
+            if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-ubuntu\.[0-9]+\.[0-9]+$ ]] && \
+               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-alpine\.[0-9]+\.[0-9]+-static$ ]]; then
               echo "invalid target Dockerfile name: $dockerfile" >&2
               exit 1
             fi
@@ -62,22 +66,24 @@ jobs:
               continue
             fi
 
-            hard_version=${version%%-ubuntu.*}
+            hard_version=${version%%-*}
             if ! git show-ref --verify --quiet "refs/tags/$hard_version"; then
               echo "hard release tag does not exist: $hard_version" >&2
               exit 1
             fi
             hard_revision=$(git rev-parse "$hard_version^{commit}")
 
-            latest_dockerfile=$(
-              find "target/$image" -maxdepth 1 -type f \
-                -name 'v*-ubuntu.*.Dockerfile' -print \
-                | sort -V \
-                | tail -1
-            )
             publish_latest=false
-            if [[ "$dockerfile" == "$latest_dockerfile" ]]; then
-              publish_latest=true
+            if [[ "$version" =~ -ubuntu\. ]]; then
+              latest_dockerfile=$(
+                find "target/$image" -maxdepth 1 -type f \
+                  -name 'v*-ubuntu.*.Dockerfile' -print \
+                  | sort -V \
+                  | tail -1
+              )
+              if [[ "$dockerfile" == "$latest_dockerfile" ]]; then
+                publish_latest=true
+              fi
             fi
 
             targets+=("$(
@@ -127,7 +133,7 @@ jobs:
             type=raw,value=${{ matrix.version }}
             type=raw,value=latest,enable=${{ matrix.publish_latest }}
 
-      - name: Build and publish ${{ matrix.image }}:${{ matrix.version }}
+      - name: Build ${{ matrix.image }}:${{ matrix.version }}
         uses: docker/build-push-action@v7
         with:
           build-args: |
@@ -139,8 +145,56 @@ jobs:
             org.opencontainers.image.revision=${{ matrix.hard_revision }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ matrix.version }}
+          load: true
           platforms: linux/amd64
-          push: true
+          push: false
           tags: ${{ steps.metadata.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke-test ${{ matrix.image }}:${{ matrix.version }}
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ matrix.version }}
+          IMAGE_VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          project=$(mktemp -d)
+          trap 'rm -rf "$project"' EXIT
+          cat > "$project/main.cpp" <<'EOF'
+          #include <cstddef>
+          #include <iostream>
+
+          int main()
+          {
+              std::cout << (sizeof(std::max_align_t) > 0 ? "ok" : "invalid");
+          }
+          EOF
+
+          docker run --rm \
+            --mount "type=bind,source=$project,target=/project" \
+            "$IMAGE" \
+            build -s main.cpp
+          output=$(docker run --rm \
+            --entrypoint /project/main \
+            --mount "type=bind,source=$project,target=/project" \
+            "$IMAGE")
+          test "$output" = ok
+
+          if [[ "$IMAGE_VERSION" == *-static ]]; then
+            docker run --rm \
+              --entrypoint sh \
+              --mount "type=bind,source=$project,target=/project" \
+              "$IMAGE" \
+              -euc '! readelf --program-headers /project/main | grep -q INTERP; ! readelf --dynamic /project/main 2>/dev/null | grep -q NEEDED'
+          fi
+
+      - name: Publish ${{ matrix.image }}:${{ matrix.version }}
+        env:
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            if [[ -n "$tag" ]]; then
+              docker push "$tag"
+            fi
+          done <<< "$IMAGE_TAGS"

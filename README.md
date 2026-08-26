@@ -232,8 +232,9 @@ refreshed automatically.
 
 ## Targets
 
-The wrapper accepts `host`, the latest `linux64` image, or a versioned
-`linux64:vX.Y-ubuntu.YY.MM` image. Both target-option forms are accepted
+The wrapper accepts `host`, the latest Ubuntu-based `linux64` image, a
+versioned `linux64:vX.Y-ubuntu.YY.MM` image, or a versioned static Alpine image
+named `linux64:vX.Y-alpine.A.B-static`. Both target-option forms are accepted
 anywhere before `--`:
 
 ```bash
@@ -247,22 +248,22 @@ The portable installer leaves the target default absent, which selects `host`.
 the installed default.
 
 The `host` target executes the backend from the same installation prefix and
-uses the host compiler and dependencies. The unversioned target always checks
-for and runs the latest image:
+uses the host compiler and dependencies. The unversioned target remains the
+Ubuntu environment and always checks for and runs its latest image:
 
 ```text
 linux64 -> ghcr.io/hard-build/linux64:latest
 ```
 
-An explicit version is immutable and downloaded only when it is missing:
+Explicit versions are immutable and downloaded only when they are missing:
 
 ```text
 linux64:v2.0-ubuntu.22.04
   -> ghcr.io/hard-build/linux64:v2.0-ubuntu.22.04
 ```
 
-The current versioned image contains the `hard` v2.0 portable runtime and an
-Ubuntu 22.04 C++ build environment. Both its versioned tag and `latest` use
+The Ubuntu image contains the `hard` v2.0 portable runtime and an Ubuntu 22.04
+C++ build environment. Both its versioned tag and `latest` use
 `HARD_ENV=linux64:v2.0-ubuntu.22.04`, so they share compatible artifacts while
 future image versions receive separate cache directories.
 
@@ -294,7 +295,7 @@ Host execution additionally needs tools required by the selected command:
 
 The installer does not install these tools, Docker, or system packages. The
 `linux64` image contains its own compiler, GoogleTest, CMake, GNU Make,
-Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool.
+Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool toolchain.
 
 Ubuntu 18.04's default GCC 7 does not satisfy the default C++20 build contract.
 Use `linux64` there or configure a suitable host toolchain.
@@ -308,7 +309,7 @@ Use `linux64` there or configure a suitable host toolchain.
 | `HARD_ROOT` | Persistent source and artifact root | `~/.local/share/hard` |
 | `HARD_ENV` | Toolchain and cache environment name | `host` |
 | `HARD_CC` | Compiler executable | `c++` |
-| `HARD_CFLAGS` | Compiler and libclang flags | `-std=c++20 -O3 -flto=auto -Wall -Wextra` |
+| `HARD_CFLAGS` | Project compiler and libclang flags | `-std=c++20 -O3 -flto=auto -Wall -Wextra` |
 | `HARD_LDFLAGS` | Linker flags | Compiler defaults plus `-static-libgcc -static-libstdc++` |
 | `HARD_ENTRYPOINTS` | Global entry-function names | `main _start` |
 
@@ -316,6 +317,10 @@ An explicit `HARD_CFLAGS` or `HARD_LDFLAGS` value replaces the complete
 default vector. The backend always adds its source-root include and runtime
 `hard.h` force include. An explicitly empty `HARD_ENTRYPOINTS` disables build
 entry linking.
+
+When a portable runtime contains `lib/clang/18/include`, the backend adds that
+directory to libclang analysis as an after-system include. This parser-only
+argument is not part of `HARD_CFLAGS` and does not appear in compiler commands.
 
 `HARD_ENV` is the cache boundary for the compiler, standard library, libc,
 sysroot, ABI, container, and other immutable toolchain state. Select a

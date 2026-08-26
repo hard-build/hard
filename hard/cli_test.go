@@ -390,12 +390,6 @@ func TestShellCompletion(t *testing.T) {
 			notWant: []string{"_help", "completion"},
 		},
 		{
-			name:    "target values",
-			args:    []string{"__complete", "--target="},
-			want:    []string{"host", "linux64", "linux64:v2.0-ubuntu.22.04", ":4"},
-			notWant: []string{"_help", "completion"},
-		},
-		{
 			name: "default format",
 			args: []string{"__complete", "format", "--format="},
 			want: []string{"format.v1", ":4"},
@@ -434,6 +428,22 @@ func TestShellCompletion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBackendShellCompletionDoesNotOwnTargetValues(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_, err := parseArguments([]string{"__complete", "--target=linux64:v"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("parseArguments() error = %v, stderr = %q", err, stderr.String())
+	}
+	for _, target := range []string{
+		"linux64:v3.0-ubuntu.22.04",
+		"linux64:v3.0-alpine.3.22-static",
+	} {
+		if strings.Contains(stdout.String(), target) {
+			t.Errorf("backend completion contains wrapper target %q:\n%s", target, stdout.String())
+		}
 	}
 }
 
@@ -489,7 +499,7 @@ func TestHelp(t *testing.T) {
 				"(default 1)",
 				"--no-color",
 				"--target string",
-				"supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM",
+				"supported: host, linux64, linux64:vX.Y-ubuntu.YY.MM, linux64:vX.Y-alpine.A.B-static",
 				"-v, --verbose",
 			},
 		},
