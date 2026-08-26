@@ -305,12 +305,12 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" --clobber \
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
               "$RUNNER_TEMP/release/$ARCHIVE_NAME" \
               "$RUNNER_TEMP/release/$CHECKSUM_NAME"
           else
-            gh release create "$RELEASE_TAG" \
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --generate-notes \
               --title "$RELEASE_TAG" \
               "$RUNNER_TEMP/release/$ARCHIVE_NAME" \

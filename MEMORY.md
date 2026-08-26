@@ -2709,15 +2709,21 @@ Local verification parsed the workflow, checked every run script with
 `bash -n`, and asserted the three exact matrix images, non-fail-fast policy,
 job dependencies, artifact-ID handoff, and absence of nested Docker in smoke.
 All three local base images installed their declared dependencies successfully;
-Ubuntu 22.04 and 24.04 also compiled and ran the smoke C++20 source. The REST
-artifact transfer and complete matrix remain pending verification by an actual
-GitHub Actions run.
+Ubuntu 22.04 and 24.04 also compiled and ran the smoke C++20 source. The actual
+GitHub Actions run described below subsequently verified the REST artifact
+transfer and complete matrix.
 
-The corrected workflow is committed, and the local annotated `v3.0` tag
-points at that corrected commit. Neither the corrected commit nor the moved
-tag has been pushed after this fix, so the remote tag and failed workflow
-remain unchanged. No v3.0 release artifact, Dockerfile, image, or publication
-exists yet.
+The corrected workflow commit and moved annotated `v3.0` tag were pushed. Its
+release run built and uploaded the portable archive, passed the complete smoke
+matrix, and downloaded the workflow artifact in the publish job. Publication
+then failed because that separate job had no checkout while its `gh release`
+commands did not select a repository explicitly.
+
+The follow-up passes `--repo "$GITHUB_REPOSITORY"` to release view, upload, and
+create, so publication no longer depends on a local Git checkout. It is
+committed locally, and the local annotated `v3.0` tag points at that commit.
+Neither the follow-up commit nor the moved tag has been pushed. No v3.0 GitHub
+Release, Dockerfile, image, or publication exists yet.
 
 ## Workspace safety snapshot
 
