@@ -57,6 +57,8 @@ jobs:
             fi
             if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-ubuntu\.[0-9]+\.[0-9]+$ ]] && \
                [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-alpine\.[0-9]+\.[0-9]+-static$ ]] && \
+               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-glibc\.[0-9]+\.[0-9]+$ ]] && \
+               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-musl\.[0-9]+\.[0-9]+\.[0-9]+-static$ ]] && \
                [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-llvm-mingw\.[0-9]{8}-ucrt$ ]]; then
               echo "invalid target Dockerfile name: $dockerfile" >&2
               exit 1
@@ -75,10 +77,11 @@ jobs:
             hard_revision=$(git rev-parse "$hard_version^{commit}")
 
             publish_latest=false
-            if [[ "$version" =~ -ubuntu\. ]]; then
+            if [[ "$version" =~ -(ubuntu|glibc)\. ]]; then
               latest_dockerfile=$(
                 find "target/$image" -maxdepth 1 -type f \
-                  -name 'v*-ubuntu.*.Dockerfile' -print \
+                  \( -name 'v*-ubuntu.*.Dockerfile' -o -name 'v*-glibc.*.Dockerfile' \) \
+                  -print \
                   | sort -V \
                   | tail -1
               )
@@ -235,6 +238,23 @@ jobs:
               --user "$(id -u):$(id -g)" \
               "$IMAGE" \
               -euc '! readelf --program-headers /project/main | grep -q INTERP; ! readelf --dynamic /project/main 2>/dev/null | grep -q NEEDED'
+          fi
+
+          if [[ "$IMAGE_VERSION" == *-glibc.* ]]; then
+            expected=${IMAGE_VERSION##*-glibc.}
+            actual=$(docker run --rm \
+              --entrypoint getconf \
+              "$IMAGE" \
+              GNU_LIBC_VERSION)
+            test "$actual" = "glibc $expected"
+          elif [[ "$IMAGE_VERSION" == *-musl.*-static ]]; then
+            expected=${IMAGE_VERSION##*-musl.}
+            expected=${expected%-static}
+            actual=$(docker run --rm \
+              --entrypoint sh \
+              "$IMAGE" \
+              -c 'ldd --version 2>&1')
+            grep -Fqx "Version $expected" <<< "$actual"
           fi
 
       - name: Publish ${{ matrix.image }}:${{ matrix.version }}

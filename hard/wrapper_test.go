@@ -183,6 +183,8 @@ func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
 			want: []string{
 				"host",
 				"linux64",
+				"linux64:v4.0-glibc.2.35",
+				"linux64:v4.0-musl.1.2.5-static",
 				"linux64:v3.0-ubuntu.22.04",
 				"linux64:v3.0-alpine.3.22-static",
 				"windows64",
@@ -193,8 +195,8 @@ func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
 		},
 		{
 			name: "separate prefixed value without descriptions",
-			args: []string{"__completeNoDesc", "--target", "linux64:v3.0-a"},
-			want: []string{"linux64:v3.0-alpine.3.22-static", ":4"},
+			args: []string{"__completeNoDesc", "--target", "linux64:v4.0-m"},
+			want: []string{"linux64:v4.0-musl.1.2.5-static", ":4"},
 		},
 	}
 
@@ -318,6 +320,20 @@ func TestWrapperRunsTargetInDocker(t *testing.T) {
 			want:  []string{"build"},
 		},
 		{
+			name:  "glibc target",
+			args:  []string{"--target=linux64:v4.0-glibc.2.35", "build"},
+			image: "ghcr.io/hard-build/linux64:v4.0-glibc.2.35",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
+			name:  "musl static target",
+			args:  []string{"--target=linux64:v4.0-musl.1.2.5-static", "build"},
+			image: "ghcr.io/hard-build/linux64:v4.0-musl.1.2.5-static",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
 			name:  "Alpine static target",
 			args:  []string{"build", "--target=linux64:v2.0-alpine.3.22-static"},
 			image: "ghcr.io/hard-build/linux64:v2.0-alpine.3.22-static",
@@ -342,6 +358,20 @@ func TestWrapperRunsTargetInDocker(t *testing.T) {
 			name:  "future versioned Windows target",
 			args:  []string{"--target=windows64:v12.34-llvm-mingw.20270101-ucrt", "build"},
 			image: "ghcr.io/hard-build/windows64:v12.34-llvm-mingw.20270101-ucrt",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
+			name:  "arbitrary valid known target tag",
+			args:  []string{"--target=windows64:development_2026.08", "build"},
+			image: "ghcr.io/hard-build/windows64:development_2026.08",
+			pull:  "missing",
+			want:  []string{"build"},
+		},
+		{
+			name:  "maximum length known target tag",
+			args:  []string{"--target=linux64:" + strings.Repeat("a", 128), "build"},
+			image: "ghcr.io/hard-build/linux64:" + strings.Repeat("a", 128),
 			pull:  "missing",
 			want:  []string{"build"},
 		},
@@ -464,33 +494,17 @@ func TestWrapperRejectsInvalidTarget(t *testing.T) {
 			wantErr: "--target may only be specified once",
 		},
 		{name: "legacy target", args: []string{"--target=linux.v1", "build"}, wantErr: "unknown target: linux.v1"},
-		{name: "missing image version", args: []string{"--target=linux64:v2.0", "build"}, wantErr: "unknown target: linux64:v2.0"},
-		{name: "invalid hard version", args: []string{"--target=linux64:v2.x-ubuntu.22.04", "build"}, wantErr: "unknown target: linux64:v2.x-ubuntu.22.04"},
-		{name: "invalid Ubuntu version", args: []string{"--target=linux64:v2.0-ubuntu.22", "build"}, wantErr: "unknown target: linux64:v2.0-ubuntu.22"},
+		{name: "unknown repository", args: []string{"--target=macos64:v4.0", "build"}, wantErr: "unknown target: macos64:v4.0"},
+		{name: "empty known target tag", args: []string{"--target=linux64:", "build"}, wantErr: "unknown target: linux64:"},
+		{name: "tag begins with dash", args: []string{"--target=linux64:-invalid", "build"}, wantErr: "unknown target: linux64:-invalid"},
+		{name: "tag begins with dot", args: []string{"--target=linux64:.invalid", "build"}, wantErr: "unknown target: linux64:.invalid"},
+		{name: "tag contains slash", args: []string{"--target=linux64:invalid/tag", "build"}, wantErr: "unknown target: linux64:invalid/tag"},
+		{name: "tag contains second colon", args: []string{"--target=linux64:invalid:tag", "build"}, wantErr: "unknown target: linux64:invalid:tag"},
+		{name: "tag contains at sign", args: []string{"--target=windows64:invalid@tag", "build"}, wantErr: "unknown target: windows64:invalid@tag"},
 		{
-			name:    "Alpine target without static suffix",
-			args:    []string{"--target=linux64:v2.0-alpine.3.22", "build"},
-			wantErr: "unknown target: linux64:v2.0-alpine.3.22",
-		},
-		{
-			name:    "invalid Alpine version",
-			args:    []string{"--target=linux64:v2.0-alpine.3-static", "build"},
-			wantErr: "unknown target: linux64:v2.0-alpine.3-static",
-		},
-		{
-			name:    "Windows target without UCRT suffix",
-			args:    []string{"--target=windows64:v4.0-llvm-mingw.20260616", "build"},
-			wantErr: "unknown target: windows64:v4.0-llvm-mingw.20260616",
-		},
-		{
-			name:    "invalid LLVM-MinGW version",
-			args:    []string{"--target=windows64:v4.0-llvm-mingw.2026061-ucrt", "build"},
-			wantErr: "unknown target: windows64:v4.0-llvm-mingw.2026061-ucrt",
-		},
-		{
-			name:    "invalid Windows hard version",
-			args:    []string{"--target=windows64:v4.x-llvm-mingw.20260616-ucrt", "build"},
-			wantErr: "unknown target: windows64:v4.x-llvm-mingw.20260616-ucrt",
+			name:    "tag exceeds Docker limit",
+			args:    []string{"--target=linux64:" + strings.Repeat("a", 129), "build"},
+			wantErr: "unknown target: linux64:" + strings.Repeat("a", 129),
 		},
 	}
 

@@ -5,66 +5,19 @@ fail() {
 	exit 1
 }
 
-is_numeric_version() {
-	version=$1
-	case "$version" in
-		*.*)
-			version_major=${version%%.*}
-			version_minor=${version#*.}
-			;;
+is_versioned_target() {
+	case "$1" in
+		linux64:* | windows64:*) ;;
 		*) return 1 ;;
 	esac
-	if [ -z "$version_major" ] || [ -z "$version_minor" ]; then
+
+	tag=${1#*:}
+	if [ "${#tag}" -gt 128 ]; then
 		return 1
 	fi
-	case "$version_minor" in
-		*.*) return 1 ;;
+	case "$tag" in
+		"" | [!A-Za-z0-9_]* | *[!A-Za-z0-9_.-]*) return 1 ;;
 	esac
-	case "$version_major$version_minor" in
-		*[!0-9]*) return 1 ;;
-	esac
-}
-
-is_versioned_linux64_target() {
-	case "$1" in
-		linux64:v*-ubuntu.* | linux64:v*-alpine.*-static) ;;
-		*) return 1 ;;
-	esac
-	linux64_version=${1#linux64:v}
-	hard_version=${linux64_version%%-*}
-	platform=${linux64_version#*-}
-	case "$platform" in
-		ubuntu.*)
-			platform_version=${platform#ubuntu.}
-			;;
-		alpine.*-static)
-			platform_version=${platform#alpine.}
-			version_without_static=${platform_version%-static}
-			if [ "$version_without_static" = "$platform_version" ]; then
-				return 1
-			fi
-			platform_version=$version_without_static
-			;;
-		*) return 1 ;;
-	esac
-	is_numeric_version "$hard_version" && is_numeric_version "$platform_version"
-}
-
-is_versioned_windows64_target() {
-	case "$1" in
-		windows64:v*-llvm-mingw.*-ucrt) ;;
-		*) return 1 ;;
-	esac
-	windows64_version=${1#windows64:v}
-	hard_version=${windows64_version%%-*}
-	toolchain=${windows64_version#*-}
-	llvm_mingw_version=${toolchain#llvm-mingw.}
-	llvm_mingw_version=${llvm_mingw_version%-ucrt}
-	case "$llvm_mingw_version" in
-		[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-		*) return 1 ;;
-	esac
-	is_numeric_version "$hard_version"
 }
 
 complete_target() {
@@ -105,6 +58,8 @@ complete_target() {
 	for completion_target in \
 		host \
 		linux64 \
+		linux64:v4.0-glibc.2.35 \
+		linux64:v4.0-musl.1.2.5-static \
 		linux64:v3.0-ubuntu.22.04 \
 		linux64:v3.0-alpine.3.22-static \
 		windows64 \
@@ -235,8 +190,7 @@ case "$target" in
 		pull=missing
 		;;
 	*)
-		if is_versioned_linux64_target "$target" ||
-			is_versioned_windows64_target "$target"; then
+		if is_versioned_target "$target"; then
 			image=ghcr.io/hard-build/$target
 			pull=missing
 		else

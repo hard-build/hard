@@ -53,8 +53,9 @@ Command completion is installed at the shell-standard user-local paths:
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
 the six public commands, command flags, filesystem paths, `host`, `linux64`,
-`windows64`, the `linux64:v3.0-ubuntu.22.04` and
-`linux64:v3.0-alpine.3.22-static` versions, the
+`windows64`, the `linux64:v4.0-glibc.2.35` and
+`linux64:v4.0-musl.1.2.5-static` versions, the older
+`linux64:v3.0-ubuntu.22.04` and `linux64:v3.0-alpine.3.22-static` versions, the
 `windows64:v4.0-llvm-mingw.20260616-ucrt` version, `docker://`, and the default
 `format.v1` format. The wrapper itself supplies target values. Other dynamic requests
 always execute the installed host backend, even when a container target is the
@@ -209,13 +210,13 @@ report itself is its result.
 The POSIX wrapper accepts `--target=<name>` and `--target <name>` anywhere
 before `--`. `host` executes the private backend from the same installation
 prefix. Container execution accepts the latest `linux64` or `windows64` image,
-their documented versioned forms, or any image reference prefixed with
-`docker://`:
+any syntactically valid explicit tag for either known image repository, or any
+image reference prefixed with `docker://`:
 
 ```bash
 hard --target=host build src
 hard --target=linux64 build src
-hard test --target linux64:v3.0-ubuntu.22.04 tests
+hard test --target linux64:v4.0-glibc.2.35 tests
 hard run --target=linux64 src/application.cpp -- --mode=check
 hard --target=windows64 build src/application.cpp
 hard --target=docker://registry.example/toolchain:tag environment
@@ -228,8 +229,13 @@ also selects `host`. An explicit target always overrides that default, and no
 compatibility diagnostics are added to host execution.
 
 A target-looking value after the `run` separator belongs to the program and is
-not interpreted by the wrapper. Empty, repeated, malformed, and unknown named
-targets are errors. The legacy `linux.v1` spelling is not supported.
+not interpreted by the wrapper. Empty and repeated targets are errors. A named
+explicit image must be `linux64:<tag>` or `windows64:<tag>`, where the tag is
+at most 128 ASCII characters, begins with an ASCII letter, digit, or
+underscore, and otherwise contains only letters, digits, underscores, dots,
+and hyphens. The wrapper validates only this Docker tag syntax; it does not
+interpret a version, libc, distribution, toolchain, or other tag component.
+Unknown target repositories and the legacy `linux.v1` spelling are rejected.
 
 For a container target, the wrapper only executes `docker run`; it never builds
 an image or resolves the host runtime. The image entrypoint runs the container
@@ -240,9 +246,14 @@ linux64 -> ghcr.io/hard-build/linux64:latest     (--pull=always)
 windows64 -> ghcr.io/hard-build/windows64:latest (--pull=always)
 ```
 
-Explicit forms name immutable images and download them only when missing:
+Documented version forms name immutable images and download them only when
+missing:
 
 ```text
+linux64:v4.0-glibc.2.35
+  -> ghcr.io/hard-build/linux64:v4.0-glibc.2.35  (--pull=missing)
+linux64:v4.0-musl.1.2.5-static
+  -> ghcr.io/hard-build/linux64:v4.0-musl.1.2.5-static  (--pull=missing)
 linux64:v3.0-ubuntu.22.04
   -> ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04  (--pull=missing)
 linux64:v3.0-alpine.3.22-static
@@ -260,24 +271,28 @@ is started. The image must own a hard-compatible entrypoint and complete
 same-absolute-path project mount, working directory, UID:GID, and stdin
 contract as the documented images.
 
-The Ubuntu image definition is
-`target/linux64/v3.0-ubuntu.22.04.Dockerfile`. It downloads the official
-`hard-v3.0.tar.gz` portable release, verifies SHA-256
-`4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`,
-requires its bundled `VERSION` to equal `v3.0`, and installs its complete
-`libexec/hard` runtime at `/usr/local/libexec/hard`. The container therefore
-uses the backend, `hard.h`, format, clang-format, libclang 18.1.8, Clang
-resource headers, and compatibility libraries published from Git tag `v3.0`,
-rather than compiling the current branch.
+The current glibc definition is
+`target/linux64/v4.0-glibc.2.35.Dockerfile`. It uses Ubuntu 22.04, downloads
+the exact Git revision supplied for tag `v4.0`, and builds the backend against
+the apt.llvm.org Jammy libclang 18 packages. Its final runtime uses the same
+system libclang and Clang resource headers, verifies `glibc 2.35`, and records
+`HARD_ENV=linux64:v4.0-glibc.2.35`.
 
-The static Alpine definition is
-`target/linux64/v3.0-alpine.3.22-static.Dockerfile`. The portable release is a
-glibc runtime and cannot execute on musl, so this image downloads the source
-archive for Git tag `v3.0`, verifies SHA-256
-`ee24cbeec82087f31a0c07d7a346f85c0f3d5b36fd25199a90ebb69c1e1bee35`, and
-builds the backend natively against Alpine's libclang 18. Generated programs
-are linked completely statically against musl. The image also builds static
-GoogleTest archives from Alpine's packaged sources.
+The current static musl definition is
+`target/linux64/v4.0-musl.1.2.5-static.Dockerfile`. It downloads the same exact
+Git revision, builds the backend natively on Alpine 3.22 against the packaged
+libclang 18, verifies musl 1.2.5, and records
+`HARD_ENV=linux64:v4.0-musl.1.2.5-static`. Generated programs are linked
+completely statically against musl. The image also builds static GoogleTest
+archives from Alpine's packaged sources.
+
+The older `target/linux64/v3.0-ubuntu.22.04.Dockerfile` installs the official
+v3.0 portable archive with SHA-256
+`4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`. The
+older `target/linux64/v3.0-alpine.3.22-static.Dockerfile` builds the v3.0
+source archive with SHA-256
+`ee24cbeec82087f31a0c07d7a346f85c0f3d5b36fd25199a90ebb69c1e1bee35`.
+Their exact image tags remain available for compatibility.
 
 The Windows definition is
 `target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile`. It builds the
@@ -291,7 +306,7 @@ libraries. The image also cross-builds static GoogleTest archives, installs
 Wine 64-bit, and supplies a CMake toolchain file at
 `/opt/windows64/toolchain.cmake`.
 
-The Ubuntu image uses Ubuntu 22.04. Its C++ toolchain is GCC 11 with glibc 2.35.
+The glibc image uses Ubuntu 22.04. Its C++ toolchain is GCC 11 with glibc 2.35.
 `-static-libgcc` and `-static-libstdc++` do not make glibc static, so the image
 does not promise that generated programs run on systems older than the Ubuntu
 22.04 ABI. The runtime also contains GoogleTest 1.11, CMake 3.22, GNU Make,
@@ -300,8 +315,9 @@ Distribution package revisions are resolved when the image is built. Ubuntu
 22.04 standard security maintenance ends in May 2027.
 
 An image version is published only when its previously unseen Dockerfile is
-added. The newest Ubuntu version advances `linux64:latest`, and the newest
-LLVM-MinGW UCRT version advances `windows64:latest`; adding an Alpine static
+added. The newest glibc version advances `linux64:latest`, with older
+Ubuntu-named images included when selecting that lineage. The newest LLVM-MinGW
+UCRT version advances `windows64:latest`; adding a musl or older Alpine static
 image leaves `linux64:latest` unchanged. Modifying, deleting, or re-adding a
 known Dockerfile does not rebuild or republish it. CI loads each new image
 locally, builds and executes a C++20 smoke program, and only then pushes its
@@ -312,9 +328,9 @@ and runs all declarative integration scenarios inside the image.
 
 The wrapper bind-mounts the host `${HARD_ROOT:-$HOME/.local/share/hard}` at
 `/hard` and the current working directory at the same absolute path inside the
-container. The v3.0 images use
-`/hard/env/linux64:v3.0-ubuntu.22.04/build` and
-`/hard/env/linux64:v3.0-alpine.3.22-static/build`. Every image preserves the
+container. The v4.0 images use
+`/hard/env/linux64:v4.0-glibc.2.35/build` and
+`/hard/env/linux64:v4.0-musl.1.2.5-static/build`. Every image preserves the
 shared source snapshots while isolating its build artifacts from other target
 versions and `env/host`.
 
@@ -328,11 +344,11 @@ directory and `HARD_ROOT` are mounted. Explicit inputs or resolved symlinks
 outside both trees are therefore unavailable in the container. A non-empty
 host `HARD_ROOT` selects the bind-mount source but is not copied into the
 container environment. Other host `HARD_*` values are not forwarded. The
-Ubuntu image fixes its complete target configuration as follows:
+glibc image fixes its complete target configuration as follows:
 
 ```text
 HARD_ROOT=/hard
-HARD_ENV=linux64:v3.0-ubuntu.22.04
+HARD_ENV=linux64:v4.0-glibc.2.35
 HARD_CC=c++
 HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto
             -Wall -Wextra
@@ -341,11 +357,11 @@ HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
 HARD_ENTRYPOINTS=main _start
 ```
 
-The Alpine image uses the same fixed root, compiler, compiler flags, and
+The musl image uses the same fixed root, compiler, compiler flags, and
 entrypoints; only the environment name and linker flags differ:
 
 ```text
-HARD_ENV=linux64:v3.0-alpine.3.22-static
+HARD_ENV=linux64:v4.0-musl.1.2.5-static
 HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra
              -static -static-libgcc -static-libstdc++
 ```
@@ -1389,7 +1405,8 @@ installed default target. Without `--target`, it reads
 `libexec/hard/default-target`; a missing file preserves the host default.
 `--target=host` replaces the wrapper with the host backend and prefixes its
 bundled tool directory to `PATH`. `--target=linux64`, `--target=windows64`, an
-explicit documented version, or `--target=docker://image` executes the
+explicit syntactically valid tag for either repository, or
+`--target=docker://image` executes the
 documented `docker run` invocation without resolving the host runtime. It
 never builds an image.
 

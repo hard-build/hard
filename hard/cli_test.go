@@ -447,6 +447,8 @@ func TestBackendShellCompletionDoesNotOwnTargetValues(t *testing.T) {
 		t.Fatalf("parseArguments() error = %v, stderr = %q", err, stderr.String())
 	}
 	for _, target := range []string{
+		"linux64:v4.0-glibc.2.35",
+		"linux64:v4.0-musl.1.2.5-static",
 		"linux64:v3.0-ubuntu.22.04",
 		"linux64:v3.0-alpine.3.22-static",
 	} {

@@ -262,6 +262,8 @@ jobs:
           HOME=/tmp/home "$hard" __complete --target= > /tmp/targets
           grep -qx host /tmp/targets
           grep -qx linux64 /tmp/targets
+          grep -qx 'linux64:v4.0-glibc.2.35' /tmp/targets
+          grep -qx 'linux64:v4.0-musl.1.2.5-static' /tmp/targets
           grep -qx 'linux64:v3.0-ubuntu.22.04' /tmp/targets
           grep -qx 'linux64:v3.0-alpine.3.22-static' /tmp/targets
           ! grep -qx linux.v1 /tmp/targets

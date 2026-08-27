@@ -254,14 +254,15 @@ refreshed automatically.
 
 ## Targets
 
-The wrapper accepts `host`, the latest `linux64` or `windows64` image, their
-documented versioned forms, or an arbitrary image prefixed with `docker://`.
-Both target-option forms are accepted anywhere before `--`:
+The wrapper accepts `host`, the latest `linux64` or `windows64` image, any
+syntactically valid explicit tag for either known image repository, or an
+arbitrary image prefixed with `docker://`. Both target-option forms are
+accepted anywhere before `--`:
 
 ```bash
 hard --target=host build src
 hard --target=linux64 build src
-hard test --target linux64:v3.0-ubuntu.22.04 tests
+hard test --target linux64:v4.0-glibc.2.35 tests
 hard --target=windows64 build src
 hard --target=docker://registry.example/toolchain:tag environment
 ```
@@ -279,9 +280,16 @@ linux64 -> ghcr.io/hard-build/linux64:latest
 windows64 -> ghcr.io/hard-build/windows64:latest
 ```
 
-Explicit versions are immutable and downloaded only when they are missing:
+An explicit `linux64:<tag>` or `windows64:<tag>` target is downloaded only
+when missing. The wrapper validates only the Docker tag syntax and does not
+interpret its version, libc, distribution, or toolchain components. Documented
+version tags are immutable:
 
 ```text
+linux64:v4.0-glibc.2.35
+  -> ghcr.io/hard-build/linux64:v4.0-glibc.2.35
+linux64:v4.0-musl.1.2.5-static
+  -> ghcr.io/hard-build/linux64:v4.0-musl.1.2.5-static
 linux64:v3.0-ubuntu.22.04
   -> ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
 linux64:v3.0-alpine.3.22-static
@@ -297,12 +305,12 @@ For `docker://registry.example/toolchain:tag`, the wrapper strips only the
 the project at the mounted working-directory path. Empty image names and names
 beginning with `-` are rejected.
 
-The Ubuntu image contains the `hard` v3.0 portable runtime and an Ubuntu 22.04
-C++ build environment. Both its versioned tag and `latest` use
-`HARD_ENV=linux64:v3.0-ubuntu.22.04`, so they share compatible artifacts. The
-Alpine image builds `hard` v3.0 natively against musl, uses its own
-`HARD_ENV=linux64:v3.0-alpine.3.22-static`, and links generated executables
-fully statically.
+The current glibc image builds `hard` v4.0 for an Ubuntu 22.04 environment with
+glibc 2.35. Both its versioned tag and `latest` use
+`HARD_ENV=linux64:v4.0-glibc.2.35`, so they share compatible artifacts. The
+current musl image builds `hard` v4.0 natively on Alpine 3.22 with musl 1.2.5,
+uses `HARD_ENV=linux64:v4.0-musl.1.2.5-static`, and links generated executables
+fully statically. The older Ubuntu- and Alpine-named tags remain available.
 
 The Windows image contains `hard` v4.0, LLVM-MinGW 20260616 with Clang 22.1.8
 and UCRT, and Wine. It sets the generic executable suffix to `.exe` and runner
@@ -420,8 +428,8 @@ HARD_ROOT/
 │   └── recipe -> github.com/hard-build/recipe
 └── env/
     ├── host/
-    ├── linux64:v3.0-ubuntu.22.04/
-    ├── linux64:v3.0-alpine.3.22-static/
+    ├── linux64:v4.0-glibc.2.35/
+    ├── linux64:v4.0-musl.1.2.5-static/
     └── windows64:v4.0-llvm-mingw.20260616-ucrt/
 ```
 

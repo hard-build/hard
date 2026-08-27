@@ -137,9 +137,9 @@ Implemented:
 - generated Bash, Zsh, and Fish completion files, with target values owned by
   the wrapper and every other dynamic request dispatched to the host backend;
 - wrapper-owned `linux64` and `windows64` Docker targets that select their
-  always-refreshed GHCR `latest` tags or immutable Ubuntu, Alpine static, and
-  LLVM-MinGW UCRT versions while bind-mounting the persistent source/cache
-  root from the host;
+  always-refreshed GHCR `latest` tags or any syntactically valid explicit
+  Docker tag while bind-mounting the persistent source/cache root from the
+  host;
 - arbitrary `docker://image` wrapper targets with pull-if-missing behavior and
   the same mounts, identity, workdir, and image-owned entrypoint contract;
 - generic `HARD_EXECUTABLE_SUFFIX` and `HARD_EXECUTABLE_RUNNER` behavior for
@@ -153,7 +153,7 @@ Implemented:
 - a GitHub Actions workflow that publishes an image version only when a
   previously unseen `target/<image>/<version>.Dockerfile` is added to `main`,
   keeps version tags immutable, advances `linux64:latest` only for the newest
-  Ubuntu version, and advances `windows64:latest` only for the newest
+  glibc version, and advances `windows64:latest` only for the newest
   LLVM-MinGW UCRT version;
 - a release-tag GitHub workflow that builds the host backend against
   the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
@@ -186,6 +186,8 @@ cache entries and are not refreshed automatically.
 | `target/linux64/v2.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v2.0 portable runtime |
 | `target/linux64/v3.0-ubuntu.22.04.Dockerfile` | Ubuntu 22.04 `linux/amd64` image installing the pinned hard v3.0 portable runtime |
 | `target/linux64/v3.0-alpine.3.22-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v3.0 against musl and producing fully static programs |
+| `target/linux64/v4.0-glibc.2.35.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 against glibc 2.35 |
+| `target/linux64/v4.0-musl.1.2.5-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v4.0 against musl 1.2.5 and producing fully static programs |
 | `target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 and producing Windows x86-64 UCRT executables with LLVM-MinGW 20260616 and Wine |
 | `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
 | `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
@@ -316,6 +318,19 @@ builds `libgtest.a` and `libgtest_main.a` from the packaged sources.
 `HARD_LDFLAGS` adds `-static`, so generated C and C++ executables are fully
 static; the hard backend itself remains a dynamically linked musl program.
 
+The current `linux64:v4.0-glibc.2.35` target uses Ubuntu 22.04, downloads the
+exact revision of Git tag `v4.0`, builds the backend against the apt.llvm.org
+Jammy libclang 18 packages, and verifies glibc 2.35 in the final image. Its
+compiler and recipe/test toolchain remain GCC 11, GoogleTest, CMake, GNU Make,
+Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool. Generated programs
+link libgcc and libstdc++ statically while keeping glibc dynamic.
+
+The current `linux64:v4.0-musl.1.2.5-static` target downloads the same exact
+revision, builds the backend natively on Alpine 3.22 against packaged libclang
+18, and verifies musl 1.2.5. It builds static GoogleTest archives from Alpine's
+packaged sources and adds `-static` to project linker flags, so generated
+programs have no ELF interpreter or shared-library dependencies.
+
 The `windows64:v4.0-llvm-mingw.20260616-ucrt` target uses Ubuntu 22.04 and
 builds the hard backend from the exact revision of Git tag `v4.0` against the
 apt.llvm.org Jammy libclang 22.1.8 packages. It checksum-verifies the official
@@ -379,8 +394,10 @@ $HOME/.local/
 ```
 
 `hard.sh` is a POSIX `sh` wrapper. It accepts explicit `host`, `linux64`,
-`linux64:vX.Y-ubuntu.YY.MM`, `linux64:vX.Y-alpine.A.B-static`, `windows64`,
-`windows64:vX.Y-llvm-mingw.YYYYMMDD-ucrt`, and `docker://image` targets. It resolves the installation prefix from
+`windows64`, `linux64:<tag>`, `windows64:<tag>`, and `docker://image` targets.
+Known-repository tags use Docker's simple 128-character ASCII tag syntax; the
+wrapper does not interpret version, libc, distribution, or toolchain
+components. It resolves the installation prefix from
 its own path only when the target is absent or explicit host execution is
 selected. Without `--target`, it reads
 `<prefix>/libexec/hard/default-target`, falling back to `host` when the file is
@@ -403,10 +420,10 @@ source of a bind mount targeting `/hard`. The physical current working
 directory is mounted at the same absolute container path and becomes the
 container workdir. Docker uses `--rm`, stdin forwarding, and the current
 numeric UID:GID. Mutable `linux64` and `windows64` targets use `--pull=always`;
-explicit versioned and arbitrary-image targets use `--pull=missing`. No host `HARD_*` value is forwarded
-into the container. A relative host `HARD_ROOT` is made absolute below the
-current working directory. Only the working directory and persistent root are
-mounted.
+explicit tagged and arbitrary-image targets use `--pull=missing`. No host
+`HARD_*` value is forwarded into the container. A relative host `HARD_ROOT` is
+made absolute below the current working directory. Only the working directory
+and persistent root are mounted.
 
 Any prefix with sibling `bin/hard` and `libexec/hard` paths is a supported
 wrapper layout. Changing `PREFIX` or staging through `DESTDIR` preserves the
@@ -490,6 +507,8 @@ discovers its vendor file automatically. The POSIX fallback receives only the
 The wrapper maps its container target forms as follows:
 
     --target=linux64                         ghcr.io/hard-build/linux64:latest
+    --target=linux64:v4.0-glibc.2.35         ghcr.io/hard-build/linux64:v4.0-glibc.2.35
+    --target=linux64:v4.0-musl.1.2.5-static  ghcr.io/hard-build/linux64:v4.0-musl.1.2.5-static
     --target=linux64:v3.0-ubuntu.22.04       ghcr.io/hard-build/linux64:v3.0-ubuntu.22.04
     --target=linux64:v3.0-alpine.3.22-static ghcr.io/hard-build/linux64:v3.0-alpine.3.22-static
     --target=windows64                       ghcr.io/hard-build/windows64:latest
@@ -501,11 +520,18 @@ The older exact `linux64:v2.0-ubuntu.22.04` target remains valid and maps to
 the same tag below `ghcr.io/hard-build/linux64`.
 
 Mutable `linux64` and `windows64` aliases are pulled before every run and
-remain their newest Ubuntu and LLVM-MinGW UCRT images respectively. Exact
-version targets are pulled only when missing locally. Exact targets remain
+remain their newest glibc and LLVM-MinGW UCRT images respectively. Explicit
+tag targets are pulled only when missing locally. Published version tags remain
 available for reproducible builds and persistent caches.
 
-The v3.0 Ubuntu image installs the official `hard-v3.0.tar.gz` portable release,
+The wrapper accepts any `linux64:<tag>` or `windows64:<tag>` whose Docker tag
+is non-empty, no longer than 128 characters, begins with an ASCII alphanumeric
+or underscore, and otherwise contains only ASCII alphanumerics, underscores,
+dots, and hyphens. This is syntax validation rather than a published-image
+whitelist; registry availability remains Docker's responsibility.
+
+The older v3.0 Ubuntu image installs the official `hard-v3.0.tar.gz` portable
+release,
 whose backend corresponds to Git tag `v3.0` at
 `3826020ccc617f189521e5628e2ce5f8ecf82e00`. The archive checksum is pinned to
 `4a5d0227e80148684559d148be815cd6169f311fd0abe5b43ad2940b301e9fc1`.
@@ -524,7 +550,25 @@ pin `v3.0`, mutates shell configuration, and installs below `$HOME/.local`.
 Installing the versioned archive directly gives the image an immutable input and
 fails the build if either the archive or expected version changes.
 
-The Ubuntu image's fixed target environment is:
+The current glibc image's fixed target environment is:
+
+    HARD_ROOT=/hard
+    HARD_ENV=linux64:v4.0-glibc.2.35
+    HARD_CC=c++
+    HARD_CFLAGS=-std=c++20 -march=x86-64-v3 -mtune=generic -O3 -flto=auto -Wall -Wextra
+    HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++
+    HARD_ENTRYPOINTS=main _start
+
+The current musl image uses the same root, compiler, entrypoints, and compiler
+flags, with these target-specific values:
+
+    HARD_ENV=linux64:v4.0-musl.1.2.5-static
+    HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static -static-libgcc -static-libstdc++
+
+It builds hard v4.0 from the exact revision supplied by CI, uses Alpine's
+system libclang resource directory, and verifies musl 1.2.5.
+
+The older Ubuntu image's fixed target environment is:
 
     HARD_ROOT=/hard
     HARD_ENV=linux64:v3.0-ubuntu.22.04
@@ -533,8 +577,8 @@ The Ubuntu image's fixed target environment is:
     HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static-libgcc -static-libstdc++
     HARD_ENTRYPOINTS=main _start
 
-The Alpine image uses the same root, compiler, entrypoints, and compiler flags,
-with these target-specific values:
+The older Alpine image uses the same root, compiler, entrypoints, and compiler
+flags, with these target-specific values:
 
     HARD_ENV=linux64:v3.0-alpine.3.22-static
     HARD_LDFLAGS=-std=c++20 -O3 -flto=auto -Wall -Wextra -static -static-libgcc -static-libstdc++
@@ -584,11 +628,13 @@ dispatch. On a push to `main`, it considers only newly added
 filename, requires the `vX.Y` prefix to name an existing Git tag, and records
 that tag's revision in the image. A path that occurred earlier in Git history is
 skipped, even if deleted and re-added. A newly added Dockerfile publishes an
-immutable version tag. A newly added Ubuntu Dockerfile can advance
-`linux64:latest` only when it is the newest Ubuntu version. A newly added
-LLVM-MinGW UCRT Dockerfile can similarly advance `windows64:latest`. Alpine
-static images never change an unversioned target. Changing or deleting an
-existing Dockerfile, and ordinary pushes without a new Dockerfile, publish no image.
+immutable version tag. A newly added glibc Dockerfile can advance
+`linux64:latest` only when it is newest across the glibc and legacy Ubuntu
+lineage. A newly added
+LLVM-MinGW UCRT Dockerfile can similarly advance `windows64:latest`. Legacy
+Alpine and current musl static images never change an unversioned target.
+Changing or deleting an existing Dockerfile, and ordinary pushes without a new
+Dockerfile, publish no image.
 Commit, edge, and release-only tags are not published. Before publication, the
 workflow loads the new image on the runner, builds and executes a C++20 smoke
 program, and checks static targets for both an ELF interpreter and `NEEDED`
@@ -616,9 +662,8 @@ The public command forms are:
                 [--no-cache] [-s|--silent] [path...]
 
 The installed wrapper additionally accepts `--target=host`,
-`--target=linux64`, `--target=linux64:vX.Y-ubuntu.YY.MM`,
-`--target=linux64:vX.Y-alpine.A.B-static`, `--target=windows64`,
-`--target=windows64:vX.Y-llvm-mingw.YYYYMMDD-ucrt`,
+`--target=linux64`, `--target=linux64:<tag>`, `--target=windows64`,
+`--target=windows64:<tag>`,
 `--target=docker://image`, or their separate-value forms anywhere before `--`.
 This selects how one of the same six public commands is executed; it does not
 add another public command. The
@@ -662,6 +707,7 @@ Other CLI decisions:
 - dynamic completion lists only the six public commands and filters Cobra's
   private `_help` suggestion;
 - the wrapper supplies fixed `host`, `linux64`, `windows64`,
+  `linux64:v4.0-glibc.2.35`, `linux64:v4.0-musl.1.2.5-static`,
   `linux64:v3.0-ubuntu.22.04`, `linux64:v3.0-alpine.3.22-static`, and
   `windows64:v4.0-llvm-mingw.20260616-ucrt`, and `docker://` values for `--target`; the backend
   supplies `format.v1`, flag names, commands, and default filesystem-path
@@ -1902,7 +1948,8 @@ to leave the library unchanged for now.
   while persistent source and caches remain in `PREFIX/share/hard` for the
   default user-local prefix.
 - The wrapper supports mutable `--target=linux64` and `--target=windows64`
-  aliases, explicit Ubuntu, Alpine static, and LLVM-MinGW UCRT versions, and
+  aliases, simple Docker-tag-validated explicit versions for either known
+  repository, and
   arbitrary `--target=docker://image` references.
   They run the corresponding `ghcr.io/hard-build/<target>:latest` or exact
   GHCR tag with `--pull=always` and `--pull=missing`, respectively. The wrapper does not
@@ -1963,6 +2010,8 @@ to leave the library unchanged for now.
 - Cached external repositories are not automatically updated or validated.
 - Old per-header forward files and header parse records are not removed even
   though new builds no longer generate or include them.
+- `hard environment` currently reports libc as `unavailable` on Alpine 3.22,
+  although the image and `ldd --version` confirm musl 1.2.5.
 - There is no private GitHub authentication configuration.
 - Ubuntu 22.04 standard security maintenance ends in May 2027. Continued use
   after that date needs an explicit target-version or security-support decision.
@@ -2119,12 +2168,16 @@ real wrapper against a temporary C++ project at least twice to exercise
 persistent cache reuse:
 
     docker build --platform linux/amd64 \
-      --file target/linux64/v3.0-ubuntu.22.04.Dockerfile \
-      --tag hard-build/linux64:v3.0-ubuntu.22.04 .
+      --build-arg HARD_VERSION=v4.0 \
+      --build-arg HARD_REVISION=83971184c99f79a2751bf271903ba567ba6fa8d6 \
+      --file target/linux64/v4.0-glibc.2.35.Dockerfile \
+      --tag hard-build/linux64:v4.0-glibc.2.35 .
 
     docker build --platform linux/amd64 \
-      --file target/linux64/v3.0-alpine.3.22-static.Dockerfile \
-      --tag hard-build/linux64:v3.0-alpine.3.22-static .
+      --build-arg HARD_VERSION=v4.0 \
+      --build-arg HARD_REVISION=83971184c99f79a2751bf271903ba567ba6fa8d6 \
+      --file target/linux64/v4.0-musl.1.2.5-static.Dockerfile \
+      --tag hard-build/linux64:v4.0-musl.1.2.5-static .
 
 Temporarily tag that local image with its exact GHCR reference for the wrapper
 smoke test. Use a temporary host `HARD_ROOT`, confirm container artifacts below
@@ -3063,6 +3116,45 @@ output-error tests passed together with clean gofmt output, ordinary and race
 tests, vet, an out-of-tree backend build, and module verification. A real host
 report showed Ubuntu 24.04.4, glibc 2.39, GCC 13.3.0, and libclang 18.1.3; its
 plain form contained no escape character.
+
+## Last known verification of v4.0 Linux images and generic target tags
+
+On 2026-08-27, two new immutable Linux definitions were prepared:
+`linux64:v4.0-glibc.2.35` and `linux64:v4.0-musl.1.2.5-static`. Both build the
+hard backend from commit `83971184c99f79a2751bf271903ba567ba6fa8d6`, the
+commit selected by Git tag `v4.0`, and record `v4.0` in the image runtime.
+Their locally built image IDs are
+`sha256:8a0b31eaf93b63157840c156cfe7be75b57c043ec6d6a81c11e09cae364f14ca`
+for glibc and
+`sha256:d6f8b81a00821936d4aae49c0f09d3d903356388dc52547b166b046f26545fb8`
+for musl.
+
+Inspection confirmed amd64, the hard entrypoint, target-specific OCI metadata,
+all fixed `HARD_*` values, the recipe-build tools, GCC 11 with glibc 2.35, and
+GCC 14 with musl 1.2.5. A C++20 hello-world built and ran in each image. The
+glibc output is dynamically linked and requires at most `GLIBC_2.34`; the musl
+output is fully static and has neither an ELF interpreter nor a dynamic
+section. The real source wrapper built the program twice through each local
+image while host compiler, flags, environment, and entry points were poisoned;
+the second run reused parsing, compilation, linking, and delivery from each
+target-specific cache. All 12 declarative integration scenarios passed
+independently in both images, including GoogleTest, the embedded TinyXML2
+recipe, and the well-known TinyXML2 recipe.
+
+An isolated replay of the exact workflow discovery run block produced the two
+expected matrix entries. The glibc image had `publish_latest=true`; the musl
+static image had `publish_latest=false`; both selected hard release `v4.0`.
+Workflow YAML parsing and Bash syntax for all ten run blocks passed. Staged
+`make install`, host wrapper execution, target completion, completion syntax,
+and installed file modes also passed. The complete required Go check set
+passed: clean gofmt output, ordinary and race tests, vet, an out-of-tree build,
+and module verification. Both POSIX scripts and `git diff --check` passed.
+
+One existing diagnostic gap was observed but not changed in this image task:
+`hard environment --no-color` reports Alpine libc as `unavailable`, although
+the Dockerfile check and `ldd --version` both confirm musl 1.2.5. No commit,
+tag change, push, registry publication, image removal, or package-visibility
+change was performed.
 
 ## Last known verification of installer output
 
