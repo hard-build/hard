@@ -151,6 +151,8 @@ Implemented:
   `HARD_ROOT`;
 - exclusion of runtime support `hard.h` declarations from source forwards
   while retaining its backend-managed force include;
+- a GitHub Actions check workflow that runs the canonical `make check` target
+  on every pushed repository state and every pull-request update;
 - a GitHub Actions workflow that automatically publishes an image version only
   when a previously unseen `target/<image>/<version>.Dockerfile` is added to
   `main`, offers guarded manual recovery for a failed first publication, keeps
@@ -191,6 +193,7 @@ cache entries and are not refreshed automatically.
 | `target/linux64/v4.0-glibc.2.35.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 against glibc 2.35 |
 | `target/linux64/v4.0-musl.1.2.5-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v4.0 against musl 1.2.5 and producing fully static programs |
 | `target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 and producing Windows x86-64 UCRT executables with LLVM-MinGW 20260616 and Wine |
+| `.github/workflows/check.yml` | Per-push and pull-request `make check` workflow |
 | `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
 | `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
@@ -2167,6 +2170,18 @@ directory for the verification binary:
 
 It additionally checks `hard.sh` and `install.sh` with `sh -n` and runs both
 `git diff --check` and `git diff --cached --check` from the repository root.
+
+`.github/workflows/check.yml` runs the same target for every `push` and
+`pull_request` event. The job uses the GitHub-hosted `ubuntu-24.04` environment,
+Go 1.23.12 through `actions/setup-go`, and explicitly installs both
+`build-essential` and `libclang-18-dev` before invoking `make check`. The
+setup-go cache is keyed from `hard/go.sum`. This workflow does not run
+`make unittest`, build container images, or install hard.
+
+For check-workflow changes, parse the workflow as YAML, verify the two event
+triggers, read-only contents permission, runner, action versions, Go version,
+dependency installation, cache path, and exact `make check` command, then run
+`make check` locally.
 
 For wrapper or installation changes, `make check` already covers both POSIX
 shell syntax checks. Additionally run:
