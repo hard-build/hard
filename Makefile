@@ -13,13 +13,39 @@ BASH_COMPLETIONDIR := $(PREFIX)/share/bash-completion/completions
 ZSH_COMPLETIONDIR := $(PREFIX)/share/zsh/site-functions
 FISH_COMPLETIONDIR := $(PREFIX)/share/fish/vendor_completions.d
 
-.PHONY: all build install
+.PHONY: all build check install
 
 all: build
 
 build:
 	$(INSTALL) -d "$(dir $(HARD_BINARY))"
 	cd hard && $(GO) build -o "$(HARD_BINARY)" .
+
+check:
+	@printf '%s\n' 'Checking Go formatting'
+	@format_diff="$$(cd hard && gofmt -d *.go)" || exit $$?; \
+		if test -n "$$format_diff"; then \
+			printf '%s\n' "$$format_diff"; \
+			exit 1; \
+		fi
+	@printf '%s\n' 'Running Go tests'
+	@cd hard && $(GO) test ./...
+	@printf '%s\n' 'Running Go race tests'
+	@cd hard && $(GO) test -race ./...
+	@printf '%s\n' 'Running Go vet'
+	@cd hard && $(GO) vet ./...
+	@printf '%s\n' 'Building hard'
+	@check_directory="$$(mktemp -d)" || exit $$?; \
+		trap 'rm -rf "$$check_directory"' 0 1 2 3 15; \
+		cd hard && $(GO) build -o "$$check_directory/hard" .
+	@printf '%s\n' 'Verifying Go modules'
+	@cd hard && $(GO) mod verify
+	@printf '%s\n' 'Checking shell scripts'
+	@sh -n hard.sh
+	@sh -n install.sh
+	@printf '%s\n' 'Checking Git diff'
+	@git diff --check
+	@git diff --cached --check
 
 install: build
 	$(INSTALL) -d "$(COMPLETION_BUILD_DIR)"

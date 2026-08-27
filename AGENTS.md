@@ -25,18 +25,15 @@
 
 ## Verification
 
-Run Go checks from `hard/`:
+Run the complete local check from the repository root:
 
 ```bash
-gofmt -d *.go
-go test ./...
-go test -race ./...
-go vet ./...
-go build -o /tmp/hard-check .
-go mod verify
+make check
 ```
 
-Run `git diff --check` from the repository root. For documentation changes,
-reread `AGENTS.md`, `MEMORY.md`, and `README.md` completely, validate
-local links and current paths, and reread the full diff skeptically.
-Do not report completion when required checks have not passed.
+It enforces Go formatting, runs ordinary and race tests, vet, an out-of-tree
+build, module verification, both POSIX shell syntax checks, and staged and
+unstaged Git diff whitespace checks. For documentation changes, reread
+`AGENTS.md`, `MEMORY.md`, and `README.md` completely, validate local links and
+current paths, and reread the full diff skeptically. Do not report completion
+when required checks have not passed.

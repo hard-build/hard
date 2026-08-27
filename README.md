@@ -456,11 +456,14 @@ From the repository root:
 
 ```bash
 make
+make check
 make install
 ```
 
-`make` writes the backend to `build/hard`. `make install` defaults to
-`PREFIX=$HOME/.local`, installs the wrapper and host runtime, creates the
+`make` writes the backend to `build/hard`. `make check` verifies formatting,
+runs the ordinary and race test suites, vet, an isolated build, module and
+shell-script checks, and staged and unstaged Git diffs. `make install` defaults
+to `PREFIX=$HOME/.local`, installs the wrapper and host runtime, creates the
 persistent data root, and records `host` as the target. `DESTDIR` can stage an
 installation without changing its logical prefix.
 

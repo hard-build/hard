@@ -129,7 +129,8 @@ Implemented:
 - the standalone `fetch` command;
 - a `run` command that builds exactly one root entry target without delivery,
   forwards program arguments and live streams, and propagates its exit status;
-- a POSIX command wrapper and Make-based user-local build and installation;
+- a POSIX command wrapper and Make-based user-local build, installation, and
+  one-command repository verification;
 - a no-argument `curl | sh` installer for the latest checksum-verified portable
   `linux/amd64` release, with user-local staged replacement and idempotent Bash,
   Zsh, Fish, or POSIX-shell `PATH` startup configuration, eight named progress
@@ -179,7 +180,7 @@ cache entries and are not refreshed automatically.
 | `docs/reference.md` | Complete English public command and behavior reference |
 | `assets/hard-build.svg` | Hard Build logo used by the README onboarding |
 | `LICENSE` | MIT license |
-| `Makefile` | Builds the Go backend and installs the host wrapper, runtime bundle, and shell completions |
+| `Makefile` | Builds and checks the Go backend and installs the host wrapper, runtime bundle, and shell completions |
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
 | `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, a known container target, or an arbitrary `docker://image`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
@@ -365,6 +366,9 @@ The repository-root Makefile has exactly these public targets:
 
 - `all`, the default target, depends on `build`;
 - `build` compiles the Go module in `hard/` to `BUILD_DIR/hard`;
+- `check` enforces Go formatting, runs ordinary and race tests, vet, an
+  isolated temporary build, module verification, both POSIX shell syntax
+  checks, and staged and unstaged Git whitespace checks;
 - `install` builds and installs the runtime files.
 
 The installation variables and defaults are:
@@ -2138,20 +2142,27 @@ to leave the library unchanged for now.
 
 ## Required verification
 
-For every completed Go implementation change, run these commands from the
-`hard/` module directory and use an unused `/tmp` binary path:
+For every completed implementation change, run the canonical repository-root
+check:
+
+    make check
+
+It performs the following Go commands from `hard/` and uses a unique temporary
+directory for the verification binary:
 
     gofmt -d *.go
     go test ./...
     go test -race ./...
     go vet ./...
-    go build -o /tmp/hard-check .
+    go build -o <unique /tmp path> .
     go mod verify
 
-For wrapper or installation changes, also run:
+It additionally checks `hard.sh` and `install.sh` with `sh -n` and runs both
+`git diff --check` and `git diff --cached --check` from the repository root.
 
-    sh -n hard.sh
-    sh -n install.sh
+For wrapper or installation changes, `make check` already covers both POSIX
+shell syntax checks. Additionally run:
+
     make BUILD_DIR=<unused /tmp path> build
     make BUILD_DIR=<unused /tmp path> PREFIX=<logical prefix> DESTDIR=<unused /tmp staging root> install
 
@@ -2197,10 +2208,6 @@ the unversioned `linux64` wrapper form selects the `latest` reference with
 workflow syntax and version/tag rules. Do not push, publish, change package
 visibility, or remove a pre-existing local image as part of routine
 verification.
-
-From the repository root:
-
-    git diff --check
 
 For documentation work, reread `README.md`, `AGENTS.md`, and `MEMORY.md`
 completely, plus `docs/reference.md` when it is affected; verify English
@@ -3218,6 +3225,22 @@ visible in a pseudo-terminal, checksum and bundle validation succeeded, the
 expected Bash startup entries were written only below that temporary home, and
 the installed wrapper's explicit host help succeeded. No real user or system
 installation path was changed.
+
+## Last known verification of the one-command repository check
+
+On 2026-08-27, the repository-root Makefile gained `make check` as the
+canonical local verification entry point. It enforces Go formatting, runs the
+ordinary and race test suites, vet, an isolated build below a unique temporary
+directory, module verification, both POSIX shell syntax checks, and staged and
+unstaged Git whitespace checks. The temporary build directory is removed by a
+shell trap.
+
+The complete target passed repeatedly. An isolated negative fixture containing
+an unformatted Go function printed the expected unified gofmt diff and made
+`make check` exit nonzero before tests began. Docker image builds, container
+smoke tests, workflow YAML validation, staged installation, and declarative C++
+integration scenarios remain separate checks and are intentionally not part of
+this initial target.
 
 ## Workspace safety snapshot
 
