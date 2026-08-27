@@ -11,10 +11,9 @@
     <circle cx="199" cy="94" r="7" fill="#12181d"/>
   </g>
   <g font-family="DejaVu Sans, Liberation Sans, sans-serif">
-    <text x="280" y="137" fill="#f4f5f3" font-size="76" font-weight="800"
-          letter-spacing="2">HARD</text>
-    <text x="522" y="137" fill="#f2a900" font-size="76" font-weight="800"
-          letter-spacing="2">BUILD</text>
+    <text x="280" y="137" font-size="76" font-weight="800" letter-spacing="2">
+      <tspan fill="#f4f5f3">HARD</tspan><tspan dx="0.22em" fill="#f2a900">BUILD</tspan>
+    </text>
     <text x="285" y="174" fill="#87939a" font-size="15" font-weight="700"
           letter-spacing="4">C/C++ BUILDS MADE SIMPLE</text>
   </g>
