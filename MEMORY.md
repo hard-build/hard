@@ -150,10 +150,11 @@ Implemented:
   `HARD_ROOT`;
 - exclusion of runtime support `hard.h` declarations from source forwards
   while retaining its backend-managed force include;
-- a GitHub Actions workflow that publishes an image version only when a
-  previously unseen `target/<image>/<version>.Dockerfile` is added to `main`,
-  keeps version tags immutable, advances `linux64:latest` only for the newest
-  glibc version, and advances `windows64:latest` only for the newest
+- a GitHub Actions workflow that automatically publishes an image version only
+  when a previously unseen `target/<image>/<version>.Dockerfile` is added to
+  `main`, offers guarded manual recovery for a failed first publication, keeps
+  version tags immutable, advances `linux64:latest` only for the newest glibc
+  version, and advances `windows64:latest` only for the newest
   LLVM-MinGW UCRT version;
 - a release-tag GitHub workflow that builds the host backend against
   the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
@@ -622,8 +623,8 @@ an x86-64-v3 CPU. Docker and Wine do not add CPU emulation. Toolchain, ABI,
 base system, bundled hard version, or minimum-CPU changes require a new target
 version.
 
-The GHCR workflow is independent from release publication and has no manual
-dispatch. On a push to `main`, it considers only newly added
+The GHCR workflow is independent from release publication. On an automatic
+push to `main`, it considers only newly added
 `target/<image>/<version>.Dockerfile` paths. It validates the directory and
 filename, requires the `vX.Y` prefix to name an existing Git tag, and records
 that tag's revision in the image. A path that occurred earlier in Git history is
@@ -635,6 +636,13 @@ LLVM-MinGW UCRT Dockerfile can similarly advance `windows64:latest`. Legacy
 Alpine and current musl static images never change an unversioned target.
 Changing or deleting an existing Dockerfile, and ordinary pushes without a new
 Dockerfile, publish no image.
+An explicit `workflow_dispatch` is available only for recovering a failed
+first publication. Its required `dockerfile` input must name a tracked regular
+target Dockerfile on `main`. Manual recovery bypasses only the prior-history
+skip and retains the same name, version, and release-tag validation. After
+logging in, it refuses to continue when the immutable version tag already
+exists. Only the exact `manifest unknown` response is treated as an unpublished
+tag; authentication, network, and other registry failures remain fatal.
 Commit, edge, and release-only tags are not published. Before publication, the
 workflow loads the new image on the runner, builds and executes a C++20 smoke
 program, and checks static targets for both an ELF interpreter and `NEEDED`
@@ -2629,12 +2637,12 @@ stable `ghcr.io/hard-build/hard:linux.v1` reference is the only tag the
 workflow should publish. Ordinary branch pushes must not build or rebuild the
 image.
 
-The replacement workflow is independent from releases and has no manual
-dispatch. A push to `main` publishes only Dockerfiles added below `target/`
-whose paths have never occurred in earlier history, mapping each basename to
-the same image tag. Existing target Dockerfiles are immutable: modification,
-deletion, and re-addition do not publish them. `linux.v1` is excluded
-explicitly, so the current workflow cannot advance it. Release-specific,
+At that time, the replacement workflow was independent from releases and had
+no manual dispatch. A push to `main` published only Dockerfiles added below
+`target/` whose paths have never occurred in earlier history, mapping each
+basename to the same image tag. Existing target Dockerfiles are immutable:
+modification, deletion, and re-addition do not publish them. `linux.v1` is
+excluded explicitly, so the current workflow cannot advance it. Release-specific,
 commit, edge, and `latest` tags are not published. Existing remote tags are not
 deleted by this repository change because registry deletion is a separate
 external action. At the time of the decision, an anonymous manifest request
@@ -3155,6 +3163,32 @@ One existing diagnostic gap was observed but not changed in this image task:
 the Dockerfile check and `ldd --version` both confirm musl 1.2.5. No commit,
 tag change, push, registry publication, image removal, or package-visibility
 change was performed.
+
+The first GitHub publication attempt for `linux64:v4.0-musl.1.2.5-static`
+failed in the smoke test after the image built successfully. Musl's
+`ldd --version` prints the expected `Version 1.2.5` line but exits with status
+1 when no program is supplied. Under the workflow's `set -e`, the command
+substitution therefore stopped the step before its exact version check. The
+container command now neutralizes only that expected inner status with
+`ldd --version 2>&1 || true`; failure to start Docker still propagates, and the
+following exact `grep` still rejects missing or incorrect version output.
+
+Because a rerun stays on the original event commit, the corrected workflow
+also gained a manual recovery dispatch. It accepts one tracked target
+Dockerfile from `main`, performs the ordinary target and release validation,
+and bypasses only the automatic history skip. Before rebuilding, it verifies
+that the exact version tag is still absent from GHCR and refuses to overwrite
+an existing tag. Registry responses other than the expected
+`manifest unknown` remain errors.
+
+Local execution of the exact discovery block selected both new Linux images
+for their automatic addition, selected no images for an ordinary push, and
+selected only the existing musl Dockerfile for manual recovery. A non-main
+ref, a missing file, and an invalid path were rejected. The exact immutable-tag
+guard accepted the live missing musl tag, rejected the live published glibc
+tag, and rejected a simulated authentication failure. Workflow YAML parsing,
+Bash syntax for all four run blocks, the complete required Go check set, both
+POSIX shell syntax checks, and `git diff --check` passed.
 
 ## Last known verification of installer output
 

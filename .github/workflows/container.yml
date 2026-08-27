@@ -6,6 +6,12 @@ on:
       - main
     paths:
       - "target/*/*.Dockerfile"
+  workflow_dispatch:
+    inputs:
+      dockerfile:
+        description: Existing target Dockerfile to retry
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -31,18 +37,37 @@ jobs:
         env:
           BEFORE_SHA: ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
+          CURRENT_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_DOCKERFILE: ${{ inputs.dockerfile }}
         run: |
           set -euo pipefail
 
-          if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            echo "cannot verify newly added targets: missing commit $BEFORE_SHA" >&2
-            exit 1
-          fi
+          dockerfiles=()
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$CURRENT_REF" != refs/heads/main ]]; then
+              echo "manual recovery must run from main" >&2
+              exit 1
+            fi
+            if [[ -z "$REQUESTED_DOCKERFILE" ]] || \
+               ! git ls-files --error-unmatch -- "$REQUESTED_DOCKERFILE" >/dev/null 2>&1 || \
+               [[ ! -f "$REQUESTED_DOCKERFILE" ]] || \
+               [[ -L "$REQUESTED_DOCKERFILE" ]]; then
+              echo "manual recovery requires a tracked target Dockerfile: $REQUESTED_DOCKERFILE" >&2
+              exit 1
+            fi
+            dockerfiles=("$REQUESTED_DOCKERFILE")
+          else
+            if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+              echo "cannot verify newly added targets: missing commit $BEFORE_SHA" >&2
+              exit 1
+            fi
 
-          mapfile -t dockerfiles < <(
-            git diff --no-renames --diff-filter=A --name-only \
-              "$BEFORE_SHA" "$CURRENT_SHA" -- "target/*/*.Dockerfile"
-          )
+            mapfile -t dockerfiles < <(
+              git diff --no-renames --diff-filter=A --name-only \
+                "$BEFORE_SHA" "$CURRENT_SHA" -- "target/*/*.Dockerfile"
+            )
+          fi
 
           targets=()
           for dockerfile in "${dockerfiles[@]}"; do
@@ -64,7 +89,8 @@ jobs:
               exit 1
             fi
 
-            if [[ -n "$(git log -1 --format=%H "$BEFORE_SHA" -- "$dockerfile")" ]]; then
+            if [[ "$EVENT_NAME" != workflow_dispatch ]] && \
+               [[ -n "$(git log -1 --format=%H "$BEFORE_SHA" -- "$dockerfile")" ]]; then
               echo "Skipping previously known image $image:$version"
               continue
             fi
@@ -136,6 +162,23 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Protect immutable version tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          error=$(mktemp)
+          trap 'rm -f "$error"' EXIT
+          if docker manifest inspect "$IMAGE" >/dev/null 2>"$error"; then
+            echo "refusing to overwrite published image: $IMAGE" >&2
+            exit 1
+          fi
+          if ! grep -Fqx 'manifest unknown' "$error"; then
+            cat "$error" >&2
+            exit 1
+          fi
 
       - name: Generate image metadata
         id: metadata
@@ -253,7 +296,7 @@ jobs:
             actual=$(docker run --rm \
               --entrypoint sh \
               "$IMAGE" \
-              -c 'ldd --version 2>&1')
+              -c 'ldd --version 2>&1 || true')
             grep -Fqx "Version $expected" <<< "$actual"
           fi
 
