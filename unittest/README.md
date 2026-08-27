@@ -30,13 +30,17 @@ does `hard test` itself.
 Run every discovered scenario from the repository root:
 
 ```bash
-make -C unittest
+make unittest
 ```
 
-Run one scenario through Make:
+The root target delegates directly to `unittest/Makefile` and uses the existing
+`hard` command from `PATH`; it does not build or install `hard`. The equivalent
+command from the repository root is `make -C unittest`.
+
+Run one scenario through the root target:
 
 ```bash
-make -C unittest SCENARIO=003.transitive_dependency
+make unittest SCENARIO=003.transitive_dependency
 ```
 
 Run one or more scenarios directly:
@@ -59,7 +63,7 @@ SCENARIO =
 Override them without editing the Makefile:
 
 ```bash
-make -C unittest \
+make unittest \
   PYTHON=python3 \
   HARD=/tmp/hard-check \
   OUTPUT=/tmp/hard-unittest-binaries \

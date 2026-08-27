@@ -129,8 +129,8 @@ Implemented:
 - the standalone `fetch` command;
 - a `run` command that builds exactly one root entry target without delivery,
   forwards program arguments and live streams, and propagates its exit status;
-- a POSIX command wrapper and Make-based user-local build, installation, and
-  one-command repository verification;
+- a POSIX command wrapper and Make-based user-local build, installation,
+  one-command repository verification, and root integration-suite delegation;
 - a no-argument `curl | sh` installer for the latest checksum-verified portable
   `linux/amd64` release, with user-local staged replacement and idempotent Bash,
   Zsh, Fish, or POSIX-shell `PATH` startup configuration, eight named progress
@@ -180,7 +180,7 @@ cache entries and are not refreshed automatically.
 | `docs/reference.md` | Complete English public command and behavior reference |
 | `assets/hard-build.svg` | Hard Build logo used by the README onboarding |
 | `LICENSE` | MIT license |
-| `Makefile` | Builds and checks the Go backend and installs the host wrapper, runtime bundle, and shell completions |
+| `Makefile` | Builds and checks the Go backend, delegates the integration suite, and installs the host wrapper, runtime bundle, and shell completions |
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
 | `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, a known container target, or an arbitrary `docker://image`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
@@ -369,6 +369,9 @@ The repository-root Makefile has exactly these public targets:
 - `check` enforces Go formatting, runs ordinary and race tests, vet, an
   isolated temporary build, module verification, both POSIX shell syntax
   checks, and staged and unstaged Git whitespace checks;
+- `unittest` delegates to `unittest/Makefile` without depending on `build` or
+  `install`, and therefore uses the existing `hard` command from `PATH` unless
+  `HARD` is overridden;
 - `install` builds and installs the runtime files.
 
 The installation variables and defaults are:
@@ -1816,12 +1819,17 @@ cannot invoke arbitrary shell commands. The runner stops the current scenario
 on its first failure, continues with independent scenarios, and returns one
 aggregate status.
 
-`unittest/Makefile` only passes configuration variables and an optional
-scenario name to the runner. It contains no scenario directory list,
-application names, expected stdout, GoogleTest binary names, or
+The repository-root `unittest` target delegates directly to
+`unittest/Makefile`, which only passes configuration variables and an optional
+scenario name to the runner. Neither Makefile contains a scenario directory
+list, application names, expected stdout, GoogleTest binary names, or
 source-compilation expectations. The default command is:
 
-    make -C unittest
+    make unittest
+
+It has no dependency on the root `build` or `install` targets. It therefore
+uses the existing `hard` command from `PATH` by default. Running
+`make -C unittest` from the repository root is equivalent.
 
 `PYTHON`, `HARD`, `OUTPUT`, `JOBS`, and `SCENARIO` are Make variables.
 They default to `python3`, the installed `hard` command,
@@ -2266,9 +2274,9 @@ independently by passing its name to:
       --output <temporary-output> \
       <scenario>
 
-Then run automatic discovery through:
+Then run automatic discovery through the repository-root target:
 
-    make -C unittest HARD=<temporary-backend> OUTPUT=<temporary-output>
+    make unittest HARD=<temporary-backend> OUTPUT=<temporary-output>
 
 Require every scenario success message and the final aggregate suite success
 message. The YAML steps for `003.transitive_dependency` and

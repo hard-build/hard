@@ -13,7 +13,7 @@ BASH_COMPLETIONDIR := $(PREFIX)/share/bash-completion/completions
 ZSH_COMPLETIONDIR := $(PREFIX)/share/zsh/site-functions
 FISH_COMPLETIONDIR := $(PREFIX)/share/fish/vendor_completions.d
 
-.PHONY: all build check install
+.PHONY: all build check install unittest
 
 all: build
 
@@ -46,6 +46,9 @@ check:
 	@printf '%s\n' 'Checking Git diff'
 	@git diff --check
 	@git diff --cached --check
+
+unittest:
+	$(MAKE) -C unittest
 
 install: build
 	$(INSTALL) -d "$(COMPLETION_BUILD_DIR)"
