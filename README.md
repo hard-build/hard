@@ -4,33 +4,25 @@
 
 # Hard Build
 
-`hard` is a convention-based build tool for C and C++ projects. It treats the
-source tree and active `#include` relationships as the build description, so a
-project does not need a hand-written `CMakeLists.txt` or another project build
-file.
+Build C and C++ programs directly from their source tree.
 
-The same interface describes the active toolchain, formats sources, fetches
-dependencies, builds programs, runs them, and executes tests. Generated files,
-downloaded sources, and caches stay outside the project tree.
+`hard` treats selected source files and their active `#include` relationships
+as the build description. Point it at a file or directory: it finds the
+required implementation sources, prepares reachable dependencies, compiles
+what changed, and links the entry programs. Your project does not need a
+hand-written `CMakeLists.txt` or another project build file.
 
 ## Quick Start
 
-On Linux x86-64, install the latest release with:
+On Linux x86-64, install the latest portable release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hard-build/hard/main/install.sh | sh
 ```
 
-The installer places `hard` below `~/.local` without `sudo` or package-manager
-changes. It describes each download and installation step, then prints—but
-does not run—minimal C++20 compiler commands for common glibc-based Linux
-distributions. It also installs command completion for Bash, Zsh, and Fish.
-Open a new shell after installation, or run the `PATH` command printed by the
-installer, then verify the command:
-
-```bash
-hard --help
-```
+The installer places `hard` below `~/.local`, configures the current shell, and
+adds completion for Bash, Zsh, and Fish. It does not use `sudo` or install
+system packages. Open a new shell when it finishes.
 
 Create `example.cpp`:
 
@@ -56,17 +48,53 @@ The expected output is:
 Hello, hard!
 ```
 
-Further introduction to `hard` continues in the
-[example](https://github.com/hard-build/example/tree/main/001.helloworld).
-That example will have its own `README.md` with the source layout, build
-transcript, and expected output.
-
-The default `host` target requires a C++20 compiler. If Docker is available,
-the latest `linux64` environment can be selected explicitly:
+The default `host` target uses your C++20 compiler. To build and run in the
+latest maintained Linux environment instead, use Docker:
 
 ```bash
 hard --target=linux64 run example.cpp
 ```
+
+## What hard can do
+
+The same source-selection model is shared by six commands:
+
+| Goal | Command | Result |
+| --- | --- | --- |
+| Inspect the toolchain | `hard environment` | Shows the operating system, compiler, target, flags, libc, and libclang |
+| Format sources | `hard format` | Formats selected C and C++ sources and headers in place |
+| Fetch dependencies | `hard fetch` | Resolves includes and downloads missing public source snapshots without compiling |
+| Build programs | `hard build` | Compiles selected and discovered sources and delivers linked executables |
+| Build and run | `hard run` | Builds one entry program and executes it with live input and output |
+| Run tests | `hard test` | Discovers, builds, filters, and runs GoogleTest executables |
+
+Across those commands, `hard` also provides:
+
+- include-driven implementation discovery, such as `object.h` → `object.cpp`,
+  including transitive relationships and cycles;
+- public GitHub source dependencies and reusable `recipe/*.hard.h` definitions
+  for compiled third-party libraries;
+- persistent content caches for analysis, compilation, linking, delivery, and
+  successful test results;
+- host builds, maintained Linux container environments, Windows x86-64
+  cross-compilation, and arbitrary compatible `docker://` images;
+- parallel work with `-j` and detailed compiler and linker commands with `-v`;
+- downloaded sources, intermediate artifacts, and caches outside the project
+  tree, leaving only delivered build executables beside project sources or in
+  the requested output directory.
+
+For example, the same source can be built for different environments:
+
+```bash
+hard --target=host build example.cpp
+hard --target=linux64 build example.cpp
+hard --target=windows64 build example.cpp  # produces example.exe
+```
+
+Continue with the guided
+[example](https://github.com/hard-build/example/tree/main/001.helloworld), or
+jump to the [complete reference](docs/reference.md) when you need exact command
+and cache behavior.
 
 ## How It Works
 
