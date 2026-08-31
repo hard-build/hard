@@ -41,6 +41,7 @@ func TestWriteEnvironmentReport(t *testing.T) {
 	for _, wanted := range []string{
 		"HARD BUILD ENVIRONMENT\n",
 		"\nRUNTIME\n",
+		"  Version             " + hardVersion(),
 		"  Runtime root        " + runtimeRoot,
 		"  Environment         cross-cache",
 		"  Data root           /hard data",
@@ -95,6 +96,7 @@ func TestWriteEnvironmentReportContinuesAfterUnavailableCompiler(t *testing.T) {
 
 func TestRenderEnvironmentReport(t *testing.T) {
 	report := environmentReport{
+		version:            "v4.0-development",
 		executable:         "/runtime/hard",
 		runtimeRoot:        "/runtime",
 		environment:        "host",
@@ -121,6 +123,7 @@ func TestRenderEnvironmentReport(t *testing.T) {
 		environmentRule,
 		"",
 		"RUNTIME",
+		"  Version             v4.0-development",
 		"  Executable          /runtime/hard",
 		"  Runtime root        /runtime",
 		"  Environment         host",

@@ -96,7 +96,7 @@ jobs:
               GOOS=linux \
                 /usr/local/go/bin/go build \
                   -trimpath \
-                  -ldflags="-s -w" \
+                  -ldflags="-s -w -X main.versionPrerelease=" \
                   -o /tmp/hard .
 
               archive_root=/tmp/hard-linux-amd64
@@ -132,9 +132,14 @@ jobs:
                 "$runtime_root/lib/libtinfo.so.5.9"
               ln -s libtinfo.so.5.9 "$runtime_root/lib/libtinfo.so.5"
               cp -a "$llvm_root/lib/clang" "$runtime_root/lib/clang"
-              printf "%s\n" "$RELEASE_TAG" > "$runtime_root/VERSION"
 
               patchelf --set-rpath "\$ORIGIN/lib" "$runtime_root/hard"
+
+              embedded_version=$("$runtime_root/hard" version)
+              if [ "$embedded_version" != "$RELEASE_TAG" ]; then
+                echo "embedded version $embedded_version does not match release tag $RELEASE_TAG" >&2
+                exit 1
+              fi
 
               "$runtime_root/hard" completion bash \
                 > "$archive_root/share/bash-completion/completions/hard"
@@ -215,6 +220,7 @@ jobs:
           - ubuntu:24.04
     env:
       ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - name: Install smoke-test dependencies
         run: |
@@ -252,6 +258,8 @@ jobs:
           tar -xzf "/tmp/release/$ARCHIVE_NAME" --directory /tmp/runtime
           hard=/tmp/runtime/hard-linux-amd64/bin/hard
           printf "int answer=42;\n" > /tmp/project/example.cpp
+          test "$(HOME=/tmp/home "$hard" --target=host version)" = "$RELEASE_TAG"
+          test ! -e /tmp/runtime/hard-linux-amd64/libexec/hard/VERSION
           HOME=/tmp/home "$hard" --target=host --help >/dev/null
           HOME=/tmp/home "$hard" --target=host format /tmp/project/example.cpp
           grep -q "int answer = 42;" /tmp/project/example.cpp

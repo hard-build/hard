@@ -57,10 +57,11 @@ hard --target=linux64 run example.cpp
 
 ## What hard can do
 
-The same source-selection model is shared by six commands:
+The public interface contains seven commands:
 
 | Goal | Command | Result |
 | --- | --- | --- |
+| Check the hard version | `hard version` | Prints the version embedded in the running backend |
 | Inspect the toolchain | `hard environment` | Shows the operating system, compiler, target, flags, libc, and libclang |
 | Format sources | `hard format` | Formats selected C and C++ sources and headers in place |
 | Fetch dependencies | `hard fetch` | Resolves includes and downloads missing public source snapshots without compiling |
@@ -137,9 +138,10 @@ all logical CPUs. The default is one worker. `-v` prints permanent progress and
 the compiler, linker, or child commands that actually run. `--no-color`
 disables ANSI colors. Commands that scan sources accept `-s` or `--silent`.
 
-The public interface contains exactly six commands:
+The public interface contains exactly seven commands:
 
 ```text
+hard version
 hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
@@ -149,6 +151,19 @@ hard run    [--no-cache] [-s|--silent] [path...]
 hard test   [--list-tests] [--test=<selector>]...
             [--no-cache] [-s|--silent] [path...]
 ```
+
+### `hard version`
+
+Prints the version embedded in the running backend:
+
+```bash
+hard version
+```
+
+A development build reports `v4.0-development`. A release build reports
+`v4.0`; release packaging removes the prerelease component from the binary and
+checks the result against the release tag. The command does not read runtime
+files, load `HARD_*` configuration, inspect the toolchain, or scan sources.
 
 ### `hard environment`
 
@@ -160,7 +175,8 @@ hard environment
 hard --target=linux64 environment
 ```
 
-The report includes the hard runtime and cache roots, operating system, kernel,
+The report includes the embedded hard version, runtime and cache roots,
+operating system, kernel,
 CPU and libc, resolved compiler and target, executable naming and runner
 settings, effective flags and entry points, and the libclang version and
 resource directory. A diagnostic that is not available on a particular system
@@ -489,7 +505,8 @@ make unittest
 make install
 ```
 
-`make` writes the backend to `build/hard`. `make check` verifies formatting,
+`make` writes the development backend, which reports `v4.0-development`, to
+`build/hard`. `make check` verifies formatting,
 runs the ordinary and race test suites, vet, an isolated build, module and
 shell-script checks, and staged and unstaged Git diffs. `make unittest` runs
 the declarative C and C++ integration scenarios with the existing `hard`

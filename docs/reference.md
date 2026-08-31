@@ -3,8 +3,8 @@
 This document defines the complete user-facing behavior of `hard`. For an
 overview and first build, start with the [project README](../README.md).
 
-The public interface contains only `environment`, `format`, `build`, `fetch`,
-`run`, and `test`.
+The public interface contains only `version`, `environment`, `format`, `build`,
+`fetch`, `run`, and `test`.
 
 ## Installation
 
@@ -52,7 +52,7 @@ Command completion is installed at the shell-standard user-local paths:
 | Fish | `~/.local/share/fish/vendor_completions.d/hard.fish` | Discovered automatically |
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
-the six public commands, command flags, filesystem paths, `host`, `linux64`,
+the seven public commands, command flags, filesystem paths, `host`, `linux64`,
 `windows64`, the `linux64:v4.0-glibc.2.35` and
 `linux64:v4.0-musl.1.2.5-static` versions, the older
 `linux64:v3.0-ubuntu.22.04` and `linux64:v3.0-alpine.3.22-static` versions, the
@@ -161,6 +161,7 @@ including `-s`, appear after the command and may be interspersed with paths.
 The public interface contains exactly these commands:
 
 ```text
+hard version
 hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
@@ -170,6 +171,23 @@ hard run    [--no-cache] [-s|--silent] [path...]
 hard test   [--list-tests] [--test=<selector>]...
             [--no-cache] [-s|--silent] [path...]
 ```
+
+### `hard version`
+
+```bash
+hard version
+```
+
+`version` prints the version embedded in the running backend as one line. The
+source defaults are version number `4.0` and prerelease identifier
+`development`, producing `v4.0-development`. Release packaging clears the
+prerelease identifier through a Go linker value, producing `v4.0`, and rejects
+a binary whose output does not match the release tag.
+
+The command accepts no paths and does not determine the runtime root, read a
+runtime version file, load `HARD_*` configuration, probe the compiler or
+libclang, scan sources, or create artifacts. A wrapper target selects which
+backend supplies the embedded version in the same way as for other commands.
 
 ### `hard environment`
 
@@ -182,6 +200,7 @@ hard --target=linux64 environment
 current invocation would build binaries. It takes no paths, does not search a
 source tree, and does not create or read build artifacts. The report contains:
 
+- the embedded hard version;
 - the resolved hard executable, runtime root, `HARD_ENV`, and `HARD_ROOT`;
 - operating-system identity from `/etc/os-release`, kernel and architecture
   from `uname`, the first CPU model from `/proc/cpuinfo`, the logical CPU
@@ -1427,8 +1446,8 @@ or install target images or container assets, and it writes `host` to
 `default-target`.
 
 The portable archive extends the runtime bundle with the host backend's shared
-libraries, LLVM resource headers, `bin/clang-format`, license records, a
-version file, and the three completion files shown above. Its top-level
+libraries, LLVM resource headers, `bin/clang-format`, license records, and the
+three completion files shown above. Its top-level
 `bin/hard` can execute that bundle in place immediately after extraction.
 The installer places the runtime below `~/.local/libexec/hard` without a
 `default-target`, so host remains the default.

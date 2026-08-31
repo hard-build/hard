@@ -29,6 +29,7 @@ const (
 )
 
 type environmentReport struct {
+	version            string
 	executable         string
 	runtimeRoot        string
 	environment        string
@@ -97,6 +98,7 @@ func collectEnvironmentReport(config configuration, cflags []string) environment
 	}
 
 	return environmentReport{
+		version:            hardVersion(),
 		executable:         resolvedExecutablePath(),
 		runtimeRoot:        config.runtimeRoot,
 		environment:        config.env,
@@ -131,6 +133,7 @@ func renderEnvironmentReport(report environmentReport, noColor bool) string {
 		style.color(environmentDim+environmentCyan, environmentRule),
 	)
 	writeEnvironmentSection(&output, style, "RUNTIME", []environmentField{
+		{label: "Version", value: report.version},
 		{label: "Executable", value: report.executable},
 		{label: "Runtime root", value: report.runtimeRoot},
 		{label: "Environment", value: report.environment},

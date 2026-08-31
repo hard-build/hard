@@ -16,6 +16,13 @@ func main() {
 	if parsed.command == "" {
 		return
 	}
+	if parsed.command == "version" {
+		if err := writeVersion(os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	runtimeRoot, err := executableRuntimeRoot()
 	if err != nil {

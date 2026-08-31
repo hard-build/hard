@@ -201,6 +201,12 @@ Wrapper options:
 		&jobs,
 		parsed,
 	)
+	versionCommand := newVersionCommand(
+		&verbose,
+		&noColor,
+		&jobs,
+		parsed,
+	)
 	root.AddCommand(
 		formatCommand,
 		buildCommand,
@@ -208,6 +214,7 @@ Wrapper options:
 		fetchCommand,
 		runCommand,
 		testCommand,
+		versionCommand,
 	)
 
 	return root
@@ -230,6 +237,32 @@ func newEnvironmentCommand(
 			}
 			*parsed = arguments{
 				command: "environment",
+				verbose: *verbose,
+				noColor: *noColor,
+				jobs:    jobCount,
+			}
+			return nil
+		},
+	}
+}
+
+func newVersionCommand(
+	verbose *bool,
+	noColor *bool,
+	jobs *int,
+	parsed *arguments,
+) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print hard version",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			jobCount, err := resolveJobCount(*jobs)
+			if err != nil {
+				return err
+			}
+			*parsed = arguments{
+				command: "version",
 				verbose: *verbose,
 				noColor: *noColor,
 				jobs:    jobCount,

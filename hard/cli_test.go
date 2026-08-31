@@ -132,6 +132,11 @@ func TestParseArguments(t *testing.T) {
 			want: arguments{command: "environment", verbose: true},
 		},
 		{
+			name: "version reports hard version",
+			args: []string{"version"},
+			want: arguments{command: "version"},
+		},
+		{
 			name: "fetch accepts silent flag and jobs",
 			args: []string{"fetch", "-s", "-j4", "src", "tests"},
 			want: arguments{
@@ -312,6 +317,8 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 		{name: "unknown flag", args: []string{"build", "--workers", "4"}, wantErr: "unknown flag"},
 		{name: "environment rejects path", args: []string{"environment", "."}, wantErr: "unknown command"},
 		{name: "environment rejects negative jobs", args: []string{"environment", "--jobs=-1"}, wantErr: "jobs must not be negative"},
+		{name: "version rejects path", args: []string{"version", "."}, wantErr: "unknown command"},
+		{name: "version rejects negative jobs", args: []string{"version", "--jobs=-1"}, wantErr: "jobs must not be negative"},
 		{name: "negative jobs", args: []string{"format", "--jobs=-1"}, wantErr: "jobs must not be negative"},
 		{name: "build rejects format flag", args: []string{"build", "--format=custom.v1"}, wantErr: "unknown flag"},
 		{name: "fetch rejects format flag", args: []string{"fetch", "--format=custom.v1"}, wantErr: "unknown flag"},
@@ -380,6 +387,7 @@ func TestShellCompletion(t *testing.T) {
 				"format\tFormat C++ sources",
 				"run\tBuild and run a C++ program",
 				"test\tBuild and run C++ tests",
+				"version\tPrint hard version",
 				":4",
 			},
 			notWant: []string{"_help", "completion"},
@@ -394,6 +402,7 @@ func TestShellCompletion(t *testing.T) {
 				"format\n",
 				"run\n",
 				"test\n",
+				"version\n",
 				":4",
 			},
 			notWant: []string{"_help", "completion"},
@@ -507,6 +516,7 @@ func TestHelp(t *testing.T) {
 				"format      Format C++ sources",
 				"run         Build and run a C++ program",
 				"test        Build and run C++ tests",
+				"version     Print hard version",
 				"-j, --jobs",
 				"(default 1)",
 				"--no-color",
@@ -520,6 +530,16 @@ func TestHelp(t *testing.T) {
 			args: []string{"environment", "--help"},
 			want: []string{
 				"hard environment",
+				"-j, --jobs",
+				"--no-color",
+				"-v, --verbose",
+			},
+		},
+		{
+			name: "version",
+			args: []string{"version", "--help"},
+			want: []string{
+				"hard version",
 				"-j, --jobs",
 				"--no-color",
 				"-v, --verbose",

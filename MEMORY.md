@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-28.
+Last updated: 2026-08-31.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -77,6 +77,7 @@ hand-written project build file.
 
 The public operations are deliberately limited to:
 
+    hard version
     hard environment
     hard format
     hard fetch
@@ -101,6 +102,9 @@ Implemented:
 
 - Cobra-based argument parsing;
 - environment-backed configuration;
+- an embedded `v4.0-development` version assembled from the `4.0` version
+  number and `development` prerelease identifier, with a source-independent
+  `version` command and release-time prerelease removal;
 - a source-independent `environment` report covering the runtime, operating
   system, CPU, libc, compiler, target triple, effective flags, executable
   naming/execution settings, and libclang, with aligned colored sections and a
@@ -206,6 +210,8 @@ cache entries and are not refreshed automatically.
 | `hard/main_test.go` | Search-progress behavior and discovery integration for all commands |
 | `hard/cli.go` | Cobra command tree, flags, positional paths, run arguments, test selectors, job normalization, and hidden completion generation |
 | `hard/cli_test.go` | CLI defaults, validation, help, completion, interspersed flags, test selection, and job forms |
+| `hard/version.go` | Embedded version components, formatting, and output |
+| `hard/version_test.go` | Development and release version rendering and output failures |
 | `hard/install_test.go` | Isolated portable installation, shell startup and completion files, idempotence, rollback, and failures |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
@@ -462,8 +468,9 @@ relocatable `bin/`, `libexec/hard/`, and `share/` layout. The top-level
 `bin/hard` runs that sibling runtime directly after extraction without
 installation. Its runtime includes the Go backend, `hard.h`, `format.v1`,
 clang-format, libclang, LLVM resource headers, the required libtinfo
-compatibility library, licenses, and `VERSION`. The `share/` tree contains
-the generated Bash, Zsh, and Fish completion files.
+compatibility library and licenses. The version is embedded in the backend;
+the `share/` tree contains the generated Bash, Zsh, and Fish completion
+files.
 
 `install.sh` is POSIX `sh`, accepts no arguments, and supports Linux x86-64
 only. It downloads the latest stable archive and checksum from GitHub Releases,
@@ -670,6 +677,7 @@ workflow.
 
 The public command forms are:
 
+    hard version
     hard environment
     hard format [--format=<name>] [-s|--silent] [path...]
     hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
@@ -683,7 +691,7 @@ The installed wrapper additionally accepts `--target=host`,
 `--target=linux64`, `--target=linux64:<tag>`, `--target=windows64`,
 `--target=windows64:<tag>`,
 `--target=docker://image`, or their separate-value forms anywhere before `--`.
-This selects how one of the same six public commands is executed; it does not
+This selects how one of the same seven public commands is executed; it does not
 add another public command. The
 Go help template documents the wrapper option, while the wrapper owns its
 parsing, installed default, and Docker behavior.
@@ -714,6 +722,9 @@ Other CLI decisions:
 
 - each source-processing command accepts zero or more paths;
 - no path for a source-processing command becomes `.`;
+- `version` accepts no paths, prints the embedded version, and performs no
+  runtime-root resolution, configuration loading, toolchain probing, or source
+  discovery;
 - `environment` accepts no paths, performs no source discovery, and prints its
   detailed report directly;
 - for `run` only, `--` ends hard arguments; later values populate the program
@@ -722,7 +733,7 @@ Other CLI decisions:
 - unknown commands and flags are errors;
 - Cobra's `completion` generator is hidden from help but can generate Bash,
   Zsh, and Fish scripts for installation and release packaging;
-- dynamic completion lists only the six public commands and filters Cobra's
+- dynamic completion lists only the seven public commands and filters Cobra's
   private `_help` suggestion;
 - the wrapper supplies fixed `host`, `linux64`, `windows64`,
   `linux64:v4.0-glibc.2.35`, `linux64:v4.0-musl.1.2.5-static`,
@@ -733,8 +744,8 @@ Other CLI decisions:
 - the normal `help` command is not public; `help` and `_help` are rejected;
 - root and command `--help` succeed without configuration loading or source
   discovery;
-- root help exposes only `environment`, `format`, `fetch`, `build`, `run`, and
-  `test`.
+- root help exposes only `version`, `environment`, `format`, `fetch`,
+  `build`, `run`, and `test`.
 
 The parsed `arguments` value contains `command`, `paths`, `programArguments`,
 `verbose`, `silent`, `noColor`, `noCache`, `listTests`, `testSelectors`,
@@ -937,8 +948,8 @@ Path rules:
 ## Shared progress and output
 
 Every source-processing command creates one thread-safe progress object before
-source selection and starts with `Searching source files`. `hard environment`
-does not create a progress object or search for sources.
+source selection and starts with `Searching source files`. `hard version` and
+`hard environment` do not create a progress object or search for sources.
 
 Modes:
 
@@ -999,12 +1010,32 @@ and cause status 1. A normally started program that exits nonzero under
 `hard run` instead propagates its exit status without adding a top-level
 `hard:` diagnostic.
 
+## `hard version`
+
+`version` prints one line assembled from two values embedded in the Go binary:
+
+    versionNumber = 4.0
+    versionPrerelease = development
+
+The default output is `v4.0-development`. A non-empty prerelease identifier is
+separated from the version number by one hyphen. Release packaging clears only
+the prerelease value through `-X main.versionPrerelease=`, producing `v4.0`,
+and rejects a binary whose reported version differs from the release tag.
+
+The command does not resolve the runtime root, read a runtime version file,
+load `HARD_*` configuration, probe the toolchain, create progress, discover
+sources, or create artifacts. New portable releases no longer contain a
+runtime `VERSION` file. Older immutable release archives and container images
+retain their historical files because their tagged backends predate this
+command.
+
 ## `hard environment`
 
 `environment` is a detailed human-readable diagnostic command. It accepts no
 paths and does not discover sources, initialize caches, or create artifacts.
 After ordinary configuration and runtime-root loading it reports:
 
+- the embedded hard version;
 - the resolved backend executable, runtime root, `HARD_ENV`, and `HARD_ROOT`;
 - `/etc/os-release` identity, `uname` kernel and architecture, the first CPU
   model in `/proc/cpuinfo`, logical CPU count, and libc from `getconf` with
@@ -1776,8 +1807,9 @@ image carries its independent runtime bundle below `/usr/local/libexec/hard/`.
 Neither installation stores runtime files below `HARD_ROOT`.
 
 The portable host bundle additionally owns `bin/clang-format`, `lib/` with
-libclang, LLVM resource headers, and libtinfo, license records, and `VERSION`.
-These files move as one runtime and are not supplied by `make install`.
+libclang, LLVM resource headers, and libtinfo, and license records. The version
+is embedded in the backend. These files move as one runtime and are not
+supplied by `make install`.
 The container runtime has no `default-target` because target selection belongs
 to the host wrapper.
 
@@ -1894,7 +1926,7 @@ to leave the library unchanged for now.
   specification. It begins with the Hard Build logo, a plain-language product
   summary, and `Quick Start`, which shows a local hello-world build followed by
   direct execution of the produced binary. A following capability overview
-  presents all six public commands together with include-driven discovery,
+  presents all seven public commands together with include-driven discovery,
   dependencies and recipes, content caching, parallel and verbose operation,
   and host, Linux-container, Windows, and arbitrary-image targets before the
   detailed command sections. It links directly to
@@ -1904,8 +1936,8 @@ to leave the library unchanged for now.
   contract lives in `docs/reference.md`; maintainer and implementation history
   remains in this memory.
 - MIT was selected, with the current copyright identity.
-- README is English and exposes only `environment`, `format`, `fetch`, `build`,
-  `run`, and `test`.
+- README is English and exposes only `version`, `environment`, `format`,
+  `fetch`, `build`, `run`, and `test`.
 - Go 1.23 is required.
 - Cobra was selected rather than a handwritten parser.
 - `HARD_ROOT`, `HARD_ENV`, `HARD_CC`, `HARD_CFLAGS`, `HARD_LDFLAGS`, and
@@ -2054,8 +2086,8 @@ to leave the library unchanged for now.
 ## Test inventory
 
 - `hard/cli_test.go`: command defaults, paths, the source-independent
-  environment command, interspersed and no-cache flags, silent options, all job
-  syntaxes, invalid input, help, hidden commands,
+  version and environment commands, interspersed and no-cache flags, silent
+  options, all job syntaxes, invalid input, help, hidden commands,
   backend completion directives without concrete target ownership, and
   Bash/Zsh/Fish script generation.
 - `hard/config_test.go`: all defaults and overrides, environment choice,
@@ -2069,8 +2101,10 @@ to leave the library unchanged for now.
   wrapper-owned target completion, host-only dispatch for other completion
   requests, and invalid target diagnostics.
 - `hard/environment_test.go`: exact aligned plain layout, ANSI palette and
-  removal, detailed sections and configured values, compiler diagnostics,
-  OS/CPU parsing, unavailable probes, and output errors.
+  removal, embedded version, detailed sections and configured values, compiler
+  diagnostics, OS/CPU parsing, unavailable probes, and output errors.
+- `hard/version_test.go`: development and release version composition, exact
+  line output, and output errors.
 - `hard/executable_test.go`: generic suffix application, inferred versus exact
   output names, `HARD_ENV` independence, and runner-backed run/test processes.
 - `hard/install_test.go`: checksum-gated installation, portable runtime file
@@ -2238,7 +2272,7 @@ verification.
 
 For documentation work, reread `README.md`, `AGENTS.md`, and `MEMORY.md`
 completely, plus `docs/reference.md` when it is affected; verify English
-language, six-command public scope, local links,
+language, seven-command public scope, local links,
 versions, flags, paths, defaults, implemented/target distinctions, and known
 gaps.
 
