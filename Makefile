@@ -48,6 +48,8 @@ check:
 	@sh -n install.sh
 	@sh -n tools/bump-version.sh
 	@sh -n tools/release-check.sh
+	@printf '%s\n' 'Checking target manifest'
+	@python3 tools/target-manifest-check.py
 	@printf '%s\n' 'Checking Git diff'
 	@git diff --check
 	@git diff --cached --check

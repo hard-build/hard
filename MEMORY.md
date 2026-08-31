@@ -197,6 +197,7 @@ cache entries and are not refreshed automatically.
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
 | `tools/bump-version.sh` | Internal guarded development-version increment tool |
 | `tools/release-check.sh` | Internal development/release binary version and runtime-file contract check |
+| `tools/target-manifest-check.py` | Generic target manifest schema, path, build-argument, and completeness validator |
 | `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, a known container target, or an arbitrary `docker://image`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
@@ -206,6 +207,10 @@ cache entries and are not refreshed automatically.
 | `target/linux64/v4.0-glibc.2.35.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 against glibc 2.35 |
 | `target/linux64/v4.0-musl.1.2.5-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v4.0 against musl 1.2.5 and producing fully static programs |
 | `target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 and producing Windows x86-64 UCRT executables with LLVM-MinGW 20260616 and Wine |
+| `target/manifest.json` | Ordered schema-1 list of generic release image variants and `latest` eligibility |
+| `target/linux64/glibc.2.35.Dockerfile` | Version-independent Ubuntu 22.04 glibc 2.35 release image definition |
+| `target/linux64/musl.1.2.5-static.Dockerfile` | Version-independent Alpine 3.22 musl 1.2.5 fully static release image definition |
+| `target/windows64/llvm-mingw.20260616-ucrt.Dockerfile` | Version-independent LLVM-MinGW 20260616 UCRT release image definition |
 | `.github/workflows/check.yml` | Per-push and pull-request `make check` workflow |
 | `.github/workflows/container.yml` | Reusable and manually recoverable GHCR publication workflow with immutable target tag policy |
 | `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, GitHub release publication, and downstream container publication |
@@ -655,25 +660,34 @@ an x86-64-v3 CPU. Docker and Wine do not add CPU emulation. Toolchain, ABI,
 base system, bundled hard version, or minimum-CPU changes require a new target
 version.
 
+`target/manifest.json` is the release target source of truth. Its ordered
+schema-1 entries bind an image and variant to one version-independent generic
+Dockerfile and declare whether that lineage may publish `latest`. Every generic
+Dockerfile must be listed exactly once; historical `vX.Y-*.Dockerfile` files are
+excluded from the manifest and remain unchanged. Generic definitions require
+`HARD_VERSION`, `HARD_REVISION`, and `IMAGE_VERSION` without product-version
+defaults, clear the binary prerelease value while linking, verify the embedded
+release version, derive runtime paths from `IMAGE_VERSION`, and do not install a
+runtime `VERSION` file.
+
 The release-tag workflow invokes the reusable GHCR workflow only after the
 portable host release is published, passing the exact `vX.Y` tag and its
 revision. The called workflow requires them to resolve to the same commit,
-discovers matching `target/<image>/vX.Y-*.Dockerfile` definitions from that
-release checkout, validates every image and version name, and records the tag
-revision in each image. Ordinary pushes do not publish container images.
-
-A glibc Dockerfile advances `linux64:latest` only when it is newest across the
-glibc and legacy Ubuntu lineage. An LLVM-MinGW UCRT Dockerfile similarly
-advances `windows64:latest`. Legacy Alpine and current musl static images never
-change an unversioned target. Each version tag remains immutable.
+checks out that commit, validates its manifest, and forms every immutable image
+tag as `vX.Y-<variant>`. The build job also checks out the release commit and
+passes the three required values explicitly. Ordinary pushes do not publish
+container images. A manifest entry advances `<image>:latest` only when it is
+eligible and the release is the highest strict `vX.Y` tag, preventing an older
+recovery from rolling `latest` backward. The musl static image is not eligible.
 
 An explicit `workflow_dispatch` is available only for recovering a failed
-first publication. Its required `dockerfile` input must name a tracked regular
-target Dockerfile on `main` and retains the same name, version, and release-tag
-validation. After logging in, it refuses to continue when the immutable version
-tag already exists. Only the exact `manifest unknown` response is treated as an
-unpublished tag; authentication, network, and other registry failures remain
-fatal. Commit and edge tags are not published. Before publication, the
+first publication. Its required `hard_version` and `target` inputs select one
+`image:variant` from the manifest stored in that tagged commit; the workflow
+definition itself must run from `main`. After logging in, every publication
+refuses to continue when the immutable version tag already exists. Only the
+exact `manifest unknown` response is treated as an unpublished tag;
+authentication, network, and other registry failures remain fatal. Commit and
+edge tags are not published. Before publication, the
 workflow loads the new image on the runner, builds and executes a C++20 smoke
 program, and checks static targets for both an ELF interpreter and `NEEDED`
 entries. Windows smoke requires AMD64 PE and UCRT contract imports, executes
@@ -2238,7 +2252,8 @@ directory for the verification binary:
     go mod verify
 
 It additionally checks `hard.sh`, `install.sh`, `tools/bump-version.sh`, and
-`tools/release-check.sh` with `sh -n`, then runs both `git diff --check` and
+`tools/release-check.sh` with `sh -n`, validates `target/manifest.json` and its
+generic Dockerfiles, then runs both `git diff --check` and
 `git diff --cached --check` from the repository root.
 
 `.github/workflows/check.yml` runs for every pull request and every push to

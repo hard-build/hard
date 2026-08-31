@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "targets": [
+    {
+      "image": "linux64",
+      "variant": "glibc.2.35",
+      "dockerfile": "target/linux64/glibc.2.35.Dockerfile",
+      "publish_latest": true
+    },
+    {
+      "image": "linux64",
+      "variant": "musl.1.2.5-static",
+      "dockerfile": "target/linux64/musl.1.2.5-static.Dockerfile",
+      "publish_latest": false
+    },
+    {
+      "image": "windows64",
+      "variant": "llvm-mingw.20260616-ucrt",
+      "dockerfile": "target/windows64/llvm-mingw.20260616-ucrt.Dockerfile",
+      "publish_latest": true
+    }
+  ]
+}

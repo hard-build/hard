@@ -344,6 +344,13 @@ windows64:v4.0-llvm-mingw.20260616-ucrt
   -> ghcr.io/hard-build/windows64:v4.0-llvm-mingw.20260616-ucrt
 ```
 
+New releases reuse the version-independent Dockerfiles listed in
+`target/manifest.json`. Release CI combines the exact `vX.Y` tag with each
+manifest variant to form an immutable `vX.Y-<variant>` image tag, builds from
+that tagged checkout, and embeds `vX.Y` in the backend. Product versions are not
+defaults in the generic Dockerfiles. Existing versioned Dockerfiles remain
+unchanged as the definitions of historical images.
+
 For `docker://registry.example/toolchain:tag`, the wrapper strips only the
 `docker://` prefix and passes `registry.example/toolchain:tag` to Docker with
 `--pull=missing`. The image must provide a compatible entrypoint and its own
@@ -513,7 +520,8 @@ make install
 when `X.Y` is greater than the current value and the `vX.Y` tag does not exist.
 `make check` verifies formatting,
 runs the ordinary and race test suites, vet, an isolated build, module and
-shell-script checks, and staged and unstaged Git diffs. `make unittest` runs
+shell-script and target-manifest checks, and staged and unstaged Git diffs.
+`make unittest` runs
 the declarative C and C++ integration scenarios with the existing `hard`
 command from `PATH`; it does not build or install `hard`. See the
 [integration fixture guide](unittest/README.md) for its requirements and

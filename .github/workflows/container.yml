@@ -11,8 +11,12 @@ on:
         type: string
   workflow_dispatch:
     inputs:
-      dockerfile:
-        description: Existing target Dockerfile to retry
+      hard_version:
+        description: Existing release tag to retry, for example v5.0
+        required: true
+        type: string
+      target:
+        description: Manifest target to retry, for example linux64:glibc.2.35
         required: true
         type: string
 
@@ -35,44 +39,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Find new targets
+      - name: Resolve release targets
         id: targets
         env:
           CALLED_HARD_REVISION: ${{ inputs.hard_revision }}
-          CALLED_HARD_VERSION: ${{ inputs.hard_version }}
           CURRENT_REF: ${{ github.ref }}
           EVENT_NAME: ${{ github.event_name }}
-          REQUESTED_DOCKERFILE: ${{ inputs.dockerfile }}
+          INPUT_HARD_VERSION: ${{ inputs.hard_version }}
+          REQUESTED_TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
 
-          dockerfiles=()
+          if [[ ! "$INPUT_HARD_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid hard version: $INPUT_HARD_VERSION" >&2
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/$INPUT_HARD_VERSION"; then
+            echo "hard release tag does not exist: $INPUT_HARD_VERSION" >&2
+            exit 1
+          fi
+
           if [[ "$EVENT_NAME" == workflow_call ]]; then
-            if [[ ! "$CALLED_HARD_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
-              echo "invalid called hard version: $CALLED_HARD_VERSION" >&2
-              exit 1
-            fi
             if ! git cat-file -e "$CALLED_HARD_REVISION^{commit}" 2>/dev/null; then
               echo "called hard revision does not exist: $CALLED_HARD_REVISION" >&2
               exit 1
             fi
-            if ! git show-ref --verify --quiet "refs/tags/$CALLED_HARD_VERSION"; then
-              echo "hard release tag does not exist: $CALLED_HARD_VERSION" >&2
-              exit 1
-            fi
             hard_revision=$(git rev-parse "$CALLED_HARD_REVISION^{commit}")
-            tag_revision=$(git rev-parse "$CALLED_HARD_VERSION^{commit}")
+            tag_revision=$(git rev-parse "$INPUT_HARD_VERSION^{commit}")
             if [[ "$hard_revision" != "$tag_revision" ]]; then
-              echo "called revision does not match $CALLED_HARD_VERSION: $hard_revision" >&2
-              exit 1
-            fi
-            mapfile -t dockerfiles < <(
-              find target -mindepth 2 -maxdepth 2 -type f \
-                -name "$CALLED_HARD_VERSION-*.Dockerfile" -print \
-                | sort
-            )
-            if [[ ${#dockerfiles[@]} -eq 0 ]]; then
-              echo "release has no container targets: $CALLED_HARD_VERSION" >&2
+              echo "called revision does not match $INPUT_HARD_VERSION: $hard_revision" >&2
               exit 1
             fi
           elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
@@ -80,83 +75,53 @@ jobs:
               echo "manual recovery must run from main" >&2
               exit 1
             fi
-            if [[ -z "$REQUESTED_DOCKERFILE" ]] || \
-               ! git ls-files --error-unmatch -- "$REQUESTED_DOCKERFILE" >/dev/null 2>&1 || \
-               [[ ! -f "$REQUESTED_DOCKERFILE" ]] || \
-               [[ -L "$REQUESTED_DOCKERFILE" ]]; then
-              echo "manual recovery requires a tracked target Dockerfile: $REQUESTED_DOCKERFILE" >&2
-              exit 1
-            fi
-            dockerfiles=("$REQUESTED_DOCKERFILE")
+            hard_revision=$(git rev-parse "$INPUT_HARD_VERSION^{commit}")
           else
             echo "unsupported container publication event: $EVENT_NAME" >&2
             exit 1
           fi
 
+          git checkout --detach "$hard_revision"
+          python3 tools/target-manifest-check.py
+
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            mapfile -t manifest_targets < <(
+              jq -c \
+                --arg target "$REQUESTED_TARGET" \
+                '.targets[] | select((.image + ":" + .variant) == $target)' \
+                target/manifest.json
+            )
+            if [[ ${#manifest_targets[@]} -ne 1 ]]; then
+              echo "manual recovery requires one manifest target: $REQUESTED_TARGET" >&2
+              exit 1
+            fi
+          else
+            mapfile -t manifest_targets < <(jq -c '.targets[]' target/manifest.json)
+          fi
+
+          latest_hard_version=$(
+            git tag --list \
+              | awk '/^v[0-9]+\.[0-9]+$/ { print }' \
+              | sort -V \
+              | tail -1
+          )
           targets=()
-          for dockerfile in "${dockerfiles[@]}"; do
-            relative=${dockerfile#target/}
-            image=${relative%%/*}
-            filename=${relative#*/}
-            version=${filename%.Dockerfile}
-            if [[ "$dockerfile" != "target/$image/$version.Dockerfile" ]] || \
-               [[ ! "$image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-              echo "invalid target Dockerfile name: $dockerfile" >&2
-              exit 1
-            fi
-            if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-ubuntu\.[0-9]+\.[0-9]+$ ]] && \
-               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-alpine\.[0-9]+\.[0-9]+-static$ ]] && \
-               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-glibc\.[0-9]+\.[0-9]+$ ]] && \
-               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-musl\.[0-9]+\.[0-9]+\.[0-9]+-static$ ]] && \
-               [[ ! "$version" =~ ^v[0-9]+\.[0-9]+-llvm-mingw\.[0-9]{8}-ucrt$ ]]; then
-              echo "invalid target Dockerfile name: $dockerfile" >&2
-              exit 1
-            fi
-
-            hard_version=${version%%-*}
-            if [[ "$EVENT_NAME" == workflow_call ]]; then
-              if [[ "$hard_version" != "$CALLED_HARD_VERSION" ]]; then
-                echo "container target does not match called release: $dockerfile" >&2
-                exit 1
-              fi
-              hard_revision=$(git rev-parse "$CALLED_HARD_REVISION^{commit}")
-            else
-              if ! git show-ref --verify --quiet "refs/tags/$hard_version"; then
-                echo "hard release tag does not exist: $hard_version" >&2
-                exit 1
-              fi
-              hard_revision=$(git rev-parse "$hard_version^{commit}")
-            fi
-
+          for manifest_target in "${manifest_targets[@]}"; do
+            dockerfile=$(jq -r '.dockerfile' <<< "$manifest_target")
+            image=$(jq -r '.image' <<< "$manifest_target")
+            variant=$(jq -r '.variant' <<< "$manifest_target")
+            version="$INPUT_HARD_VERSION-$variant"
             publish_latest=false
-            if [[ "$version" =~ -(ubuntu|glibc)\. ]]; then
-              latest_dockerfile=$(
-                find "target/$image" -maxdepth 1 -type f \
-                  \( -name 'v*-ubuntu.*.Dockerfile' -o -name 'v*-glibc.*.Dockerfile' \) \
-                  -print \
-                  | sort -V \
-                  | tail -1
-              )
-              if [[ "$dockerfile" == "$latest_dockerfile" ]]; then
-                publish_latest=true
-              fi
-            elif [[ "$version" =~ -llvm-mingw\. ]]; then
-              latest_dockerfile=$(
-                find "target/$image" -maxdepth 1 -type f \
-                  -name 'v*-llvm-mingw.*-ucrt.Dockerfile' -print \
-                  | sort -V \
-                  | tail -1
-              )
-              if [[ "$dockerfile" == "$latest_dockerfile" ]]; then
-                publish_latest=true
-              fi
+            if [[ $(jq -r '.publish_latest' <<< "$manifest_target") == true ]] && \
+               [[ "$INPUT_HARD_VERSION" == "$latest_hard_version" ]]; then
+              publish_latest=true
             fi
 
             targets+=("$(
               jq -cn \
                 --arg dockerfile "$dockerfile" \
                 --arg hard_revision "$hard_revision" \
-                --arg hard_version "$hard_version" \
+                --arg hard_version "$INPUT_HARD_VERSION" \
                 --arg image "$image" \
                 --argjson publish_latest "$publish_latest" \
                 --arg version "$version" \
@@ -178,6 +143,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.hard_revision }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -190,7 +157,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Protect immutable version tag
-        if: github.event_name == 'workflow_dispatch'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ matrix.version }}
         run: |
@@ -222,6 +188,7 @@ jobs:
           build-args: |
             HARD_REVISION=${{ matrix.hard_revision }}
             HARD_VERSION=${{ matrix.hard_version }}
+            IMAGE_VERSION=${{ matrix.version }}
           context: .
           file: ${{ matrix.dockerfile }}
           labels: |
