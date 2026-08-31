@@ -105,6 +105,9 @@ Implemented:
 - an embedded `v4.0-development` version assembled from the `4.0` version
   number and `development` prerelease identifier, with a source-independent
   `version` command and release-time prerelease removal;
+- a read-only release contract check that builds development and release
+  binaries from one checkout, verifies their exact embedded versions and the
+  environment report, and rejects runtime `VERSION` files;
 - a source-independent `environment` report covering the runtime, operating
   system, CPU, libc, compiler, target triple, configured flags, executable
   naming/execution settings, and libclang, with aligned colored sections, a
@@ -191,6 +194,7 @@ cache entries and are not refreshed automatically.
 | `LICENSE` | MIT license |
 | `Makefile` | Builds and checks the Go backend, delegates the integration suite, and installs the host wrapper, runtime bundle, and shell completions |
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
+| `tools/release-check.sh` | Internal development/release binary version and runtime-file contract check |
 | `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, a known container target, or an arbitrary `docker://image`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
 | `format/format.v1` | Default clang-format style |
@@ -379,8 +383,12 @@ The repository-root Makefile has exactly these public targets:
 - `all`, the default target, depends on `build`;
 - `build` compiles the Go module in `hard/` to `BUILD_DIR/hard`;
 - `check` enforces Go formatting, runs ordinary and race tests, vet, an
-  isolated temporary build, module verification, both POSIX shell syntax
+  isolated temporary build, module verification, all POSIX shell syntax
   checks, and staged and unstaged Git whitespace checks;
+- `release-check` builds temporary development and release binaries and
+  validates their embedded versions, environment report, and absence of a
+  runtime `VERSION` file; optional `VERSION=vX.Y` makes that exact version
+  authoritative;
 - `unittest` delegates to `unittest/Makefile` without depending on `build` or
   `install`, and therefore uses the existing `hard` command from `PATH` unless
   `HARD` is overridden;
@@ -1031,6 +1039,14 @@ sources, or create artifacts. New portable releases no longer contain a
 runtime `VERSION` file. Older immutable release archives and container images
 retain their historical files because their tagged backends predate this
 command.
+
+`make release-check` builds both forms from the current checkout. Without a
+`VERSION` value it derives the release version from the required
+`vX.Y-development` output. With `VERSION=vX.Y`, it additionally requires the
+source development version to correspond to that exact release. It clears only
+`versionPrerelease` for the release build, verifies `hard version`, verifies
+the matching version row in `hard --no-color environment`, and rejects a
+runtime `VERSION` file.
 
 ## `hard environment`
 
@@ -2211,8 +2227,9 @@ directory for the verification binary:
     go build -o <unique /tmp path> .
     go mod verify
 
-It additionally checks `hard.sh` and `install.sh` with `sh -n` and runs both
-`git diff --check` and `git diff --cached --check` from the repository root.
+It additionally checks `hard.sh`, `install.sh`, and
+`tools/release-check.sh` with `sh -n`, then runs both `git diff --check` and
+`git diff --cached --check` from the repository root.
 
 `.github/workflows/check.yml` runs for every pull request and every push to
 `main`, with superseded runs for the same ref cancelled. Its independent
@@ -2224,6 +2241,13 @@ and PyYAML, builds the backend from the checked-out commit into a temporary
 runtime beside the current `hard.h`, and runs all declarative scenarios with
 isolated `HARD_ROOT` and output directories. The workflow does not build or
 publish container images and does not install hard into a persistent prefix.
+The independent `release-contract` job builds and verifies both version forms
+without publishing an artifact.
+
+The release-tag workflow first checks that the strict `vX.Y` tag resolves to a
+commit reachable from `main`, runs `make check`, and runs `make release-check`
+with that exact tag. Portable archive construction cannot start until this
+verify job succeeds.
 
 For check-workflow changes, parse the workflow as YAML, verify the two event
 triggers, read-only contents permission, runner, action versions, Go version,

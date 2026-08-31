@@ -13,7 +13,7 @@ BASH_COMPLETIONDIR := $(PREFIX)/share/bash-completion/completions
 ZSH_COMPLETIONDIR := $(PREFIX)/share/zsh/site-functions
 FISH_COMPLETIONDIR := $(PREFIX)/share/fish/vendor_completions.d
 
-.PHONY: all build check install unittest
+.PHONY: all build check install release-check unittest
 
 all: build
 
@@ -43,9 +43,13 @@ check:
 	@printf '%s\n' 'Checking shell scripts'
 	@sh -n hard.sh
 	@sh -n install.sh
+	@sh -n tools/release-check.sh
 	@printf '%s\n' 'Checking Git diff'
 	@git diff --check
 	@git diff --cached --check
+
+release-check:
+	@GO="$(GO)" sh tools/release-check.sh "$(VERSION)"
 
 unittest:
 	$(MAKE) -C unittest

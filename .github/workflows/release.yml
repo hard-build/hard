@@ -19,22 +19,59 @@ env:
   CHECKSUM_NAME: hard-${{ github.ref_name }}.tar.gz.sha256
 
 jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-parse "$RELEASE_TAG^{commit}")
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "release tag is not reachable from main: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: hard/go.sum
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libclang-18-dev
+
+      - name: Check repository
+        run: make check
+
+      - name: Verify release contract
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: make release-check VERSION="$RELEASE_TAG"
+
   build:
+    needs: verify
     runs-on: ubuntu-24.04
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-
-      - name: Validate release tag
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+$ ]]; then
-            echo "invalid release tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
 
       - name: Download LLVM 18
         run: |
