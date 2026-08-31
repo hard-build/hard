@@ -352,16 +352,47 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-              "$RUNNER_TEMP/release/$ARCHIVE_NAME" \
-              "$RUNNER_TEMP/release/$CHECKSUM_NAME"
-          else
+          assets=(
+            "$RUNNER_TEMP/release/$ARCHIVE_NAME"
+            "$RUNNER_TEMP/release/$CHECKSUM_NAME"
+          )
+
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --generate-notes \
               --title "$RELEASE_TAG" \
-              "$RUNNER_TEMP/release/$ARCHIVE_NAME" \
-              "$RUNNER_TEMP/release/$CHECKSUM_NAME"
+              "${assets[@]}"
+            exit 0
+          fi
+
+          existing_assets=$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name')
+          download_dir=$(mktemp -d)
+          trap 'rm -rf "$download_dir"' EXIT
+          missing_assets=()
+
+          for asset in "${assets[@]}"; do
+            asset_name=$(basename "$asset")
+            if grep -Fqx -- "$asset_name" <<<"$existing_assets"; then
+              gh release download "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "$asset_name" \
+                --dir "$download_dir"
+              if ! cmp -s "$asset" "$download_dir/$asset_name"; then
+                echo "release asset already exists with different contents: $asset_name" >&2
+                exit 1
+              fi
+            else
+              missing_assets+=("$asset")
+            fi
+          done
+
+          if [[ ${#missing_assets[@]} -gt 0 ]]; then
+            gh release upload "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              "${missing_assets[@]}"
           fi
 
   containers:

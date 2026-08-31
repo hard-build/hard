@@ -2253,6 +2253,9 @@ verify job succeeds. After the portable archive passes its compatibility matrix
 and is published, the workflow calls the container publication workflow with
 the same tag and revision; a container failure does not replace the already
 published host assets and can be retried through guarded manual recovery.
+Release publication is idempotent but immutable: an absent release is created,
+absent assets are uploaded without replacement, byte-identical assets are
+accepted, and an existing asset with different contents fails the workflow.
 
 For check-workflow changes, parse the workflow as YAML, verify the two event
 triggers, read-only contents permission, runner, action versions, Go version,
