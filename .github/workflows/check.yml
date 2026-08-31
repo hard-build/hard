@@ -1,8 +1,14 @@
 name: Check
 
 on:
-  push:
   pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -30,3 +36,40 @@ jobs:
 
       - name: Check
         run: make check
+
+  integration-host:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.23.12"
+          cache: true
+          cache-dependency-path: hard/go.sum
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libclang-18-dev \
+            libgtest-dev \
+            pkg-config \
+            python3-yaml
+
+      - name: Build current runtime
+        run: |
+          make BUILD_DIR="$RUNNER_TEMP/hard-runtime" build
+          install -m 0644 hard.h "$RUNNER_TEMP/hard-runtime/hard.h"
+
+      - name: Run host integration suite
+        run: |
+          make unittest \
+            HARD="$RUNNER_TEMP/hard-runtime/hard" \
+            HARD_ENV=ci-host \
+            HARD_ROOT="$RUNNER_TEMP/hard-root" \
+            OUTPUT="$RUNNER_TEMP/hard-unittest"

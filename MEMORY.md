@@ -157,7 +157,9 @@ Implemented:
 - exclusion of runtime support `hard.h` declarations from source forwards
   while retaining its backend-managed force include;
 - a GitHub Actions check workflow that runs the canonical `make check` target
-  on every pushed repository state and every pull-request update;
+  and all declarative host integration scenarios in separate Ubuntu 24.04 jobs
+  for pull requests and pushes to `main`, while cancelling superseded runs for
+  the same ref;
 - a GitHub Actions workflow that automatically publishes an image version only
   when a previously unseen `target/<image>/<version>.Dockerfile` is added to
   `main`, offers guarded manual recovery for a failed first publication, keeps
@@ -2212,12 +2214,16 @@ directory for the verification binary:
 It additionally checks `hard.sh` and `install.sh` with `sh -n` and runs both
 `git diff --check` and `git diff --cached --check` from the repository root.
 
-`.github/workflows/check.yml` runs the same target for every `push` and
-`pull_request` event. The job uses the GitHub-hosted `ubuntu-24.04` environment,
-Go 1.23.12 through `actions/setup-go`, and explicitly installs both
-`build-essential` and `libclang-18-dev` before invoking `make check`. The
-setup-go cache is keyed from `hard/go.sum`. This workflow does not run
-`make unittest`, build container images, or install hard.
+`.github/workflows/check.yml` runs for every pull request and every push to
+`main`, with superseded runs for the same ref cancelled. Its independent
+GitHub-hosted `ubuntu-24.04` jobs both use Go 1.23.12 through
+`actions/setup-go`, with the cache keyed from `hard/go.sum`. The `check` job
+installs `build-essential` and `libclang-18-dev` before invoking `make check`.
+The `integration-host` job additionally installs CMake, GoogleTest, pkg-config,
+and PyYAML, builds the backend from the checked-out commit into a temporary
+runtime beside the current `hard.h`, and runs all declarative scenarios with
+isolated `HARD_ROOT` and output directories. The workflow does not build or
+publish container images and does not install hard into a persistent prefix.
 
 For check-workflow changes, parse the workflow as YAML, verify the two event
 triggers, read-only contents permission, runner, action versions, Go version,
