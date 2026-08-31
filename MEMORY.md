@@ -168,7 +168,8 @@ Implemented:
   `main`, offers guarded manual recovery for a failed first publication, keeps
   version tags immutable, advances `linux64:latest` only for the newest glibc
   version, and advances `windows64:latest` only for the newest
-  LLVM-MinGW UCRT version;
+  LLVM-MinGW UCRT version, with v5.0 and newer images required to report their
+  embedded release version and contain no runtime `VERSION` file;
 - a release-tag GitHub workflow that builds the host backend against
   the Ubuntu 18.04 glibc baseline and publishes a portable archive and SHA-256
   file.
@@ -676,8 +677,11 @@ workflow loads the new image on the runner, builds and executes a C++20 smoke
 program, and checks static targets for both an ELF interpreter and `NEEDED`
 entries. Windows smoke requires AMD64 PE and UCRT contract imports, executes
 the program through `hard run` and Wine, and runs all 12 declarative integration
-scenarios inside the image. Only a successful image is pushed. New Dockerfiles
-do not carry that smoke program as an image layer.
+scenarios inside the image. For hard v5.0 and newer, smoke also requires
+`hard version` and the environment report to match the release version and
+requires `/usr/local/libexec/hard/VERSION` to be absent. Older immutable images
+retain their historical runtime-file contract. Only a successful image is
+pushed. New Dockerfiles do not carry that smoke program as an image layer.
 
 The first externally published GitHub package defaults private and must be made
 public once by a maintainer before anonymous pulls work. Package visibility

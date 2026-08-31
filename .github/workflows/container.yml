@@ -211,6 +211,7 @@ jobs:
 
       - name: Smoke-test ${{ matrix.image }}:${{ matrix.version }}
         env:
+          HARD_VERSION: ${{ matrix.hard_version }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ matrix.version }}
           IMAGE_NAME: ${{ matrix.image }}
           IMAGE_VERSION: ${{ matrix.version }}
@@ -219,6 +220,22 @@ jobs:
           project=$(mktemp -d)
           hard_root=$(mktemp -d)
           trap 'rm -rf "$project" "$hard_root"' EXIT
+
+          hard_major=${HARD_VERSION#v}
+          hard_major=${hard_major%%.*}
+          if (( hard_major >= 5 )); then
+            embedded_version=$(docker run --rm "$IMAGE" version)
+            test "$embedded_version" = "$HARD_VERSION"
+
+            environment_report=$(docker run --rm "$IMAGE" --no-color environment)
+            grep -Fqx "  Version             $HARD_VERSION" <<< "$environment_report"
+
+            docker run --rm \
+              --entrypoint sh \
+              "$IMAGE" \
+              -euc 'test ! -e /usr/local/libexec/hard/VERSION'
+          fi
+
           cat > "$project/main.cpp" <<'EOF'
           #include <cstddef>
           #include <iostream>
