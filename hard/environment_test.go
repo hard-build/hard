@@ -28,13 +28,14 @@ func TestWriteEnvironmentReport(t *testing.T) {
 		runtimeRoot:      runtimeRoot,
 		env:              "cross-cache",
 		cc:               compiler,
+		cflags:           []string{"-std=c++20", "-I/project include"},
 		ldflags:          []string{"-static", "-Wl,argument with space"},
 		entrypoints:      []string{"main", "custom entry"},
 		executableSuffix: ".exe",
 		executableRunner: "wine",
 	}
 	var output bytes.Buffer
-	if err := writeEnvironmentReport(config, []string{"-std=c++20", "-I/hard data/source"}, true, &output); err != nil {
+	if err := writeEnvironmentReport(config, true, &output); err != nil {
 		t.Fatalf("writeEnvironmentReport() error = %v", err)
 	}
 
@@ -55,7 +56,7 @@ func TestWriteEnvironmentReport(t *testing.T) {
 		"  Binary suffix       .exe",
 		"  Runner              wine",
 		"\nBUILD CONFIGURATION\n",
-		"  CFLAGS\n    -std=c++20\n    '-I/hard data/source'",
+		"  CFLAGS\n    -std=c++20\n    '-I/project include'",
 		"  LDFLAGS\n    -static\n    '-Wl,argument with space'",
 		"  Entry points\n    main\n    'custom entry'",
 		"\nPARSER\n",
@@ -64,6 +65,15 @@ func TestWriteEnvironmentReport(t *testing.T) {
 	} {
 		if !strings.Contains(output.String(), wanted) {
 			t.Errorf("environment report does not contain %q:\n%s", wanted, output.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"\n    " + quoteShellArgument("-I"+filepath.Join(config.root, "source")) + "\n",
+		"\n    -include\n",
+		"\n    " + quoteShellArgument(filepath.Join(config.runtimeRoot, "hard.h")) + "\n",
+	} {
+		if strings.Contains(output.String(), unwanted) {
+			t.Errorf("environment report contains internal CFLAGS argument %q:\n%s", unwanted, output.String())
 		}
 	}
 }
@@ -76,7 +86,7 @@ func TestWriteEnvironmentReportContinuesAfterUnavailableCompiler(t *testing.T) {
 		cc:          filepath.Join(t.TempDir(), "missing-c++"),
 	}
 	var output bytes.Buffer
-	if err := writeEnvironmentReport(config, nil, true, &output); err != nil {
+	if err := writeEnvironmentReport(config, true, &output); err != nil {
 		t.Fatalf("writeEnvironmentReport() error = %v", err)
 	}
 	for _, wanted := range []string{
@@ -119,6 +129,7 @@ func TestRenderEnvironmentReport(t *testing.T) {
 		resourceDirectory:  "system default",
 	}
 	want := strings.Join([]string{
+		environmentRule,
 		"HARD BUILD ENVIRONMENT",
 		environmentRule,
 		"",
@@ -234,7 +245,6 @@ func TestReadCPUModel(t *testing.T) {
 func TestWriteEnvironmentReportReturnsOutputError(t *testing.T) {
 	err := writeEnvironmentReport(
 		configuration{runtimeRoot: t.TempDir(), cc: filepath.Join(t.TempDir(), "missing-c++")},
-		nil,
 		true,
 		environmentErrorWriter{},
 	)

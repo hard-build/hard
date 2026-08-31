@@ -106,9 +106,10 @@ Implemented:
   number and `development` prerelease identifier, with a source-independent
   `version` command and release-time prerelease removal;
 - a source-independent `environment` report covering the runtime, operating
-  system, CPU, libc, compiler, target triple, effective flags, executable
-  naming/execution settings, and libclang, with aligned colored sections and a
-  plain `--no-color` form;
+  system, CPU, libc, compiler, target triple, configured flags, executable
+  naming/execution settings, and libclang, with aligned colored sections, a
+  title enclosed between horizontal rules, internal compiler include mechanics
+  omitted, and a plain `--no-color` form;
 - command-specific source discovery;
 - recursive traversal through directory symlinks with cycle prevention;
 - relative source display paths and canonical deduplication;
@@ -1044,17 +1045,18 @@ After ordinary configuration and runtime-root loading it reports:
   `-dumpmachine` target;
 - `HARD_EXECUTABLE_SUFFIX` and `HARD_EXECUTABLE_RUNNER`, displaying empty
   values as `none` and `direct`;
-- shell-rendered effective CFLAGS, LDFLAGS, and entry points, with one argument
-  per line;
+- shell-rendered configured CFLAGS, LDFLAGS, and entry points, with one argument
+  per line; CFLAGS omits the backend-managed source-root include and runtime
+  support-header force include;
 - `clang_getClangVersion()` and the shared portable resource-directory
   discovery result, with no runtime directory reported as `system default`.
 
 Individual unavailable host/compiler probes render `unavailable` and do not
 abort the remaining report. Invalid configuration and output-write failures
-remain fatal. The report uses a bold cyan title and rule, bold green section
-headings, cyan labels, and yellow special values by default. `--no-color`
-preserves the aligned layout without ANSI sequences. The command intentionally
-has no `--silent` option.
+remain fatal. The report encloses its bold cyan title between dim cyan rules
+and uses bold green section headings, cyan labels, and yellow special values by
+default. `--no-color` preserves the aligned layout without ANSI sequences. The
+command intentionally has no `--silent` option.
 
 ## `hard format`
 
@@ -2100,8 +2102,9 @@ to leave the library unchanged for now.
   default persistent root, argument preservation, no host `HARD_*` forwarding,
   wrapper-owned target completion, host-only dispatch for other completion
   requests, and invalid target diagnostics.
-- `hard/environment_test.go`: exact aligned plain layout, ANSI palette and
-  removal, embedded version, detailed sections and configured values, compiler
+- `hard/environment_test.go`: exact rule-framed aligned plain layout, ANSI
+  palette and removal, embedded version, configured flags without internal
+  include mechanics, detailed sections and configured values, compiler
   diagnostics, OS/CPU parsing, unavailable probes, and output errors.
 - `hard/version_test.go`: development and release version composition, exact
   line output, and output errors.

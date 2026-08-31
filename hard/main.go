@@ -36,7 +36,7 @@ func main() {
 	}
 	cflags := effectiveCFlags(configuration.cflags, configuration.root, configuration.runtimeRoot)
 	if parsed.command == "environment" {
-		if err := writeEnvironmentReport(configuration, cflags, parsed.noColor, os.Stdout); err != nil {
+		if err := writeEnvironmentReport(configuration, parsed.noColor, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 			os.Exit(1)
 		}

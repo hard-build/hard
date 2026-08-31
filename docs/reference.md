@@ -209,20 +209,21 @@ source tree, and does not create or read build artifacts. The report contains:
 - `HARD_CC`, its resolved executable, the first `--version` line, and its
   `-dumpmachine` target;
 - the configured executable suffix and runner;
-- effective compiler flags including the hard-managed includes, linker flags,
-  and entry points, rendered as one shell-quoted argument per line;
+- configured `HARD_CFLAGS`, `HARD_LDFLAGS`, and entry points, rendered as one
+  shell-quoted argument per line; the CFLAGS list omits the hard-managed
+  source-root include and runtime-header force include;
 - the libclang API version and the single portable Clang resource directory,
   or `system default` when the runtime supplies none.
 
 Failure of an individual system or toolchain probe is printed as
 `unavailable`; the remaining diagnostics continue. Invalid `HARD_*`
 configuration and failure to write the requested report remain command errors.
-The output has a title, aligned fields, and separate runtime, system, compiler,
-build-configuration, and parser sections. By default the title and labels use
-cyan, section headings use green, and `unavailable`, `none`, `direct`, and
-`system default` use yellow. `--no-color` preserves the complete layout while
-removing all ANSI sequences. The command has no `--silent` flag because the
-report itself is its result.
+The output encloses its title between matching horizontal rules and has aligned
+fields with separate runtime, system, compiler, build-configuration, and parser
+sections. By default the title and labels use cyan, section headings use green,
+and `unavailable`, `none`, `direct`, and `system default` use yellow.
+`--no-color` preserves the complete layout while removing all ANSI sequences.
+The command has no `--silent` flag because the report itself is its result.
 
 ### Container targets
 

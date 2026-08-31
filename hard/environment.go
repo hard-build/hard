@@ -64,18 +64,17 @@ type environmentStyle struct {
 
 func writeEnvironmentReport(
 	config configuration,
-	cflags []string,
 	noColor bool,
 	output io.Writer,
 ) error {
-	report := collectEnvironmentReport(config, cflags)
+	report := collectEnvironmentReport(config)
 	if _, err := io.WriteString(output, renderEnvironmentReport(report, noColor)); err != nil {
 		return fmt.Errorf("write environment report: %w", err)
 	}
 	return nil
 }
 
-func collectEnvironmentReport(config configuration, cflags []string) environmentReport {
+func collectEnvironmentReport(config configuration) environmentReport {
 	compilerPath, compilerPathError := exec.LookPath(config.cc)
 	compilerVersion := unavailableDiagnostic
 	compilerTarget := unavailableDiagnostic
@@ -115,7 +114,7 @@ func collectEnvironmentReport(config configuration, cflags []string) environment
 		compilerTarget:     compilerTarget,
 		executableSuffix:   displayExecutableSuffix(config.executableSuffix),
 		executableRunner:   displayExecutableRunner(config.executableRunner),
-		cflags:             append([]string(nil), cflags...),
+		cflags:             append([]string(nil), config.cflags...),
 		ldflags:            append([]string(nil), config.ldflags...),
 		entrypoints:        append([]string(nil), config.entrypoints...),
 		libclang:           clangVersion(),
@@ -128,7 +127,8 @@ func renderEnvironmentReport(report environmentReport, noColor bool) string {
 	var output strings.Builder
 	fmt.Fprintf(
 		&output,
-		"%s\n%s\n",
+		"%s\n%s\n%s\n",
+		style.color(environmentDim+environmentCyan, environmentRule),
 		style.color(environmentBold+environmentCyan, environmentTitle),
 		style.color(environmentDim+environmentCyan, environmentRule),
 	)

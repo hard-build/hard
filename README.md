@@ -178,12 +178,14 @@ hard --target=linux64 environment
 The report includes the embedded hard version, runtime and cache roots,
 operating system, kernel,
 CPU and libc, resolved compiler and target, executable naming and runner
-settings, effective flags and entry points, and the libclang version and
-resource directory. A diagnostic that is not available on a particular system
-is shown as `unavailable` without hiding the rest of the report. Sections and
-labels are colored by default, fields are aligned, and compiler flags and entry
-points use one shell-quoted argument per line. Use `--no-color` to retain the
-same layout without ANSI styling.
+settings, configured compiler flags, linker flags and entry points, and the
+libclang version and resource directory. The CFLAGS list omits the source-root
+include and runtime `hard.h` force include that the backend manages internally.
+A diagnostic that is not available on a particular system is shown as
+`unavailable` without hiding the rest of the report. The title is enclosed
+between horizontal rules. Sections and labels are colored by default, fields
+are aligned, and flags and entry points use one shell-quoted argument per line.
+Use `--no-color` to retain the same layout without ANSI styling.
 
 ### `hard format`
 
