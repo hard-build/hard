@@ -102,7 +102,7 @@ Implemented:
 
 - Cobra-based argument parsing;
 - environment-backed configuration;
-- an embedded `v4.0-development` version assembled from the `4.0` version
+- an embedded `v5.0-development` version assembled from the `5.0` version
   number and `development` prerelease identifier, with a source-independent
   `version` command and release-time prerelease removal;
 - a read-only release contract check that builds development and release
@@ -195,6 +195,7 @@ cache entries and are not refreshed automatically.
 | `LICENSE` | MIT license |
 | `Makefile` | Builds and checks the Go backend, delegates the integration suite, and installs the host wrapper, runtime bundle, and shell completions |
 | `install.sh` | Latest portable-release installer and shell `PATH` and completion startup configuration |
+| `tools/bump-version.sh` | Internal guarded development-version increment tool |
 | `tools/release-check.sh` | Internal development/release binary version and runtime-file contract check |
 | `hard.sh` | Installed public-command wrapper; selects the installed default, explicit host backend, a known container target, or an arbitrary `docker://image`, and keeps completion dispatch on the host |
 | `hard.h` | Source runtime support header; host and image installations place it beside their backend |
@@ -386,6 +387,8 @@ The repository-root Makefile has exactly these public targets:
 - `check` enforces Go formatting, runs ordinary and race tests, vet, an
   isolated temporary build, module verification, all POSIX shell syntax
   checks, and staged and unstaged Git whitespace checks;
+- `bump VERSION=X.Y` advances only the embedded development version number,
+  requiring canonical `X.Y`, a numerical increase, and no existing `vX.Y` tag;
 - `release-check` builds temporary development and release binaries and
   validates their embedded versions, environment report, and absence of a
   runtime `VERSION` file; optional `VERSION=vX.Y` makes that exact version
@@ -1027,12 +1030,12 @@ and cause status 1. A normally started program that exits nonzero under
 
 `version` prints one line assembled from two values embedded in the Go binary:
 
-    versionNumber = 4.0
+    versionNumber = 5.0
     versionPrerelease = development
 
-The default output is `v4.0-development`. A non-empty prerelease identifier is
+The default output is `v5.0-development`. A non-empty prerelease identifier is
 separated from the version number by one hyphen. Release packaging clears only
-the prerelease value through `-X main.versionPrerelease=`, producing `v4.0`,
+the prerelease value through `-X main.versionPrerelease=`, producing `v5.0`,
 and rejects a binary whose reported version differs from the release tag.
 
 The command does not resolve the runtime root, read a runtime version file,
@@ -1041,6 +1044,11 @@ sources, or create artifacts. New portable releases no longer contain a
 runtime `VERSION` file. Older immutable release archives and container images
 retain their historical files because their tagged backends predate this
 command.
+
+`make bump VERSION=X.Y` is the only version-number update path. It accepts a
+canonical version without a `v` prefix, requires a numerical increase, refuses
+an already tagged version, and changes only `versionNumber`; prerelease remains
+`development` until release linking clears it.
 
 `make release-check` builds both forms from the current checkout. Without a
 `VERSION` value it derives the release version from the required
@@ -2229,7 +2237,7 @@ directory for the verification binary:
     go build -o <unique /tmp path> .
     go mod verify
 
-It additionally checks `hard.sh`, `install.sh`, and
+It additionally checks `hard.sh`, `install.sh`, `tools/bump-version.sh`, and
 `tools/release-check.sh` with `sh -n`, then runs both `git diff --check` and
 `git diff --cached --check` from the repository root.
 

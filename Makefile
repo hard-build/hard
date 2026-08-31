@@ -13,13 +13,16 @@ BASH_COMPLETIONDIR := $(PREFIX)/share/bash-completion/completions
 ZSH_COMPLETIONDIR := $(PREFIX)/share/zsh/site-functions
 FISH_COMPLETIONDIR := $(PREFIX)/share/fish/vendor_completions.d
 
-.PHONY: all build check install release-check unittest
+.PHONY: all build bump check install release-check unittest
 
 all: build
 
 build:
 	$(INSTALL) -d "$(dir $(HARD_BINARY))"
 	cd hard && $(GO) build -o "$(HARD_BINARY)" .
+
+bump:
+	@sh tools/bump-version.sh "$(VERSION)"
 
 check:
 	@printf '%s\n' 'Checking Go formatting'
@@ -43,6 +46,7 @@ check:
 	@printf '%s\n' 'Checking shell scripts'
 	@sh -n hard.sh
 	@sh -n install.sh
+	@sh -n tools/bump-version.sh
 	@sh -n tools/release-check.sh
 	@printf '%s\n' 'Checking Git diff'
 	@git diff --check
