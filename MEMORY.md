@@ -206,8 +206,8 @@ cache entries and are not refreshed automatically.
 | `target/linux64/v4.0-musl.1.2.5-static.Dockerfile` | Alpine 3.22 `linux/amd64` image building hard v4.0 against musl 1.2.5 and producing fully static programs |
 | `target/windows64/v4.0-llvm-mingw.20260616-ucrt.Dockerfile` | Ubuntu 22.04 `linux/amd64` image building hard v4.0 and producing Windows x86-64 UCRT executables with LLVM-MinGW 20260616 and Wine |
 | `.github/workflows/check.yml` | Per-push and pull-request `make check` workflow |
-| `.github/workflows/container.yml` | New-target GHCR publication workflow and immutable target tag policy |
-| `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, and GitHub release publication |
+| `.github/workflows/container.yml` | Reusable and manually recoverable GHCR publication workflow with immutable target tag policy |
+| `.github/workflows/release.yml` | Release-tag portable host archive build, compatibility checks, GitHub release publication, and downstream container publication |
 | `unittest/Makefile` | Passes Make variables and an optional scenario name to the declarative Python runner |
 | `unittest/run.py` | Discovers, validates, and sequentially executes strict `test.yaml` scenarios, with optional application suffix and runner settings for cross-target CI |
 | `unittest/requirements.txt` | Pins the PyYAML major version used by the integration runner |
@@ -652,27 +652,25 @@ an x86-64-v3 CPU. Docker and Wine do not add CPU emulation. Toolchain, ABI,
 base system, bundled hard version, or minimum-CPU changes require a new target
 version.
 
-The GHCR workflow is independent from release publication. On an automatic
-push to `main`, it considers only newly added
-`target/<image>/<version>.Dockerfile` paths. It validates the directory and
-filename, requires the `vX.Y` prefix to name an existing Git tag, and records
-that tag's revision in the image. A path that occurred earlier in Git history is
-skipped, even if deleted and re-added. A newly added Dockerfile publishes an
-immutable version tag. A newly added glibc Dockerfile can advance
-`linux64:latest` only when it is newest across the glibc and legacy Ubuntu
-lineage. A newly added
-LLVM-MinGW UCRT Dockerfile can similarly advance `windows64:latest`. Legacy
-Alpine and current musl static images never change an unversioned target.
-Changing or deleting an existing Dockerfile, and ordinary pushes without a new
-Dockerfile, publish no image.
+The release-tag workflow invokes the reusable GHCR workflow only after the
+portable host release is published, passing the exact `vX.Y` tag and its
+revision. The called workflow requires them to resolve to the same commit,
+discovers matching `target/<image>/vX.Y-*.Dockerfile` definitions from that
+release checkout, validates every image and version name, and records the tag
+revision in each image. Ordinary pushes do not publish container images.
+
+A glibc Dockerfile advances `linux64:latest` only when it is newest across the
+glibc and legacy Ubuntu lineage. An LLVM-MinGW UCRT Dockerfile similarly
+advances `windows64:latest`. Legacy Alpine and current musl static images never
+change an unversioned target. Each version tag remains immutable.
+
 An explicit `workflow_dispatch` is available only for recovering a failed
 first publication. Its required `dockerfile` input must name a tracked regular
-target Dockerfile on `main`. Manual recovery bypasses only the prior-history
-skip and retains the same name, version, and release-tag validation. After
-logging in, it refuses to continue when the immutable version tag already
-exists. Only the exact `manifest unknown` response is treated as an unpublished
-tag; authentication, network, and other registry failures remain fatal.
-Commit, edge, and release-only tags are not published. Before publication, the
+target Dockerfile on `main` and retains the same name, version, and release-tag
+validation. After logging in, it refuses to continue when the immutable version
+tag already exists. Only the exact `manifest unknown` response is treated as an
+unpublished tag; authentication, network, and other registry failures remain
+fatal. Commit and edge tags are not published. Before publication, the
 workflow loads the new image on the runner, builds and executes a C++20 smoke
 program, and checks static targets for both an ELF interpreter and `NEEDED`
 entries. Windows smoke requires AMD64 PE and UCRT contract imports, executes
@@ -2251,7 +2249,10 @@ without publishing an artifact.
 The release-tag workflow first checks that the strict `vX.Y` tag resolves to a
 commit reachable from `main`, runs `make check`, and runs `make release-check`
 with that exact tag. Portable archive construction cannot start until this
-verify job succeeds.
+verify job succeeds. After the portable archive passes its compatibility matrix
+and is published, the workflow calls the container publication workflow with
+the same tag and revision; a container failure does not replace the already
+published host assets and can be retried through guarded manual recovery.
 
 For check-workflow changes, parse the workflow as YAML, verify the two event
 triggers, read-only contents permission, runner, action versions, Go version,

@@ -363,3 +363,14 @@ jobs:
               "$RUNNER_TEMP/release/$ARCHIVE_NAME" \
               "$RUNNER_TEMP/release/$CHECKSUM_NAME"
           fi
+
+  containers:
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/container.yml
+    with:
+      hard_revision: ${{ github.sha }}
+      hard_version: ${{ github.ref_name }}
+    secrets: inherit

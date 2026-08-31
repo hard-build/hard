@@ -1,11 +1,14 @@
 name: Publish container image
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "target/*/*.Dockerfile"
+  workflow_call:
+    inputs:
+      hard_revision:
+        required: true
+        type: string
+      hard_version:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       dockerfile:
@@ -35,8 +38,8 @@ jobs:
       - name: Find new targets
         id: targets
         env:
-          BEFORE_SHA: ${{ github.event.before }}
-          CURRENT_SHA: ${{ github.sha }}
+          CALLED_HARD_REVISION: ${{ inputs.hard_revision }}
+          CALLED_HARD_VERSION: ${{ inputs.hard_version }}
           CURRENT_REF: ${{ github.ref }}
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_DOCKERFILE: ${{ inputs.dockerfile }}
@@ -44,7 +47,35 @@ jobs:
           set -euo pipefail
 
           dockerfiles=()
-          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+          if [[ "$EVENT_NAME" == workflow_call ]]; then
+            if [[ ! "$CALLED_HARD_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+              echo "invalid called hard version: $CALLED_HARD_VERSION" >&2
+              exit 1
+            fi
+            if ! git cat-file -e "$CALLED_HARD_REVISION^{commit}" 2>/dev/null; then
+              echo "called hard revision does not exist: $CALLED_HARD_REVISION" >&2
+              exit 1
+            fi
+            if ! git show-ref --verify --quiet "refs/tags/$CALLED_HARD_VERSION"; then
+              echo "hard release tag does not exist: $CALLED_HARD_VERSION" >&2
+              exit 1
+            fi
+            hard_revision=$(git rev-parse "$CALLED_HARD_REVISION^{commit}")
+            tag_revision=$(git rev-parse "$CALLED_HARD_VERSION^{commit}")
+            if [[ "$hard_revision" != "$tag_revision" ]]; then
+              echo "called revision does not match $CALLED_HARD_VERSION: $hard_revision" >&2
+              exit 1
+            fi
+            mapfile -t dockerfiles < <(
+              find target -mindepth 2 -maxdepth 2 -type f \
+                -name "$CALLED_HARD_VERSION-*.Dockerfile" -print \
+                | sort
+            )
+            if [[ ${#dockerfiles[@]} -eq 0 ]]; then
+              echo "release has no container targets: $CALLED_HARD_VERSION" >&2
+              exit 1
+            fi
+          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
             if [[ "$CURRENT_REF" != refs/heads/main ]]; then
               echo "manual recovery must run from main" >&2
               exit 1
@@ -58,15 +89,8 @@ jobs:
             fi
             dockerfiles=("$REQUESTED_DOCKERFILE")
           else
-            if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-              echo "cannot verify newly added targets: missing commit $BEFORE_SHA" >&2
-              exit 1
-            fi
-
-            mapfile -t dockerfiles < <(
-              git diff --no-renames --diff-filter=A --name-only \
-                "$BEFORE_SHA" "$CURRENT_SHA" -- "target/*/*.Dockerfile"
-            )
+            echo "unsupported container publication event: $EVENT_NAME" >&2
+            exit 1
           fi
 
           targets=()
@@ -89,18 +113,20 @@ jobs:
               exit 1
             fi
 
-            if [[ "$EVENT_NAME" != workflow_dispatch ]] && \
-               [[ -n "$(git log -1 --format=%H "$BEFORE_SHA" -- "$dockerfile")" ]]; then
-              echo "Skipping previously known image $image:$version"
-              continue
-            fi
-
             hard_version=${version%%-*}
-            if ! git show-ref --verify --quiet "refs/tags/$hard_version"; then
-              echo "hard release tag does not exist: $hard_version" >&2
-              exit 1
+            if [[ "$EVENT_NAME" == workflow_call ]]; then
+              if [[ "$hard_version" != "$CALLED_HARD_VERSION" ]]; then
+                echo "container target does not match called release: $dockerfile" >&2
+                exit 1
+              fi
+              hard_revision=$(git rev-parse "$CALLED_HARD_REVISION^{commit}")
+            else
+              if ! git show-ref --verify --quiet "refs/tags/$hard_version"; then
+                echo "hard release tag does not exist: $hard_version" >&2
+                exit 1
+              fi
+              hard_revision=$(git rev-parse "$hard_version^{commit}")
             fi
-            hard_revision=$(git rev-parse "$hard_version^{commit}")
 
             publish_latest=false
             if [[ "$version" =~ -(ubuntu|glibc)\. ]]; then
