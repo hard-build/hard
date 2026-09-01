@@ -59,7 +59,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "$EVENT_NAME" == workflow_call ]]; then
+          if [[ -n "$CALLED_HARD_REVISION" ]]; then
             if ! git cat-file -e "$CALLED_HARD_REVISION^{commit}" 2>/dev/null; then
               echo "called hard revision does not exist: $CALLED_HARD_REVISION" >&2
               exit 1

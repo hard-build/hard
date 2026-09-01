@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -672,13 +672,17 @@ runtime `VERSION` file.
 
 The release-tag workflow invokes the reusable GHCR workflow only after the
 portable host release is published, passing the exact `vX.Y` tag and its
-revision. The called workflow requires them to resolve to the same commit,
-checks out that commit, validates its manifest, and forms every immutable image
-tag as `vX.Y-<variant>`. The build job also checks out the release commit and
-passes the three required values explicitly. Ordinary pushes do not publish
-container images. A manifest entry advances `<image>:latest` only when it is
-eligible and the release is the highest strict `vX.Y` tag, preventing an older
-recovery from rolling `latest` backward. The musl static image is not eligible.
+revision. A reusable workflow retains the caller's `github` context, so this
+tag-triggered call reports `github.event_name` as `push`, not `workflow_call`.
+The called workflow therefore recognizes the release path by its required
+non-empty `hard_revision` input. It requires the tag and revision to resolve to
+the same commit, checks out that commit, validates its manifest, and forms every
+immutable image tag as `vX.Y-<variant>`. The build job also checks out the
+release commit and passes the three required values explicitly. Ordinary pushes
+do not publish container images. A manifest entry advances `<image>:latest`
+only when it is eligible and the release is the highest strict `vX.Y` tag,
+preventing an older recovery from rolling `latest` backward. The musl static
+image is not eligible.
 
 An explicit `workflow_dispatch` is available only for recovering a failed
 first publication. Its required `hard_version` and `target` inputs select one
