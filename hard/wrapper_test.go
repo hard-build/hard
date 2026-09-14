@@ -183,20 +183,18 @@ func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
 			want: []string{
 				"host",
 				"linux64",
-				"linux64:v4.0-glibc.2.35",
-				"linux64:v4.0-musl.1.2.5-static",
-				"linux64:v3.0-ubuntu.22.04",
-				"linux64:v3.0-alpine.3.22-static",
+				"linux64:v6.0-glibc.2.35",
+				"linux64:v6.0-musl.1.2.5-static",
 				"windows64",
-				"windows64:v4.0-llvm-mingw.20260616-ucrt",
+				"windows64:v6.0-llvm-mingw.20270101-ucrt",
 				"docker://",
 				":4",
 			},
 		},
 		{
 			name: "separate prefixed value without descriptions",
-			args: []string{"__completeNoDesc", "--target", "linux64:v4.0-m"},
-			want: []string{"linux64:v4.0-musl.1.2.5-static", ":4"},
+			args: []string{"__completeNoDesc", "--target", "linux64:v6.0-m"},
+			want: []string{"linux64:v6.0-musl.1.2.5-static", ":4"},
 		},
 	}
 
@@ -224,12 +222,16 @@ func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
 			backendLog := filepath.Join(t.TempDir(), "backend.log")
 			dockerLog := filepath.Join(t.TempDir(), "docker.log")
 			binDirectory := installFakeWrapperDocker(t, dockerLog)
+			curlLog := filepath.Join(t.TempDir(), "curl.log")
+			installFakeWrapperCurl(t, binDirectory, curlLog)
 
 			command := exec.Command(wrapper, tt.args...)
 			command.Env = wrapperTestEnvironment(map[string]string{
-				"BACKEND_LOG": backendLog,
-				"HOME":        t.TempDir(),
-				"PATH":        binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"BACKEND_LOG":    backendLog,
+				"CURL_LOG":       curlLog,
+				"HOME":           t.TempDir(),
+				"PATH":           binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"XDG_CACHE_HOME": filepath.Join(t.TempDir(), "completion cache"),
 			})
 			output, err := command.CombinedOutput()
 			if err != nil {
@@ -241,6 +243,155 @@ func TestWrapperCompletesTargetsWithoutBackendOrDocker(t *testing.T) {
 			}
 			if _, err := os.Stat(backendLog); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("backend log error = %v, want not exist", err)
+			}
+			if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("docker log error = %v, want not exist", err)
+			}
+			curlRequests, err := os.ReadFile(curlLog)
+			if err != nil {
+				t.Fatalf("read curl log: %v", err)
+			}
+			for _, endpoint := range []string{
+				"https://ghcr.io/token?",
+				"https://ghcr.io/v2/hard-build/linux64/tags/list?n=10000",
+				"https://ghcr.io/v2/hard-build/windows64/tags/list?n=10000",
+			} {
+				if !strings.Contains(string(curlRequests), endpoint) {
+					t.Errorf("curl requests do not contain %q:\n%s", endpoint, curlRequests)
+				}
+			}
+		})
+	}
+}
+
+func TestWrapperCachesTargetCompletionWithoutToken(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), "installed hard")
+	wrapper := installWrapperAtPrefix(t, prefix)
+	dockerLog := filepath.Join(t.TempDir(), "docker.log")
+	binDirectory := installFakeWrapperDocker(t, dockerLog)
+	curlLog := filepath.Join(t.TempDir(), "curl.log")
+	installFakeWrapperCurl(t, binDirectory, curlLog)
+	cacheRoot := filepath.Join(t.TempDir(), "completion cache")
+	environment := wrapperTestEnvironment(map[string]string{
+		"CURL_LOG":       curlLog,
+		"HOME":           t.TempDir(),
+		"PATH":           binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"XDG_CACHE_HOME": cacheRoot,
+	})
+
+	command := exec.Command(wrapper, "__complete", "--target=linux64:v6")
+	command.Env = environment
+	firstOutput, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("first completion error = %v, output = %q", err, firstOutput)
+	}
+	if !strings.Contains(string(firstOutput), "linux64:v6.0-glibc.2.35") {
+		t.Fatalf("first completion output = %q, want live target", firstOutput)
+	}
+	firstRequests, err := os.ReadFile(curlLog)
+	if err != nil {
+		t.Fatalf("read first curl log: %v", err)
+	}
+
+	cachePath := filepath.Join(cacheRoot, "hard", "target-completion")
+	cacheContents, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read target completion cache: %v", err)
+	}
+	if strings.Contains(string(cacheContents), "test-token") {
+		t.Fatalf("target completion cache contains registry token: %q", cacheContents)
+	}
+	if !strings.Contains(string(cacheContents), "linux64:v6.0-glibc.2.35") {
+		t.Fatalf("target completion cache = %q, want live target", cacheContents)
+	}
+	cacheInfo, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatalf("stat target completion cache: %v", err)
+	}
+	if permissions := cacheInfo.Mode().Perm(); permissions != 0o600 {
+		t.Fatalf("target completion cache permissions = %04o, want 0600", permissions)
+	}
+
+	writeWrapperExecutable(t, filepath.Join(binDirectory, "curl"), "#!/bin/sh\nexit 22\n")
+	command = exec.Command(wrapper, "__complete", "--target=linux64:v6")
+	command.Env = environment
+	secondOutput, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cached completion error = %v, output = %q", err, secondOutput)
+	}
+	if !bytes.Equal(secondOutput, firstOutput) {
+		t.Fatalf("cached completion output = %q, want %q", secondOutput, firstOutput)
+	}
+	secondRequests, err := os.ReadFile(curlLog)
+	if err != nil {
+		t.Fatalf("read second curl log: %v", err)
+	}
+	if !bytes.Equal(secondRequests, firstRequests) {
+		t.Fatalf("cached completion made another registry request:\n%s", secondRequests)
+	}
+	if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("docker log error = %v, want not exist", err)
+	}
+}
+
+func TestWrapperTargetCompletionFallsBackWhenRegistryIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		cacheContents string
+		want          []string
+	}{
+		{
+			name: "stale validated targets",
+			args: []string{"__completeNoDesc", "--target", "linux64:v5"},
+			cacheContents: "hard-target-completion-v1 0\n" +
+				"linux64:v5.0-stale\n" +
+				"linux64:invalid/tag\n" +
+				"windows64:v5.0-stale\n",
+			want: []string{"linux64:v5.0-stale", ":4"},
+		},
+		{
+			name: "base targets without cache",
+			args: []string{"__complete", "--target="},
+			want: []string{"host", "linux64", "windows64", "docker://", ":4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := filepath.Join(t.TempDir(), "installed hard")
+			wrapper := installWrapperAtPrefix(t, prefix)
+			dockerLog := filepath.Join(t.TempDir(), "docker.log")
+			binDirectory := installFakeWrapperDocker(t, dockerLog)
+			writeWrapperExecutable(t, filepath.Join(binDirectory, "curl"), "#!/bin/sh\nexit 22\n")
+			cacheRoot := filepath.Join(t.TempDir(), "completion cache")
+			if tt.cacheContents != "" {
+				cacheDirectory := filepath.Join(cacheRoot, "hard")
+				if err := os.MkdirAll(cacheDirectory, 0o700); err != nil {
+					t.Fatalf("create target completion cache directory: %v", err)
+				}
+				if err := os.WriteFile(
+					filepath.Join(cacheDirectory, "target-completion"),
+					[]byte(tt.cacheContents),
+					0o600,
+				); err != nil {
+					t.Fatalf("write target completion cache: %v", err)
+				}
+			}
+
+			command := exec.Command(wrapper, tt.args...)
+			command.Env = wrapperTestEnvironment(map[string]string{
+				"HOME":           t.TempDir(),
+				"PATH":           binDirectory + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"XDG_CACHE_HOME": cacheRoot,
+			})
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("completion error = %v, output = %q", err, output)
+			}
+			got := strings.Split(strings.TrimSpace(string(output)), "\n")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("completion output = %#v, want %#v", got, tt.want)
 			}
 			if _, err := os.Stat(dockerLog); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("docker log error = %v, want not exist", err)
@@ -566,6 +717,34 @@ func installFakeWrapperDocker(t *testing.T, log string) string {
 	)
 	t.Setenv("DOCKER_LOG", log)
 	return directory
+}
+
+func installFakeWrapperCurl(t *testing.T, directory, log string) {
+	t.Helper()
+	writeWrapperExecutable(
+		t,
+		filepath.Join(directory, "curl"),
+		`#!/bin/sh
+printf '%s\n' "$*" >> "$CURL_LOG"
+case "$*" in
+	*ghcr.io/token*)
+		printf '%s\n' '{ "token": "test-token" }'
+		exit 0
+		;;
+	esac
+case "$*" in
+	*ghcr.io/v2/hard-build/linux64/tags/list*)
+		printf '%s\n' '{ "name": "hard-build/linux64", "tags": ["latest", "v6.0-glibc.2.35", "v6.0-musl.1.2.5-static", "invalid/tag", ".invalid"] }'
+		;;
+	esac
+case "$*" in
+	*ghcr.io/v2/hard-build/windows64/tags/list*)
+		printf '%s\n' '{ "name": "hard-build/windows64", "tags": ["v6.0-llvm-mingw.20270101-ucrt", "latest", "invalid:tag"] }'
+		;;
+esac
+`,
+	)
+	t.Setenv("CURL_LOG", log)
 }
 
 func writeWrapperExecutable(t *testing.T, path, contents string) {

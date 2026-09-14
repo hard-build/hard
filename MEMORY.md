@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-09-01.
+Last updated: 2026-09-14.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -143,8 +143,10 @@ Implemented:
   `linux/amd64` release, with user-local staged replacement and idempotent Bash,
   Zsh, Fish, or POSIX-shell `PATH` startup configuration, eight named progress
   stages, and informational hello-world toolchain recommendations;
-- generated Bash, Zsh, and Fish completion files, with target values owned by
-  the wrapper and every other dynamic request dispatched to the host backend;
+- generated Bash, Zsh, and Fish completion files, with stable target values
+  owned by the wrapper, published version tags refreshed anonymously from
+  GHCR through a five-minute XDG cache, and every other dynamic request
+  dispatched to the host backend;
 - wrapper-owned `linux64` and `windows64` Docker targets that select their
   always-refreshed GHCR `latest` tags or any syntactically valid explicit
   Docker tag while bind-mounting the persistent source/cache root from the
@@ -447,10 +449,25 @@ and unknown targets are errors.
 Values after `--` remain untouched.
 
 For the private Cobra `__complete` and `__completeNoDesc` protocols, `hard.sh`
-answers a final partial `--target` value itself. It routes every other
-completion request to the sibling host backend before normal target parsing.
-Completion therefore never starts or pulls Docker even when `default-target`
-selects a container target.
+answers a final partial `--target` value itself. Stable candidates are `host`,
+`linux64`, `windows64`, and `docker://`. The wrapper obtains published
+versioned tags from the `hard-build/linux64` and `hard-build/windows64` GHCR
+repositories through a short-lived anonymous token scoped only to `pull`. It
+excludes `latest`, rejects malformed or mismatched responses, and validates
+every resulting target with the same Docker-tag rules used for execution.
+
+A successful target list is cached for five minutes in
+`${XDG_CACHE_HOME:-$HOME/.cache}/hard/target-completion`. The atomically
+replaced cache contains only an expiry and validated target names, is created
+with mode `0600`, and never contains the GHCR token. A failed refresh uses a
+stale valid cache; without one, only the stable candidates are returned.
+Missing `curl`, no usable cache location, a write failure, and malformed cache
+contents do not make completion fail. Registry access is skipped when the
+current prefix cannot match a versioned known target.
+
+The wrapper routes every non-target completion request to the sibling host
+backend before normal target parsing. Completion therefore never starts or
+pulls Docker even when `default-target` selects a container target.
 
 The host `HARD_ROOT`, or `$HOME/.local/share/hard` when it is empty, is the
 source of a bind mount targeting `/hard`. The physical current working
@@ -769,10 +786,9 @@ Other CLI decisions:
   Zsh, and Fish scripts for installation and release packaging;
 - dynamic completion lists only the seven public commands and filters Cobra's
   private `_help` suggestion;
-- the wrapper supplies fixed `host`, `linux64`, `windows64`,
-  `linux64:v4.0-glibc.2.35`, `linux64:v4.0-musl.1.2.5-static`,
-  `linux64:v3.0-ubuntu.22.04`, `linux64:v3.0-alpine.3.22-static`, and
-  `windows64:v4.0-llvm-mingw.20260616-ucrt`, and `docker://` values for `--target`; the backend
+- the wrapper supplies fixed `host`, `linux64`, `windows64`, and `docker://`
+  values for `--target` and augments them with five-minute-cached validated
+  tags obtained anonymously from both known GHCR repositories; the backend
   supplies `format.v1`, flag names, commands, and default filesystem-path
   completion;
 - the normal `help` command is not public; `help` and `_help` are rejected;
@@ -2081,9 +2097,12 @@ to leave the library unchanged for now.
   command tree during installation and release packaging. They are data files
   below standard `share/` paths, not a seventh public command. The Go tree keeps
   a synthetic `--target` declaration only so those scripts understand the
-  wrapper flag. Concrete target candidates live in `hard.sh`; target-value
-  requests are answered there, while all other dynamic completion requests use
-  the installed host backend. Interactive completion cannot start Docker.
+  wrapper flag. Stable target candidates and the anonymous GHCR tag refresh
+  live in `hard.sh`; target-value requests are answered there and cached for
+  five minutes below the XDG cache root, while all other dynamic completion
+  requests use the installed host backend. Interactive completion cannot start
+  Docker, the registry token is not persisted, and registry failures retain a
+  stale list or fall back to stable targets.
 - Before its first external publication, the former `linux.v1` image was
   rebaselined from provisional Ubuntu 24.04 to Ubuntu 22.04. The finalized
   target keeps GCC 11 and glibc 2.35 from Jammy while preserving libclang and
@@ -2146,8 +2165,9 @@ to leave the library unchanged for now.
   installed target defaults, bundled host tool lookup, mutable and exact
   known and arbitrary Docker image mappings and pull policies, Docker arguments and mounts,
   default persistent root, argument preservation, no host `HARD_*` forwarding,
-  wrapper-owned target completion, host-only dispatch for other completion
-  requests, and invalid target diagnostics.
+  wrapper-owned target completion with anonymous GHCR responses, tag
+  validation, token-free caching and stale/offline fallbacks, host-only
+  dispatch for other completion requests, and invalid target diagnostics.
 - `hard/environment_test.go`: exact rule-framed aligned plain layout, ANSI
   palette and removal, embedded version, configured flags without internal
   include mechanics, detailed sections and configured values, compiler
@@ -3370,6 +3390,41 @@ an unformatted Go function printed the expected unified gofmt diff and made
 smoke tests, workflow YAML validation, staged installation, and declarative C++
 integration scenarios remain separate checks and are intentionally not part of
 this initial target.
+
+## Last known verification of dynamic target completion
+
+On 2026-09-14, wrapper-owned `--target` completion stopped embedding concrete
+image versions. A target-value request now obtains one anonymous GHCR token
+scoped to pull the public `hard-build/linux64` and `hard-build/windows64`
+repositories, requests their tag lists, excludes `latest`, validates every tag
+with the wrapper's execution rules, and combines them with the stable `host`,
+`linux64`, `windows64`, and `docker://` candidates. The token exists only in
+the completion process. Only the validated target list and a five-minute
+expiry are atomically stored in the XDG cache.
+
+Wrapper tests used a local fake `curl` and a future v6 response to verify both
+Cobra protocols, attached and separate target values, prefix filtering,
+malformed-tag rejection, `latest` exclusion, endpoint selection, a mode-0600
+cache without the token, cache reuse without another request, stale-cache
+fallback, and stable-target fallback with no usable registry. The same tests
+confirmed that neither the backend nor Docker is started for target completion.
+
+The complete `make check` target passed with ordinary and race Go tests, vet,
+an out-of-tree build, module verification, all shell syntax checks, target
+manifest validation, and staged and unstaged diff checks. A live read-only GHCR
+request returned the then-new
+`linux64:v5.0-glibc.2.35`,
+`linux64:v5.0-musl.1.2.5-static`, and
+`windows64:v5.0-llvm-mingw.20260616-ucrt` candidates. Its cache was a regular
+0600 file and contained no token.
+
+An isolated staged `make install` generated Bash, Zsh, and Fish completion
+files with mode 0644, retained mode 0755 for the wrapper and backend, and mode
+0644 for runtime data. The Bash file passed `bash -n` and registered `hard` in
+a clean shell. Completion through the staged wrapper returned the cached live
+v5 targets without Docker; with an empty cache and a `PATH` containing no
+`curl`, it returned only the four stable candidates and succeeded. No image
+was pulled or started, and no registry state was changed.
 
 ## Workspace safety snapshot
 

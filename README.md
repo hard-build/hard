@@ -326,6 +326,14 @@ linux64 -> ghcr.io/hard-build/linux64:latest
 windows64 -> ghcr.io/hard-build/windows64:latest
 ```
 
+Shell completion obtains versioned `linux64` and `windows64` tags anonymously
+from GHCR instead of compiling a release-specific list into `hard`. A
+successful list is cached for five minutes at
+`${XDG_CACHE_HOME:-$HOME/.cache}/hard/target-completion`. If `curl` or GHCR is
+unavailable, completion uses the last cached list; without one, it still offers
+`host`, `linux64`, `windows64`, and `docker://`. Completion never starts Docker,
+and the short-lived GHCR token used for the request is not stored.
+
 An explicit `linux64:<tag>` or `windows64:<tag>` target is downloaded only
 when missing. The wrapper validates only the Docker tag syntax and does not
 interpret its version, libc, distribution, or toolchain components. Documented

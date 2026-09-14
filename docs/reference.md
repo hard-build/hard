@@ -53,15 +53,21 @@ Command completion is installed at the shell-standard user-local paths:
 
 Existing Bash and Zsh activation entries are not duplicated. Completion offers
 the seven public commands, command flags, filesystem paths, `host`, `linux64`,
-`windows64`, the `linux64:v4.0-glibc.2.35` and
-`linux64:v4.0-musl.1.2.5-static` versions, the older
-`linux64:v3.0-ubuntu.22.04` and `linux64:v3.0-alpine.3.22-static` versions, the
-`windows64:v4.0-llvm-mingw.20260616-ucrt` version, `docker://`, and the default
-`format.v1` format. The wrapper itself supplies target values. Other dynamic requests
-always execute the installed host backend, even when a container target is the
-installed default, so pressing Tab never starts or pulls a Docker container.
-POSIX shells without programmable completion and PowerShell do not receive a
-completion integration.
+`windows64`, `docker://`, the published version tags for both known GHCR
+repositories, and the default `format.v1` format. The wrapper obtains the
+versioned targets from GHCR through an anonymous pull-scoped token and rejects
+`latest`, malformed tags, and tags belonging to another repository. The token
+is kept only for the request. A successful list is cached for five minutes in
+`${XDG_CACHE_HOME:-$HOME/.cache}/hard/target-completion` with mode `0600`.
+
+When the cache expires, completion refreshes both known repositories. A failed
+refresh silently retains a stale valid cache; without one, the stable `host`,
+`linux64`, `windows64`, and `docker://` values remain available. A missing
+`curl`, unset cache location, unwritable cache directory, or malformed cache
+does not make completion fail. Other dynamic requests always execute the
+installed host backend, even when a container target is the installed default,
+so pressing Tab never starts or pulls a Docker container. POSIX shells without
+programmable completion and PowerShell do not receive a completion integration.
 
 The release archive can also be unpacked and used without installation:
 
@@ -129,6 +135,10 @@ Depending on the command, using `hard` also requires:
 - network access to GitHub when a referenced `github.com/<owner>/<repository>/`
   or well-known repository snapshot is not already cached below
   `HARD_ROOT/source`.
+
+`curl` and network access to GHCR are optional for refreshing versioned target
+completion. Stable targets and an existing cached registry list remain usable
+without them.
 
 Using `--target=linux64`, `--target=windows64`, or `--target=docker://image`
 requires Docker. The documented target images contain their own backend and
@@ -1430,13 +1440,14 @@ explicit syntactically valid tag for either repository, or
 documented `docker run` invocation without resolving the host runtime. It
 never builds an image.
 
-The wrapper also owns the fixed completion values for `--target`. It answers
-that value position directly for both Cobra completion protocols. Other
-completion requests are forwarded to the installed host backend, regardless
-of `default-target`, so completion never invokes Docker. The Go backend keeps
-only the synthetic target flag declaration needed when generating the Bash,
-Zsh, and Fish completion scripts; concrete target values are not compiled
-into it.
+The wrapper also owns completion values for `--target`. It answers that value
+position directly for both Cobra completion protocols, combines stable target
+names with validated GHCR tags, and uses the five-minute completion cache
+described under [Installation](#installation). Other completion requests are
+forwarded to the installed host backend, regardless of `default-target`, so
+completion never invokes Docker. The Go backend keeps only the synthetic
+target flag declaration needed when generating the Bash, Zsh, and Fish
+completion scripts; concrete target values are not compiled into it.
 
 `PREFIX` defaults to `$HOME/.local`, `BUILD_DIR` defaults to `build`, and
 `DESTDIR` can stage an installation without changing its logical prefix.
