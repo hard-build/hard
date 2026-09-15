@@ -29,11 +29,11 @@ type arguments struct {
 	output           string
 }
 
-func parseArguments(args []string, stdout, stderr io.Writer) (arguments, error) {
+func parseArguments(args []string, stdout, stderr io.Writer, projectOptions ...*projectOptions) (arguments, error) {
 	var parsed arguments
 	completionRequest := isShellCompletionRequest(args)
 	completionGeneration := len(args) > 0 && args[0] == "completion"
-	root := newRootCommand(&parsed, completionRequest || completionGeneration)
+	root := newRootCommand(&parsed, completionRequest || completionGeneration, projectOptions...)
 	if completionRequest {
 		root.SetArgs(append([]string(nil), args...))
 	} else {
@@ -56,7 +56,7 @@ func parseArguments(args []string, stdout, stderr io.Writer) (arguments, error) 
 	return parsed, err
 }
 
-func newRootCommand(parsed *arguments, includeWrapperFlags bool) *cobra.Command {
+func newRootCommand(parsed *arguments, includeWrapperFlags bool, projectSelections ...*projectOptions) *cobra.Command {
 	var verbose bool
 	var silent bool
 	var noColor bool
@@ -66,6 +66,7 @@ func newRootCommand(parsed *arguments, includeWrapperFlags bool) *cobra.Command 
 	jobs := defaultJobs
 	format := defaultFormat
 	var output string
+	var projectSelection projectOptions
 
 	root := &cobra.Command{
 		Use:           "hard",
@@ -195,6 +196,24 @@ Wrapper options:
 	testCommand.Flags().BoolVar(&noCache, "no-cache", false, "rebuild and rerun tests without using cached results")
 	testCommand.Flags().BoolVar(&listTests, "list-tests", false, "list tests without running them")
 	testCommand.Flags().StringArrayVar(&testSelectors, "test", nil, "run tests matching selector; may be repeated")
+	for _, command := range []*cobra.Command{buildCommand, fetchCommand, runCommand, testCommand} {
+		command.Flags().BoolVar(&projectSelection.locked, "locked", false, "require recorded dependencies without changing hard.yaml")
+	}
+	fetchCommand.Flags().BoolVar(&projectSelection.lock, "lock", false, "create or extend repositories in hard.yaml")
+	fetchCommand.Flags().StringArrayVar(&projectSelection.updates, "update", nil, "update a recorded repository@ref; may be repeated")
+	root.PersistentPostRunE = func(command *cobra.Command, _ []string) error {
+		if projectSelection.locked && (projectSelection.lock || len(projectSelection.updates) != 0) {
+			return errors.New("--locked cannot be combined with --lock or --update")
+		}
+		if projectSelection.lock && len(projectSelection.updates) != 0 {
+			return errors.New("--lock and --update cannot be combined")
+		}
+		projectSelection.explicitFormat = command.Flags().Changed("format")
+		if len(projectSelections) != 0 {
+			*projectSelections[0] = projectSelection
+		}
+		return nil
+	}
 	environmentCommand := newEnvironmentCommand(
 		&verbose,
 		&noColor,

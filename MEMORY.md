@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-09-14.
+Last updated: 2026-09-16.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -100,6 +100,9 @@ All Go sources currently use package `main`; the module is named `hard`.
 
 Implemented:
 
+- optional four-field `hard.yaml`, fixed repository revisions with automatic
+  additions and explicit updates, locked CI mode, isolated dependency views,
+  and externally configured corporate replacements and dependency proxies;
 - Cobra-based argument parsing;
 - environment-backed configuration;
 - an embedded `v5.0-development` version assembled from the `5.0` version
@@ -231,6 +234,10 @@ cache entries and are not refreshed automatically.
 | `hard/install_test.go` | Isolated portable installation, shell startup and completion files, idempotence, rollback, and failures |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
+| `hard/project.go` | Strict project YAML, discovery, defaults, directory locking, and section-preserving atomic updates |
+| `hard/repository.go` | Dependency sessions, immutable source views, snapshot checksums, and resolution commits |
+| `hard/repository_provider.go` | Direct GitHub and proxy protocols, corporate replacements, and host-scoped authentication |
+| `hard/project_test.go`, `hard/repository_test.go`, `hard/project_integration_test.go` | Project schema, pinning, proxies, real builds/tests/recipes, concurrent updates, and wrapper mounts |
 | `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
 | `hard/source.go` | File classification, recursive discovery, symlink traversal, and deduplication |
 | `hard/source_test.go` | Extensions, ordering, explicit paths, symlinks, cycles, and failures |
@@ -474,10 +481,14 @@ source of a bind mount targeting `/hard`. The physical current working
 directory is mounted at the same absolute container path and becomes the
 container workdir. Docker uses `--rm`, stdin forwarding, and the current
 numeric UID:GID. Mutable `linux64` and `windows64` targets use `--pull=always`;
-explicit tagged and arbitrary-image targets use `--pull=missing`. No host
-`HARD_*` value is forwarded into the container. A relative host `HARD_ROOT` is
-made absolute below the current working directory. Only the working directory
-and persistent root are mounted.
+explicit tagged and arbitrary-image targets use `--pull=missing`. Host
+toolchain `HARD_*` values are not forwarded. A relative host `HARD_ROOT` is
+made absolute below the current working directory. Only cwd and the persistent
+root are mounted, regardless of any parent `hard.yaml`. No host `HARD_*` values
+are forwarded, including `HARD_PROXY` even when explicitly empty. The wrapper
+neither inspects nor mounts an external configuration file. Configure any
+required proxy, configuration path, and credentials within the container
+environment.
 
 Any prefix with sibling `bin/hard` and `libexec/hard` paths is a supported
 wrapper layout. Changing `PREFIX` or staging through `DESTDIR` preserves the
@@ -731,12 +742,13 @@ The public command forms are:
     hard version
     hard environment
     hard format [--format=<name>] [-s|--silent] [path...]
-    hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
-    hard fetch  [-s|--silent] [path...]
-    hard run    [--no-cache] [-s|--silent] [path...]
+    hard build  [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
+    hard fetch  [--lock | --locked | --update=<repository>@<ref>...]
+                [-s|--silent] [path...]
+    hard run    [--locked] [--no-cache] [-s|--silent] [path...]
                 [-- program-argument...]
     hard test   [--list-tests] [--test=<selector>]...
-                [--no-cache] [-s|--silent] [path...]
+                [--locked] [--no-cache] [-s|--silent] [path...]
 
 The installed wrapper additionally accepts `--target=host`,
 `--target=linux64`, `--target=linux64:<tag>`, `--target=windows64`,
@@ -1250,7 +1262,10 @@ A successful hit updates preparation progress to
 `Parsing <display-path> (CACHED)`. No compiler or parser command detail is
 attached because no child parse process exists.
 
-## External repositories
+## External repositories without pinning
+
+This section describes the retained unpinned resolver. With a `repositories`
+section in `hard.yaml`, use the pinned contract in the following section.
 
 An unresolved expanded include beginning with:
 
@@ -1316,6 +1331,254 @@ External repositories, including well-known ones, are managed source trees.
 Their active non-system headers can contribute declarations to each dependent
 source forward. Same-stem implementation sources are recursively discovered,
 compiled, and linked when reachable.
+
+## Project configuration, pinned dependencies, and corporate mirrors
+
+On 2026-09-15, the user first approved the design and then explicitly approved
+its implementation and file/change/check plan. The implementation uses
+`hard.yaml`, not the provisional `hard.lock` name, with exactly `version`,
+`format`, `exclude`, and `repositories` after removal of `paths` on 2026-09-16.
+The old source and artifact layouts elsewhere in this memory remain the
+unpinned layout; pinned execution uses the isolated project layout specified
+here and in `docs/reference.md`.
+
+### Project file and dependency record
+
+The optional project file is committed with the project. Its initial fields
+have these responsibilities:
+
+- `version`: the YAML schema version, not the project or hard release version;
+- `format`: the project's default format style, overridable by `--format`;
+- `exclude`: exclusions from initial source discovery, not a prohibition on
+  headers or implementation sources required by the active include graph;
+- `repositories`: the discovered dependency sources, fixed revisions, and
+  checksums described below.
+
+No `target`, `build`, `run`, `test`, profiles, compiler flags, or additional
+top-level project settings are included in this initial scope. Corporate
+`proxy` and `replace` rules remain in the separate external configuration;
+the effective replacement source is recorded inside a repository entry.
+
+An illustrative project file is:
+
+    version: 1
+    format: format.v1
+    exclude:
+      - build
+      - bin
+    repositories:
+      github.com/leethomason/tinyxml2:
+        source: git.corp.example/third-party/tinyxml2
+        ref: 10.0.0-company.2
+        commit: "<full commit ID>"
+        checksum: "sha256:<normalized source-tree digest>"
+
+The mapping key is the logical repository identity used by includes and
+recipes. `source` identifies the actual upstream repository or replacement
+fork. `ref` retains the requested branch or tag for human understanding and
+explicit updates; `commit` is the authoritative fixed revision. The checksum
+covers normalized source contents, not compressed archive bytes that may
+differ between equivalent downloads.
+
+The record covers discovered direct and transitive repositories, including
+both a repository providing recipe headers and the vendor repositories named
+inside active recipes. Well-known `hard/` and `recipe/` includes retain their
+canonical logical repository identities. One project/build selects one
+revision per logical repository; the initial design has no semantic-version
+range solver, Go-style minimal version selection, or automatic compatibility
+inference for arbitrary C++ repositories.
+
+### Creation, ordinary use, updates, and CI
+
+The implemented CLI extends existing commands rather than adding a dependency
+management command:
+
+- `hard fetch --lock` creates the dependency record. With an existing record,
+  it preserves fixed entries and adds newly discovered repositories.
+- With a record present, ordinary `fetch`, `build`, `run`, and `test` use its
+  fixed revisions and automatically add previously unrecorded dependencies.
+  This automatic addition is an explicit user requirement; missing entries
+  are not errors in ordinary mode. Existing entries never follow a moving
+  branch or tag implicitly.
+- `hard fetch --update=<repository>@<ref>` explicitly selects an update for
+  that logical repository and records its resolved source, commit, and
+  checksum. The flag is repeatable for distinct already recorded repositories;
+  duplicate updates and combinations with `--lock` or `--locked` are errors.
+- `--locked` requires an existing, sufficient dependency record and forbids
+  changing it. A newly required repository is an error. A missing cached
+  snapshot may still be downloaded at the recorded commit and verified;
+  locked is not offline mode.
+- The presence of `repositories`, including an empty mapping, enables pinning.
+  Without it, retain unpinned behavior unless `fetch --lock` is requested.
+  Corporate configuration requires pinning and cannot fall through to the
+  legacy downloader. Format, version, environment, help and completion never
+  fetch or update repository records.
+- `--no-cache` forces artifact work; it neither updates repository revisions
+  nor authorizes dependency-record changes forbidden by `--locked`.
+
+New entries and explicit updates are written atomically after successful
+dependency resolution. Ordinary and locked downloads must reject checksum
+mismatches rather than silently accepting new contents or rewriting a stored
+checksum. Discovery remains driven by the active include graph: different
+targets or flags may discover different repositories. The record may
+accumulate dependencies from several configurations; one `fetch` does not
+claim to discover inactive dependencies for every platform.
+
+### Immutable snapshots and build isolation
+
+Store multiple snapshots in the shared cache, identified by actual source and
+commit. A selected dependency set gets its own source/include view, including
+the well-known aliases. Do not switch one global mutable symlink when two
+projects need different revisions.
+
+The selected dependency set participates in parse, object, and library cache
+identity. Artifact locations must also isolate concurrently used dependency
+sets where a shared output path would otherwise collide. Existing unversioned
+cache directories cannot be assigned an inferred commit: pinned mode must
+obtain and verify a snapshot for the recorded revision.
+
+Snapshots live at `HARD_ROOT/snapshot/<sha256(source)>/<commit>` with a sibling
+`.checksum` file. The normalized SHA-256 hashes a versioned JSON record stream
+covering relative names, directories, file-content digests, executable bits,
+and literal symlink targets, excluding archive metadata. Both cached and new
+snapshots are checked, and preparation rechecks sources before committing pins.
+Integrity is trust on first use, not a publisher signature.
+
+Each `HARD_ROOT/project/<selection-digest>` contains a `source` view with
+relative logical-repository and well-known aliases, plus its own
+`env/HARD_ENV/build` and `env/HARD_ENV/library`. Identity includes the project
+filename, complete pins, compiler, flags and entry names. A newly discovered
+repository stages a pin and retries analysis with an expanded view; it never
+switches an existing view's aliases. This naturally places the selection in
+parse/compiler arguments and artifact/cache paths without changing cache
+serialization formats. All recorded snapshots are hydrated, including currently
+inactive records. Snapshots and old views are not garbage-collected.
+
+### Corporate forks and transport mirrors
+
+Keep two independent mechanisms:
+
+- `replace` maps a logical repository to an actual fork and optionally a
+  requested ref. Includes and recipes keep their original names, while the
+  project record makes the selected replacement source and revision visible.
+- A dependency proxy or mirror changes where the same pinned source contents
+  are obtained. It does not silently choose another revision or codebase.
+
+The external corporate configuration is selected through
+`HARD_CONFIG=/etc/hard/config.yaml`, for example:
+
+    proxy:
+      url: https://dependencies.corp.example
+      fallback: false
+    replace:
+      github.com/leethomason/tinyxml2:
+        source: git.corp.example/third-party/tinyxml2
+        ref: 10.0.0-company.2
+
+`HARD_PROXY`, when set, overrides the configured proxy URL; empty disables it.
+Corporate settings are separate from the project dependency record. Neither proxy
+credentials nor machine-specific cache paths belong in committed dependency
+entries; authentication is configured separately and scoped to the intended
+host, without exposing credentials in logs. The optional `auth` mapping uses
+exact `host[:port]` keys and `token_env: HARD_AUTH_NAME` values. The backend
+requires the `HARD_AUTH_` prefix; the wrapper does not automatically forward
+these variables into containers. HTTPS is required except for literal
+loopback IP HTTP test endpoints.
+
+The proxy must support both resolving references and retrieving snapshots so
+that corporate-only operation does not make hidden upstream resolution
+requests. Direct upstream fallback is explicit opt-in, not the response to an
+authentication failure or an unavailable mirror. A different transport mirror
+is compatible with `--locked` only when it provides the same recorded source,
+commit, and verified contents.
+
+A replacement rule that disagrees with an existing pin requires an explicit
+update, even outside locked mode. Automatic addition of new dependencies does
+not authorize changing old ones. Conflicting project and corporate source
+rules must produce a diagnostic rather than silently selecting a winner.
+
+The provider implements GitHub default-branch lookup, commit resolution and
+tarball-by-commit download. Other source hosts require a proxy. The proxy
+contract is `GET /v1/resolve?source=...&ref=...`, returning JSON `commit` and
+`ref`, and `GET /v1/snapshot?source=...&commit=...`, returning a safe single-root
+tar.gz archive. Both operations stay on the proxy, including reference lookup.
+`fallback: true` permits direct GitHub fallback only on HTTP 404/502/503/504,
+never auth errors, transport/TLS errors, invalid responses or bad checksums.
+Proxy redirects cannot leave the origin. Direct GitHub redirects strip prior
+authorization and apply only explicitly configured destination credentials.
+Error diagnostics omit remote response bodies and transport URLs. The server
+implementation is outside this repository's scope.
+
+### File discovery, updates, and verification
+
+Find the nearest hard.yaml from cwd upward, stopping at the Git root or, outside
+Git, the filesystem root. One invocation uses one configuration; explicit input
+paths do not select or merge other projects. Version must be integer 1.
+Omitted format means format.v1. Source-selection paths come only from the CLI,
+relative to cwd; with none supplied, selection starts at cwd even when the YAML
+is in a parent directory. A `paths` field is rejected as unknown. Exclusions
+are literal file/directory paths relative to the YAML directory, without
+globs or parent escapes; directory traversal respects them while an explicit
+CLI file takes precedence. Include-driven dependencies remain unaffected.
+
+Strict YAML rejects duplicate/unknown keys, wrong types, anchors, aliases,
+merge keys, custom tags, multiple documents, non-regular files and a flow-style
+top-level mapping. Updates serialize only the repositories section, preserving
+other bytes and comments. Directory-inode advisory locking avoids atomic-file
+replacement races; it is released after successful resolution, before ordinary
+compilation and program execution. Concurrent editor modifications are rejected
+by comparing the original bytes before atomic replacement. Resolution failure
+does not persist staged pins; a later compile/run failure does not undo them.
+
+New Go tests cover strict schema and CLI, search boundaries, selection,
+comment preservation, locked failures and downloads, stable/transitive pins,
+targeted updates, cache corruption, corporate fork conflicts, authentication,
+redirects, fallback, concurrent additions, and different-revision parallel
+C++ builds. Real CMake and GoogleTest cases cover recipe/vendor pinning and
+cached execution. Wrapper tests verify cwd-only project mounts and ignored host
+config, credentials, and proxy settings across Linux, Windows, and arbitrary-image
+targets. These tests run in `make check`; local HTTP
+fixtures require loopback socket permission in a restricted sandbox.
+
+Verification on 2026-09-15 passed `make check`, staged `make install`, installed
+Bash completion loading and `--locked` completion, and all 12 existing C++
+integration scenarios through the staged host wrapper. A live GitHub smoke
+project fetched and pinned both `hard-build/recipe` and `leethomason/tinyxml2`,
+then successfully built and ran TinyXML2 with `run --locked`. Temporary install,
+smoke project, and delivered integration outputs were placed under `/tmp`;
+the baseline integration run used the usual host cache. Container argument and
+mount behavior is tested with a fake Docker executable; no new container image
+or release was published. Regression tests also preserve explicit YAML document
+end markers and apply exclusions during source traversal while retaining the
+explicit CLI file override.
+
+On 2026-09-16 the user explicitly removed the wrapper's parent-project mount,
+external `HARD_CONFIG` mount/forwarding, and automatic `HARD_AUTH_*` forwarding.
+The user subsequently removed `HARD_PROXY` forwarding as well. The wrapper
+keeps only its original cwd and `HARD_ROOT` mounts. Go project discovery,
+backend proxy configuration, and backend authentication remain unchanged.
+Container users must launch from a directory containing the required
+project inputs and configure any private authentication within the container
+environment. Regression coverage checks that even a nonexistent host
+`HARD_CONFIG` cannot block a container invocation.
+
+On 2026-09-16 the user also removed `paths` from `hard.yaml`, leaving exactly
+`version`, `format`, `exclude`, and `repositories`. Source arguments and their
+cwd-relative meaning are unchanged; omitting them always selects cwd, not the
+configuration directory. Strict decoding rejects the removed field, including
+empty/null values. Tests cover this rejection, ancestor configuration with
+cwd-only default selection, explicit CLI paths and exclusion overrides, and
+absence of Docker environment forwarding for non-empty and empty `HARD_PROXY`.
+README and the complete reference describe the same four-field schema and
+container configuration boundary.
+
+Verification after these removals passed `make check`, out-of-tree `make build`,
+and staged `make install` under `/tmp/hard-paths-check.5BwJu9`. Staged file modes
+and types were checked. The installed wrapper successfully ran `format`,
+`fetch --locked`, and `run --locked` from a child directory with a parent
+`hard.yaml`, selecting only cwd and respecting YAML-relative exclusions.
+A separate CLI smoke check rejected `paths` as an unknown field. Docker argument
+checks use the test suite's fake Docker executable; no real container was run.
 
 ## Forward declarations
 
@@ -2133,12 +2396,14 @@ to leave the library unchanged for now.
 - Unreferenced stale generated artifacts are not removed automatically.
 - Test-result keys cannot infer undeclared runtime files, services, network
   responses, or time; callers use `hard test --no-cache` when these matter.
-- Cached external repositories are not automatically updated or validated.
+- Unpinned cached external repositories are not automatically updated or
+  validated. Pinned snapshots are content-validated but never refreshed implicitly.
 - Old per-header forward files and header parse records are not removed even
   though new builds no longer generate or include them.
 - `hard environment` currently reports libc as `unavailable` on Alpine 3.22,
   although the image and `ldd --version` confirm musl 1.2.5.
-- There is no private GitHub authentication configuration.
+- Private-host authentication is available only through the pinned provider's
+  external host-scoped configuration; the legacy unpinned downloader remains anonymous.
 - Ubuntu 22.04 standard security maintenance ends in May 2027. Continued use
   after that date needs an explicit target-version or security-support decision.
 - The legacy `ghcr.io/hard-build/hard` GHCR package returned `unauthorized` for

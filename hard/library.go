@@ -170,6 +170,10 @@ func (manager *libraryManager) prepareRecipe(
 	if err != nil {
 		return libraryArtifact{}, err
 	}
+	sourceRoot, err = filepath.EvalSymlinks(sourceRoot)
+	if err != nil {
+		return libraryArtifact{}, err
+	}
 	sourceDirectory := filepath.Join(sourceRoot, filepath.FromSlash(recipe.SourceDirectory))
 	if manager.build {
 		return manager.buildRecipe(header, headerContents, recipe, sourceRoot, sourceDirectory)

@@ -3,168 +3,125 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 func main() {
-	parsed, err := parseArguments(os.Args[1:], os.Stdout, os.Stderr)
-	if err != nil {
+	if err := runHard(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+		if code, ok := runProgramExitCode(err); ok {
+			os.Exit(code)
+		}
 		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
 		os.Exit(1)
 	}
-	if parsed.command == "" {
-		return
+}
+
+func runHard(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	var options projectOptions
+	parsed, err := parseArguments(args, stdout, stderr, &options)
+	if err != nil || parsed.command == "" {
+		return err
 	}
 	if parsed.command == "version" {
-		if err := writeVersion(os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-			os.Exit(1)
-		}
-		return
+		return writeVersion(stdout)
 	}
-
 	runtimeRoot, err := executableRuntimeRoot()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	configuration, err := loadConfiguration(runtimeRoot)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	cflags := effectiveCFlags(configuration.cflags, configuration.root, configuration.runtimeRoot)
 	if parsed.command == "environment" {
-		if err := writeEnvironmentReport(configuration, parsed.noColor, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-			os.Exit(1)
-		}
-		return
+		return writeEnvironmentReport(configuration, parsed.noColor, stdout)
 	}
+	return runConfiguredCommand(parsed, options, configuration, stdin, stdout, stderr)
+}
 
-	progress := newProgressBar(os.Stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
-	sources, err := discoverSourcesWithProgress(parsed.command, parsed.paths, progress)
+func runConfiguredCommand(parsed arguments, options projectOptions, configuration configuration, stdin io.Reader, stdout, stderr io.Writer) error {
+	workingDirectory, err := os.Getwd()
 	if err != nil {
-		err = errors.Join(err, progress.finish())
-		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-
-	if parsed.command == "build" {
-		if err := buildSourcesWithProgressExecutable(
-			configuration.root,
-			configuration.runtimeRoot,
-			configuration.env,
-			configuration.executableSuffix,
-			configuration.cc,
-			cflags,
-			configuration.ldflags,
-			configuration.entrypoints,
-			sources,
-			parsed.output,
-			parsed.jobs,
-			parsed.verbose,
-			parsed.silent,
-			progress,
-			os.Stderr,
-			parsed.noCache,
-		); err != nil {
-			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-			os.Exit(1)
-		}
-		return
+	project, session, err := prepareProject(&parsed, options, configuration.root, workingDirectory)
+	if err != nil {
+		return err
 	}
-
-	if parsed.command == "run" {
-		err := runSourcesWithProgressExecutable(
-			configuration.root,
-			configuration.runtimeRoot,
-			configuration.env,
-			configuration.executableSuffix,
-			configuration.executableRunner,
-			configuration.cc,
-			cflags,
-			configuration.ldflags,
-			configuration.entrypoints,
-			sources,
-			parsed.programArguments,
-			parsed.jobs,
-			parsed.verbose,
-			parsed.silent,
-			progress,
-			os.Stdin,
-			os.Stdout,
-			os.Stderr,
-			parsed.noCache,
-		)
-		if err != nil {
-			if code, ok := runProgramExitCode(err); ok {
-				os.Exit(code)
+	defer session.close()
+	paths, excluded := project.sourcePaths(parsed)
+	for {
+		progress := newProgressBar(stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
+		current := configuration
+		var resolver *githubSnapshotResolver
+		diagnostics := stderr
+		var staged *resolutionWriter
+		if session != nil {
+			current.root, err = session.view(configuration, progress)
+			if err != nil {
+				return errors.Join(err, progress.finish())
 			}
-			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-			os.Exit(1)
+			resolver = newGitHubSnapshotResolver(current.root, progress)
+			resolver.session = session
+			staged = &resolutionWriter{target: stderr}
+			session.onCommit = staged.activate
+			diagnostics = staged
 		}
-		return
+		progress.updateStep("Searching source files")
+		sources, err := discoverSourcesFrom(parsed.command, paths, workingDirectory, excluded)
+		if err != nil {
+			return errors.Join(err, progress.finish())
+		}
+		err = executeSourceCommand(parsed, current, sources, progress, resolver, stdin, stdout, diagnostics)
+		if session != nil && session.changed {
+			// A larger immutable source view is needed; no binary was executed.
+			continue
+		}
+		if staged != nil {
+			err = errors.Join(err, staged.activate())
+		}
+		return err
 	}
+}
 
-	if parsed.command == "format" {
+func executeSourceCommand(parsed arguments, configuration configuration, sources []string, progress *progressBar, resolver *githubSnapshotResolver, stdin io.Reader, stdout, stderr io.Writer) error {
+	cflags := effectiveCFlags(configuration.cflags, configuration.root, configuration.runtimeRoot)
+	switch parsed.command {
+	case "build":
+		return buildSourcesWithProgressExecutable(
+			configuration.root, configuration.runtimeRoot, configuration.env,
+			configuration.executableSuffix, configuration.cc, cflags, configuration.ldflags,
+			configuration.entrypoints, sources, parsed.output, parsed.jobs,
+			parsed.verbose, parsed.silent, progress, stderr, parsed.noCache, resolver,
+		)
+	case "run":
+		return runSourcesWithProgressExecutable(
+			configuration.root, configuration.runtimeRoot, configuration.env,
+			configuration.executableSuffix, configuration.executableRunner,
+			configuration.cc, cflags, configuration.ldflags, configuration.entrypoints,
+			sources, parsed.programArguments, parsed.jobs, parsed.verbose, parsed.silent,
+			progress, stdin, stdout, stderr, parsed.noCache, resolver,
+		)
+	case "format":
 		progress.setTotal(1 + len(sources))
-		if err := formatSourcesWithProgress(
-			configuration.runtimeRoot,
-			parsed.format,
-			sources,
-			parsed.jobs,
-			parsed.verbose,
-			parsed.silent,
-			parsed.noColor,
-			progress,
-			os.Stdout,
-			os.Stderr,
-		); err != nil {
-			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-			os.Exit(1)
-		}
-		return
+		return formatSourcesWithProgress(
+			configuration.runtimeRoot, parsed.format, sources, parsed.jobs,
+			parsed.verbose, parsed.silent, parsed.noColor, progress, stdout, stderr,
+		)
+	case "fetch":
+		return fetchSourcesWithProgress(configuration.root, cflags, sources, parsed.jobs, progress, stderr, resolver)
+	case "test":
+		return testSourcesWithProgressSelectionExecutable(
+			configuration.root, configuration.runtimeRoot, configuration.env,
+			configuration.executableSuffix, configuration.executableRunner, configuration.cc,
+			cflags, configuration.ldflags, sources, parsed.jobs, parsed.verbose, parsed.silent,
+			parsed.noColor, progress, stdout, stderr, parsed.noCache,
+			parsed.listTests, parsed.testSelectors, resolver,
+		)
 	}
-	if parsed.command == "fetch" {
-		if err := fetchSourcesWithProgress(
-			configuration.root,
-			cflags,
-			sources,
-			parsed.jobs,
-			progress,
-			os.Stderr,
-		); err != nil {
-			fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-	if err := testSourcesWithProgressSelectionExecutable(
-		configuration.root,
-		configuration.runtimeRoot,
-		configuration.env,
-		configuration.executableSuffix,
-		configuration.executableRunner,
-		configuration.cc,
-		cflags,
-		configuration.ldflags,
-		sources,
-		parsed.jobs,
-		parsed.verbose,
-		parsed.silent,
-		parsed.noColor,
-		progress,
-		os.Stdout,
-		os.Stderr,
-		parsed.noCache,
-		parsed.listTests,
-		parsed.testSelectors,
-	); err != nil {
-		fmt.Fprintf(os.Stderr, "hard: %v\n", err)
-		os.Exit(1)
-	}
+	return fmt.Errorf("unknown command: %s", parsed.command)
 }
 
 func executableRuntimeRoot() (string, error) {

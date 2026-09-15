@@ -113,7 +113,8 @@ and cache behavior.
 - test sources use the preferred `*.test.cpp` form; legacy `*_test.cpp` names
   remain supported.
 
-If no path is supplied, commands scan the current directory recursively.
+If no path is supplied, commands scan the current directory recursively,
+subject to `exclude` from the nearest `hard.yaml`.
 Explicit files and directories limit the root selection, while required
 implementation sources may still be discovered through includes.
 
@@ -144,12 +145,13 @@ The public interface contains exactly seven commands:
 hard version
 hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
-hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
-hard fetch  [-s|--silent] [path...]
-hard run    [--no-cache] [-s|--silent] [path...]
+hard build  [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
+hard fetch  [--lock | --locked | --update=<repository>@<ref>...]
+            [-s|--silent] [path...]
+hard run    [--locked] [--no-cache] [-s|--silent] [path...]
             [-- program-argument...]
 hard test   [--list-tests] [--test=<selector>]...
-            [--no-cache] [-s|--silent] [path...]
+            [--locked] [--no-cache] [-s|--silent] [path...]
 ```
 
 ### `hard version`
@@ -189,8 +191,8 @@ Use `--no-color` to retain the same layout without ANSI styling.
 
 ### `hard format`
 
-Formats selected sources in place with the bundled `clang-format` and
-`format.v1` style:
+Formats selected sources in place with the bundled `clang-format` and the
+project's `format` style, defaulting to `format.v1`:
 
 ```bash
 hard format src tests
@@ -269,8 +271,9 @@ runtime inputs such as files, services, network responses, or time matter.
 
 ## Dependencies and Recipes
 
-An include below the public GitHub namespace downloads the repository's current
-default-branch snapshot when it is not already cached:
+Without dependency recording, an include below the public GitHub namespace
+downloads the repository's current default-branch snapshot when it is not
+already cached:
 
 ```cpp
 #include <github.com/nlohmann/json/single_include/nlohmann/json.hpp>
@@ -296,7 +299,8 @@ behavior are documented in the
 [compiled-library recipe reference](docs/reference.md#compiled-library-recipes).
 
 Downloaded repository directories are persistent snapshots and are not
-refreshed automatically.
+refreshed automatically. Enable exact revisions with `hard fetch --lock`;
+the [project configuration](#project-configuration) describes recording and updates.
 
 ## Targets
 
@@ -385,10 +389,13 @@ the same absolute container path. Source snapshots and caches therefore persist
 across disposable containers, while host and container artifacts remain
 separated by `HARD_ENV`.
 
-Only the working directory and `HARD_ROOT` are mounted. Inputs and resolved
-symlinks outside both trees are unavailable in the container. Host `HARD_*`
-values other than the mount source are not forwarded; the image owns its
-toolchain configuration.
+Only the working directory and `HARD_ROOT` are mounted; a parent `hard.yaml`
+does not expand the mount. Run from the project root when the container needs
+its configuration and sibling source directories. Inputs outside both mounted
+trees remain unavailable. Host `HARD_*` variables, including `HARD_PROXY`,
+are not forwarded, and no external configuration file is mounted automatically.
+Configure any required proxy, configuration path, and credentials within the
+container environment.
 
 Container images are `linux/amd64`; generated programs require an x86-64-v3
 CPU. Docker must be installed and running separately.
@@ -414,9 +421,65 @@ Meson/Ninja, pkg-config, Autoconf, Automake, and Libtool toolchain. The
 Ubuntu 18.04's default GCC 7 does not satisfy the default C++20 build contract.
 Use `linux64` there or configure a suitable host toolchain.
 
+## Project Configuration
+
+An optional `hard.yaml` contains only these four top-level fields:
+
+```yaml
+version: 1
+format: format.v1
+exclude: [build, bin]
+repositories: {}
+```
+
+Hard searches from the current directory upward for the nearest file, stopping
+at the current Git repository root. Outside Git, the search stops at the
+filesystem root. One invocation uses one file; nested projects are not merged.
+
+`version` is the schema version and must be integer `1`. `format` supplies the
+default style, with explicit `--format` taking precedence. Source-selection
+paths are supplied only on the command line and are relative to the invocation
+directory; without them, selection starts at `.` even when `hard.yaml` is in a
+parent directory. A `paths` field in `hard.yaml` is rejected as unknown.
+`exclude` contains literal file/directory paths relative to the YAML directory,
+not globs. Excluded directories are skipped during traversal, but an explicit
+CLI file takes precedence. Required include-driven dependencies are not
+excluded. Without `exclude`, no additional exclusions apply.
+
+The presence of `repositories`, even `{}`, enables dependency recording:
+
+```bash
+hard fetch --lock
+hard build
+hard test --locked
+hard fetch --update=github.com/leethomason/tinyxml2@10.0.0
+```
+
+`fetch --lock` creates the file or adds the section. Normal `fetch`, `build`,
+`run`, and `test` automatically record newly discovered dependencies while
+retaining every existing revision. Each record contains the actual `source`,
+requested `ref`, full `commit`, and source-tree `checksum`, including recipe
+repositories and their vendor sources. Explicit `--update` updates one already
+recorded repository and may be repeated. `--locked` requires sufficient records
+and never changes them; it can still download and verify missing pinned
+snapshots. `--no-cache` never refreshes dependency revisions.
+
+Repository updates are atomic after successful dependency resolution. Other
+settings and their comments are preserved. Commit `hard.yaml` with the project.
+Omitting `repositories` retains the unpinned dependency behavior. `format`,
+`version`, and `environment` do not download repositories or update the record.
+
+Corporate forks and mirrors use a separate `HARD_CONFIG` file, with optional
+`HARD_PROXY` override and host-scoped credential environment variables. A
+replacement selects another source; a proxy transports the same pinned
+contents. Corporate configuration requires dependency recording and never
+silently falls back to the old downloader. See the
+[dependency and proxy reference](docs/reference.md#project-configuration-and-pinned-dependencies)
+for the schema, conflict rules, cache layout, and proxy protocol.
+
 ## Configuration
 
-`hard` reads configuration from environment variables:
+Toolchain and machine settings remain environment variables:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
@@ -478,8 +541,8 @@ The portable installer uses:
     └── hard/              downloaded sources and persistent caches
 ```
 
-Persistent state below `HARD_ROOT` is separated into shared sources and
-environment-specific artifacts:
+Without dependency recording, persistent state below `HARD_ROOT` is separated
+into shared sources and environment-specific artifacts:
 
 ```text
 HARD_ROOT/
@@ -500,6 +563,9 @@ according to `-o` or beside their entry sources; run and test binaries remain
 internal. Executable suffixes and runners come from the corresponding generic
 configuration variables, not from `HARD_ENV`.
 
+Pinned projects instead use shared `snapshot/` directories and isolated
+`project/<selection-digest>/` source views and artifact trees; see the
+[pinned cache layout](docs/reference.md#pinned-source-and-artifact-layout).
 Stale generated artifacts and downloaded snapshots are not removed
 automatically.
 

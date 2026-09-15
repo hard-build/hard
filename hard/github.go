@@ -58,6 +58,7 @@ type githubSnapshotState struct {
 }
 
 type githubSnapshotResolver struct {
+	session    *dependencySession
 	root       string
 	client     *http.Client
 	apiBaseURL string
@@ -99,6 +100,9 @@ func (resolver *githubSnapshotResolver) downloadProgressEntries() []string {
 }
 
 func (resolver *githubSnapshotResolver) ensure(repository githubRepository) error {
+	if resolver.session != nil {
+		return resolver.session.ensure(repository, resolver.progress)
+	}
 	destination, err := githubRepositoryDirectory(
 		resolver.root,
 		repository.owner,

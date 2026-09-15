@@ -81,6 +81,7 @@ func runSourcesWithProgressExecutable(
 	stdout io.Writer,
 	stderr io.Writer,
 	noCache bool,
+	resolvers ...*githubSnapshotResolver,
 ) error {
 	if len(sources) == 0 {
 		return errors.Join(validateRunLinks(nil), progress.finish())
@@ -98,7 +99,7 @@ func runSourcesWithProgressExecutable(
 		return errors.Join(err, progress.finish())
 	}
 	rootSourceCount := len(sources)
-	githubResolver := newGitHubSnapshotResolver(root, progress)
+	githubResolver := invocationRepositoryResolver(root, progress, resolvers)
 	libraryManager := newLibraryManager(
 		root,
 		environment,
@@ -145,6 +146,9 @@ func runSourcesWithProgressExecutable(
 		)
 	}
 	if err := errors.Join(failures...); err != nil {
+		return errors.Join(err, progress.finish())
+	}
+	if err := githubResolver.commitDependencies(); err != nil {
 		return errors.Join(err, progress.finish())
 	}
 	link, err := planRunLinkWithLibrariesExecutable(

@@ -201,7 +201,9 @@ func testSourcesWithProgressSelectionExecutable(
 	noCache bool,
 	listTests bool,
 	testSelectors []string,
+	resolvers ...*githubSnapshotResolver,
 ) error {
+	githubResolver := invocationRepositoryResolver(root, progress, resolvers)
 	if len(sources) == 0 {
 		var failures []error
 		for _, selector := range testSelectors {
@@ -212,6 +214,9 @@ func testSourcesWithProgressSelectionExecutable(
 		}
 		if err := progress.finish(); err != nil {
 			failures = append(failures, err)
+		}
+		if len(failures) == 0 {
+			return githubResolver.commitDependencies()
 		}
 		return errors.Join(failures...)
 	}
@@ -242,7 +247,6 @@ func testSourcesWithProgressSelectionExecutable(
 	testCFlags := append(append([]string(nil), cflags...), googleCFlags...)
 	testLDFlags := append(append([]string(nil), ldflags...), googleLDFlags...)
 
-	githubResolver := newGitHubSnapshotResolver(root, progress)
 	libraryManager := newLibraryManager(
 		root,
 		environment,
@@ -301,6 +305,14 @@ func testSourcesWithProgressSelectionExecutable(
 		plans = append(plans, result.plan)
 	}
 
+	if githubResolver.dependencySetChanged() {
+		return errors.Join(errDependencySetChanged, progress.finish())
+	}
+	if len(failures) == 0 {
+		if err := githubResolver.commitDependencies(); err != nil {
+			return errors.Join(err, progress.finish())
+		}
+	}
 	plans, compileSources, compileDependencies, compileCacheDependencies, compileCFlags, err := mergeTestCompileSources(
 		root,
 		environment,

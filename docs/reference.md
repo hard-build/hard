@@ -6,6 +6,10 @@ overview and first build, start with the [project README](../README.md).
 The public interface contains only `version`, `environment`, `format`, `build`,
 `fetch`, `run`, and `test`.
 
+Source and artifact layouts below describe unpinned operation unless stated
+otherwise. [Project configuration and pinned dependencies](#project-configuration-and-pinned-dependencies)
+defines `hard.yaml`, fixed revisions, and the isolated pinned layout.
+
 ## Installation
 
 On Linux x86-64, run the installer from a terminal:
@@ -174,12 +178,13 @@ The public interface contains exactly these commands:
 hard version
 hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
-hard build  [--no-cache] [-s|--silent] [-o <path>] [path...]
-hard fetch  [-s|--silent] [path...]
-hard run    [--no-cache] [-s|--silent] [path...]
+hard build  [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
+hard fetch  [--lock | --locked | --update=<repository>@<ref>...]
+            [-s|--silent] [path...]
+hard run    [--locked] [--no-cache] [-s|--silent] [path...]
             [-- program-argument...]
 hard test   [--list-tests] [--test=<selector>]...
-            [--no-cache] [-s|--silent] [path...]
+            [--locked] [--no-cache] [-s|--silent] [path...]
 ```
 
 ### `hard version`
@@ -370,11 +375,16 @@ prefix below the same environment directory.
 
 The container runs with the current numeric UID and GID, preventing root-owned
 build outputs, and forwards stdin without allocating a TTY. Only the working
-directory and `HARD_ROOT` are mounted. Explicit inputs or resolved symlinks
+directory and `HARD_ROOT` are mounted. A parent `hard.yaml` does not change the
+mount; run from the project root when its configuration and sibling sources
+must be available inside the container. Explicit inputs or resolved symlinks
 outside both trees are therefore unavailable in the container. A non-empty
 host `HARD_ROOT` selects the bind-mount source but is not copied into the
-container environment. Other host `HARD_*` values are not forwarded. The
-glibc image fixes its complete target configuration as follows:
+container environment. No host `HARD_*` values are forwarded, including
+`HARD_PROXY` even when explicitly empty. The wrapper neither inspects nor mounts
+an external `HARD_CONFIG` file. Configure any required proxy, configuration path,
+and credentials within the container environment. The glibc image fixes its
+complete target configuration as follows:
 
 ```text
 HARD_ROOT=/hard
@@ -438,7 +448,8 @@ images require an x86-64-v3 processor; Docker and Wine do not emulate missing
 CPU instructions. Static Alpine outputs use musl rather than glibc. Windows
 outputs are x86-64 PE executables targeting UCRT.
 
-If no path is supplied, `.` is used. Directories are scanned recursively. If
+If no path is supplied, `.` in the invocation directory is used.
+Directories are scanned recursively subject to project `exclude`. If
 paths are supplied, only explicitly named matching files and matching files
 below explicitly named directories are selected as roots. During `build`,
 `fetch`, `run`, and `test`, implementation sources associated with project
@@ -477,7 +488,8 @@ place by a separate process:
 clang-format --style=file:<runtime-root>/format/<name> -i <file>
 ```
 
-`--format` defaults to `format.v1`. Its value is resolved relative to
+`--format` overrides project `format`, which defaults to `format.v1`.
+Its value is resolved relative to
 the `format` directory installed beside the running backend. The runtime root
 is derived from the physical backend executable path, including through a
 symlink; it is normally `~/.local/libexec/hard` on the host and
@@ -509,7 +521,7 @@ is required.
 ### `hard build`
 
 ```bash
-hard build [--no-cache] [-s|--silent] [-o <path>] [path...]
+hard build [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
 ```
 
 The implemented build pipeline currently discovers dependencies, generates one
@@ -987,7 +999,7 @@ graph are not removed automatically.
 ### `hard run`
 
 ```bash
-hard run [--no-cache] [-s|--silent] [path...] [-- program-argument...]
+hard run [--locked] [--no-cache] [-s|--silent] [path...] [-- program-argument...]
 ```
 
 `run` selects ordinary non-test translation units by the same rules as
@@ -1041,7 +1053,8 @@ exit is propagated as the `hard` process exit status without an additional
 ### `hard fetch`
 
 ```bash
-hard fetch [-s|--silent] [path...]
+hard fetch [--lock | --locked | --update=<repository>@<ref>...]
+           [-s|--silent] [path...]
 ```
 
 `fetch` downloads the external GitHub dependencies required by the selected C
@@ -1084,7 +1097,7 @@ omit `Downloading`, but search and parsing are still reported.
 
 ```bash
 hard test [--list-tests] [--test=<selector>]... \
-  [--no-cache] [-s|--silent] [path...]
+  [--locked] [--no-cache] [-s|--silent] [path...]
 ```
 
 Every selected test source is built and run as a separate executable.
@@ -1295,6 +1308,183 @@ output; silent mode takes precedence over verbose mode. `--no-color` disables
 progress colors and passes `--gtest_color=no` to every test executable.
 Otherwise, `hard` passes `--gtest_color=yes` so captured GoogleTest output keeps
 its ANSI colors in verbose output and when a failed test's output is reported.
+
+## Project configuration and pinned dependencies
+
+`hard.yaml` is optional, is committed with the project, and has exactly four
+supported top-level fields:
+
+```yaml
+version: 1
+format: format.v1
+exclude: [build, bin]
+repositories:
+  github.com/leethomason/tinyxml2:
+    source: github.com/leethomason/tinyxml2
+    ref: "10.0.0"
+    commit: "<full lowercase Git commit ID>"
+    checksum: "sha256:<64 lowercase hexadecimal digits>"
+```
+
+The commit and checksum above are placeholders, not valid records. An empty
+`repositories: {}` is valid and enables recording. Unknown or duplicate fields,
+non-string keys, anchors, aliases, merge keys, custom tags, extra documents,
+non-regular configuration files, and a flow-style top-level mapping are
+rejected. Repository fields must be strings; commits are full 40- or 64-digit
+lowercase hexadecimal IDs. The top-level mapping uses block style so automatic
+updates can preserve other settings byte-for-byte.
+
+Search starts at the invocation directory and ascends until the nearest
+`hard.yaml`, the current Git root (a `.git` file or directory), or the
+filesystem root. One invocation selects one configuration; explicit source
+paths do not load or merge other project files. `version`, `environment`, help,
+and completion do not load project configuration or fetch dependencies.
+
+- `version` is required and must be integer `1`, the schema version.
+- `format` is optional; absent means `format.v1`, empty/null is invalid, and an
+  explicit `--format` overrides it. Styles remain installed runtime files.
+- `exclude` is an optional list, empty by default. Literal relative file and
+  directory paths are relative to the YAML directory, not the invocation
+  directory. Glob patterns and Git ignore syntax are not supported.
+  Traversal skips matching paths and directory subtrees; explicitly selecting
+  a file overrides exclusion. Exclusions do not suppress headers or same-stem
+  implementation sources needed through the active include graph.
+- `repositories` enables pinning by its presence, even when empty. Omission
+  retains legacy unpinned behavior. Each logical key remains
+  `github.com/owner/repository`; `source` can identify another upstream or a
+  corporate fork without changing includes or recipe source names.
+
+Source-selection paths are supplied only on the command line and are relative
+to the invocation directory. Without them, selection starts at `.` even when
+the configuration is in a parent directory. A `paths` project field is unknown
+and rejected. Exclusion paths cannot escape through `..` or contain wildcard
+syntax.
+Directory-symlink traversal and canonical file deduplication otherwise retain
+the ordinary source-selection rules. No target, compiler flags, profiles,
+command hooks, or extra project sections are supported.
+
+### Recording and updating
+
+`hard fetch --lock` creates `hard.yaml` in the current directory if none was
+found, or adds `repositories` to the selected file. Ordinary `fetch`, `build`,
+`run`, and `test` use recorded revisions and add new dependencies automatically.
+Only active include graphs are discovered, including recipe and vendor-source
+repositories; separate platforms may add different entries. One logical
+repository has one selected revision. There is no semantic-version solver.
+
+`hard fetch --update=github.com/owner/repository@ref` updates an already recorded
+repository; repeat the option for several distinct repositories. Duplicate
+updates are errors. A new dependency should first be discovered with ordinary
+fetch or `fetch --lock`. `--lock`, `--locked`, and updates are mutually
+exclusive. Only fetch accepts `--lock` and `--update`; build, fetch, run, and
+test accept `--locked`.
+
+`--locked` requires an existing repositories section and fails on an unrecorded
+dependency without resolving its branch. Recorded snapshots absent from the
+cache may still be downloaded: this is not offline mode. Known branch/tag
+references never move implicitly, and `--no-cache` only forces artifact work.
+
+The `ref` records intent; `commit` selects the snapshot. Downloads and cached
+snapshots must match `checksum`, including during explicit updates that resolve
+to an already recorded source and commit. A mismatch is fatal, not a request
+to rewrite the checksum. The checksum is trust-on-first-use integrity, not a
+signature or proof of the original publisher's identity.
+
+Updates are committed atomically after dependency resolution succeeds, before
+ordinary object compilation or program execution. A later compiler or program
+failure does not undo a successfully resolved record. Failed resolution leaves
+the file unchanged. Only the repositories section is serialized; other bytes
+and comments are preserved. Directory-inode advisory locking serializes hard's
+updates, and a changed original file is rejected instead of overwriting an
+editor's concurrent changes. The lock is released after resolution, before
+the application runs. Downloaded snapshots may remain after a failed command.
+
+### Pinned source and artifact layout
+
+Snapshots are shared across projects and environments:
+
+```text
+HARD_ROOT/snapshot/<sha256(source)>/<commit>/
+HARD_ROOT/snapshot/<sha256(source)>/<commit>.checksum
+HARD_ROOT/project/<selection-digest>/source/github.com/<owner>/<repository>
+HARD_ROOT/project/<selection-digest>/source/hard
+HARD_ROOT/project/<selection-digest>/source/recipe
+HARD_ROOT/project/<selection-digest>/env/HARD_ENV/build/...
+HARD_ROOT/project/<selection-digest>/env/HARD_ENV/library/...
+```
+
+Source-view entries are relative symlinks to exact snapshots. The selection
+digest includes the project filename, complete pins and configured compiler,
+flags and entry names. Existing views are never switched to other revisions.
+Discovery of a new dependency repeats analysis with an expanded immutable
+view; compilation/execution waits for a stable selection. The view enters
+compiler arguments and the artifact root, separating parsing, objects, forwards,
+links, tests and vendor packages for different dependency sets. Existing
+unversioned `HARD_ROOT/source` directories cannot satisfy pinned dependencies.
+
+Recorded snapshots are hydrated and verified when constructing a view, including
+records inactive for the current platform. Fetch creates no environment build
+tree. Snapshots and obsolete views are not garbage-collected automatically.
+Treat snapshot contents as immutable; changed cached contents, missing checksum
+metadata, or source mutations during recipe preparation are errors.
+
+The normalized tree digest is SHA-256 over the JSON-encoded string
+`hard-source-tree-v1` followed by lexically ordered depth-first JSON array
+records `[relativePath, kind, executable, value]`, each followed by a newline.
+The root itself is omitted; directory values are empty, file values are SHA-256
+content digests, and symlink values are their literal targets. The executable
+boolean reflects any executable permission bit on regular files. Archive root
+names, timestamps, ownership and non-executable permission differences are
+excluded. Extraction retains the normal single-root, safe-path and safe-symlink
+rules; archives from proxies use the same tar.gz format as GitHub snapshots.
+
+### Corporate sources, credentials and proxy protocol
+
+Set `HARD_CONFIG` to a separate regular YAML file:
+
+```yaml
+proxy:
+  url: https://dependencies.corp.example
+  fallback: false
+replace:
+  github.com/leethomason/tinyxml2:
+    source: git.corp.example/third-party/tinyxml2
+    ref: "10.0.0-company.2"
+auth:
+  dependencies.corp.example:
+    token_env: HARD_AUTH_DEPENDENCIES
+```
+
+`HARD_PROXY`, when set, overrides the proxy URL (an empty value disables it).
+Proxy and replacement settings are not copied into project top-level fields.
+Replacement selections appear as repository `source`, `ref`, commit and checksum.
+A rule conflicting with an existing source/ref is an error until an explicit
+matching update is requested. With corporate configuration present, commands
+require recording or `fetch --lock`; they never silently use the legacy client.
+
+Authentication is optional and keyed by exact `host[:port]`. `token_env` names
+an environment variable with the `HARD_AUTH_` prefix; its non-empty value is
+sent as a Bearer token only to that host. Values are never written to YAML.
+The container wrapper does not forward these credential variables or
+`HARD_CONFIG` from the host. URLs cannot contain userinfo, query credentials or fragments.
+HTTPS is required except for literal loopback IP HTTP endpoints used in tests.
+Direct GitHub redirects can use another HTTPS host but do not carry the previous
+host's authorization. Proxy redirects cannot leave the proxy origin.
+
+The implemented client protocol appends these paths to the configured base URL:
+
+| Request | Successful response |
+| --- | --- |
+| `GET /v1/resolve?source=<encoded-source>&ref=<encoded-ref>` | HTTP 200 JSON with `commit` and `ref`; empty requested ref asks for the default branch and requires a non-empty response ref |
+| `GET /v1/snapshot?source=<encoded-source>&commit=<full-commit>` | HTTP 200 tar.gz source snapshot at that exact commit |
+
+Both resolution and download go through the proxy. Direct source support is
+currently GitHub; other source hosts require the proxy. `fallback: true`
+explicitly permits direct GitHub fallback only after proxy HTTP 404, 502, 503
+or 504. Authentication failures, network/TLS errors, malformed responses,
+disallowed redirects and checksum mismatches never trigger fallback. Server
+response bodies and transport URLs are not included in diagnostics, to avoid
+exposing credentials. The proxy server itself is not part of hard.
 
 ## Configuration
 

@@ -154,9 +154,11 @@ func buildSourcesWithProgressExecutable(
 	progress *progressBar,
 	stderr io.Writer,
 	noCache bool,
+	resolvers ...*githubSnapshotResolver,
 ) error {
+	githubResolver := invocationRepositoryResolver(root, progress, resolvers)
 	if len(sources) == 0 {
-		return progress.finish()
+		return errors.Join(githubResolver.commitDependencies(), progress.finish())
 	}
 	if jobs < 1 {
 		return errors.Join(fmt.Errorf("jobs must be positive: %d", jobs), progress.finish())
@@ -171,7 +173,6 @@ func buildSourcesWithProgressExecutable(
 		return errors.Join(err, progress.finish())
 	}
 	rootSourceCount := len(sources)
-	githubResolver := newGitHubSnapshotResolver(root, progress)
 	libraryManager := newLibraryManager(
 		root,
 		environment,
@@ -224,6 +225,9 @@ func buildSourcesWithProgressExecutable(
 		}
 	}
 	if err := errors.Join(failures...); err != nil {
+		return errors.Join(err, progress.finish())
+	}
+	if err := githubResolver.commitDependencies(); err != nil {
 		return errors.Join(err, progress.finish())
 	}
 	progress.setTotal(1 + len(sources) + 2*linkCount)

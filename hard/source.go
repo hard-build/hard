@@ -15,7 +15,7 @@ func discoverSources(command string, paths []string) ([]string, error) {
 	return discoverSourcesFrom(command, paths, workingDirectory)
 }
 
-func discoverSourcesFrom(command string, paths []string, workingDirectory string) ([]string, error) {
+func discoverSourcesFrom(command string, paths []string, workingDirectory string, exclusions ...[]string) ([]string, error) {
 	if _, err := matchesSource(command, ""); err != nil {
 		return nil, err
 	}
@@ -57,16 +57,29 @@ func discoverSourcesFrom(command string, paths []string, workingDirectory string
 		return nil
 	}
 
-	if err := discoverPaths(paths, workingDirectory, add); err != nil {
+	if err := discoverPaths(paths, workingDirectory, add, exclusions...); err != nil {
 		return nil, err
 	}
 	return sources, nil
 }
 
-func discoverPaths(paths []string, workingDirectory string, add func(string) error) error {
+func discoverPaths(paths []string, workingDirectory string, add func(string) error, exclusions ...[]string) error {
+	excluded := func(path string) bool {
+		for _, group := range exclusions {
+			for _, exclusion := range group {
+				if pathWithin(exclusion, path) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	visitedDirectories := make(map[string]struct{})
 	var walkDirectory func(string) error
 	walkDirectory = func(path string) error {
+		if excluded(path) {
+			return nil
+		}
 		realPath, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			return err
@@ -86,6 +99,9 @@ func discoverPaths(paths []string, workingDirectory string, add func(string) err
 		}
 		for _, entry := range entries {
 			entryPath := filepath.Join(path, entry.Name())
+			if excluded(entryPath) {
+				continue
+			}
 			info, err := entry.Info()
 			if err != nil {
 				return err

@@ -32,16 +32,17 @@ func fetchSourcesWithProgress(
 	jobs int,
 	progress *progressBar,
 	stderr io.Writer,
+	resolvers ...*githubSnapshotResolver,
 ) error {
+	resolver := invocationRepositoryResolver(root, progress, resolvers)
 	if len(sources) == 0 {
 		progress.setTotal(1)
-		return progress.finish()
+		return errors.Join(resolver.commitDependencies(), progress.finish())
 	}
 	workingDirectory, err := os.Getwd()
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
-	resolver := newGitHubSnapshotResolver(root, progress)
 	libraryManager := newLibraryManager(
 		root,
 		"",
@@ -69,6 +70,9 @@ func fetchSourcesWithProgress(
 		libraryManager,
 	)
 	progress.setTotal(1)
+	if err == nil {
+		err = resolver.commitDependencies()
+	}
 	return errors.Join(err, progress.finish())
 }
 
