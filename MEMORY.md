@@ -105,7 +105,7 @@ Implemented:
   and externally configured corporate replacements and dependency proxies;
 - Cobra-based argument parsing;
 - environment-backed configuration;
-- an embedded `v5.0-development` version assembled from the `5.0` version
+- an embedded `v6.0-development` version assembled from the `6.0` version
   number and `development` prerelease identifier, with a source-independent
   `version` command and release-time prerelease removal;
 - a read-only release contract check that builds development and release
@@ -1076,12 +1076,12 @@ and cause status 1. A normally started program that exits nonzero under
 
 `version` prints one line assembled from two values embedded in the Go binary:
 
-    versionNumber = 5.0
+    versionNumber = 6.0
     versionPrerelease = development
 
-The default output is `v5.0-development`. A non-empty prerelease identifier is
+The default output is `v6.0-development`. A non-empty prerelease identifier is
 separated from the version number by one hyphen. Release packaging clears only
-the prerelease value through `-X main.versionPrerelease=`, producing `v5.0`,
+the prerelease value through `-X main.versionPrerelease=`, producing `v6.0`,
 and rejects a binary whose reported version differs from the release tag.
 
 The command does not resolve the runtime root, read a runtime version file,
@@ -1095,6 +1095,13 @@ command.
 canonical version without a `v` prefix, requires a numerical increase, refuses
 an already tagged version, and changes only `versionNumber`; prerelease remains
 `development` until release linking clears it.
+
+On 2026-09-16 the user explicitly selected `6.0` for the next development
+version. `make bump VERSION=6.0` advanced the source from `5.0` while retaining
+the `development` prerelease identifier. Historical image versions and test
+fixtures are unchanged; this bump does not create a release tag or publish a
+release. Verification passed `make check` and `make release-check VERSION=v6.0`,
+including both version forms and the release environment report.
 
 `make release-check` builds both forms from the current checkout. Without a
 `VERSION` value it derives the release version from the required
