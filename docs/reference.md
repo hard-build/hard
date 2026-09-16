@@ -194,9 +194,9 @@ hard version
 ```
 
 `version` prints the version embedded in the running backend as one line. The
-source defaults are version number `6.0` and prerelease identifier
-`development`, producing `v6.0-development`. Release packaging clears the
-prerelease identifier through a Go linker value, producing `v6.0`, and rejects
+source defaults are version number `7.0` and prerelease identifier
+`development`, producing `v7.0-development`. Release packaging clears the
+prerelease identifier through a Go linker value, producing `v7.0`, and rejects
 a binary whose output does not match the release tag.
 
 The command accepts no paths and does not determine the runtime root, read a
