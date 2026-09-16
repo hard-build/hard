@@ -29,21 +29,44 @@ func seedDiscoveryDefaults(t *testing.T, configuration configuration, defaults [
 	t.Setenv("HARD_CONFIG", "")
 }
 
-func readDiscoveryRecord(t *testing.T, configuration configuration, project string) (string, dependencyDiscoveryRecord) {
+func readDiscoveryRecord(t *testing.T, configuration configuration, project, source, command string) (string, dependencyDiscoveryRecord) {
 	t.Helper()
 	owner, err := localProjectRoot(configuration.root, configuration.env, project)
 	if err != nil {
 		t.Fatal(err)
 	}
-	filename := filepath.Join(owner, "dependencies.json")
+	if _, err := os.Stat(filepath.Join(owner, "dependencies.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy discovery file still in use: %v", err)
+	}
+	layout, err := newCacheLayout(&dependencySession{
+		root: configuration.root, workingDirectory: project,
+		selected: make(map[string]string),
+	}, configuration, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var filename string
+	if command == "fetch" {
+		filename, err = fetchParseCachePath(configuration.root, configuration.env, source, layout)
+	} else {
+		filename, err = parseCachePath(configuration.root, configuration.env, source, layout)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	contents, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var record dependencyDiscoveryRecord
-	if err := json.Unmarshal(contents, &record); err != nil {
+	var parse parseCacheRecord
+	if err := json.Unmarshal(contents, &parse); err != nil {
 		t.Fatal(err)
 	}
+	result, err := parseResultFingerprint(parse)
+	if err != nil || result != parse.Result || parse.Discovery == nil {
+		t.Fatalf("invalid parse record discovery: %v", err)
+	}
+	record := *parse.Discovery
 	if record.Result != discoveryRecordDigest(record) {
 		t.Fatal("invalid discovery record digest")
 	}
@@ -97,7 +120,7 @@ func TestUnrecordedDiscoveryWarmCommands(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(project, projectFilename)); !os.IsNotExist(err) || before != proxy.log() {
 				t.Fatalf("warm command wrote hard.yaml or contacted upstream: %v", err)
 			}
-			_, record := readDiscoveryRecord(t, configuration, project)
+			_, record := readDiscoveryRecord(t, configuration, project, source, command)
 			if !sameRepositoryContents(record.Pins[pin.Source], pin) {
 				t.Fatalf("wrong cached selection: %#v", record.Pins)
 			}
@@ -126,7 +149,7 @@ func TestDiscoveryCacheDoesNotPinInheritedOrDefaultRevisions(t *testing.T) {
 		if iteration == 1 && (strings.Count(out, "Parsing app.cpp") != 1 || !strings.Contains(out, "Parsing app.cpp (CACHED)")) {
 			t.Fatalf("inherited warm selection missed:\n%s", out)
 		}
-		_, record := readDiscoveryRecord(t, configuration, project)
+		_, record := readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 		if record.Pins[inherited.Source] != inherited {
 			t.Fatal("default replaced an inherited revision")
 		}
@@ -134,14 +157,14 @@ func TestDiscoveryCacheDoesNotPinInheritedOrDefaultRevisions(t *testing.T) {
 	// Removing the parent's include must remove its inherited requirement too.
 	writeProjectTestFile(t, project, "selection.h", "#include <github.com/demo/leaf/leaf.h>\n")
 	runDiscoveryCommand(t, configuration, "fetch", "-v")
-	_, record := readDiscoveryRecord(t, configuration, project)
+	_, record := readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 	if len(record.Pins) != 1 || !sameRepositoryContents(record.Pins[inherited.Source], defaultPin) {
 		t.Fatalf("old inherited revision became a hidden pin: %#v", record.Pins)
 	}
 	// @default is an input, not merely a fallback for missing cache entries.
 	writeProjectTestFile(t, configuration.root, "snapshot/"+defaultPin.Source+"/@default", inherited.Commit+"\n")
 	runDiscoveryCommand(t, configuration, "fetch", "-v")
-	_, record = readDiscoveryRecord(t, configuration, project)
+	_, record = readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 	if !sameRepositoryContents(record.Pins[inherited.Source], inherited) {
 		t.Fatal("cached selection ignored changed @default")
 	}
@@ -172,7 +195,7 @@ func TestDiscoveryCacheInvalidationAndValidation(t *testing.T) {
 		return runDiscoveryCommand(t, configuration, append([]string{"fetch", "-v"}, args...)...)
 	}
 	run("app.cpp")
-	filename, _ := readDiscoveryRecord(t, configuration, project)
+	filename, _ := readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 	if out := run("app.cpp", "--no-cache"); strings.Contains(out, "(CACHED)") {
 		t.Fatalf("--no-cache restored analysis:\n%s", out)
 	}
@@ -181,10 +204,10 @@ func TestDiscoveryCacheInvalidationAndValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 		run("app.cpp")
-		readDiscoveryRecord(t, configuration, project)
+		readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 	}
 	// A semantically changed record must not retain its previous digest.
-	_, record := readDiscoveryRecord(t, configuration, project)
+	_, record := readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 	changed := record.Pins[pin.Source]
 	changed.Commit = secondCommit
 	record.Pins[pin.Source] = changed
@@ -195,7 +218,7 @@ func TestDiscoveryCacheInvalidationAndValidation(t *testing.T) {
 	run("app.cpp")
 	// Changing roots or flags must not preload irrelevant repositories.
 	run("local.cpp")
-	_, record = readDiscoveryRecord(t, configuration, project)
+	_, record = readDiscoveryRecord(t, configuration, project, "local.cpp", "fetch")
 	if len(record.Pins) != 0 {
 		t.Fatal("selection from another set of root sources was restored")
 	}
@@ -203,7 +226,7 @@ func TestDiscoveryCacheInvalidationAndValidation(t *testing.T) {
 	run("app.cpp")
 	configuration.cflags = append(configuration.cflags, "-DLOCAL_ONLY")
 	run("app.cpp")
-	_, record = readDiscoveryRecord(t, configuration, project)
+	_, record = readDiscoveryRecord(t, configuration, project, "app.cpp", "fetch")
 	if len(record.Pins) != 0 {
 		t.Fatal("selection from another flag configuration was restored")
 	}

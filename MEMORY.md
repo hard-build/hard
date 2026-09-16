@@ -4047,7 +4047,9 @@ Historical container images retain their historical backend/runtime paths.
 
 The user reported two searches and repeated parsing on every unchanged build
 of the example repository without hard.yaml, and approved fixing this before
-the version bump. No version number has been changed or confirmed.
+the version bump. The standalone discovery file described here was superseded
+by the parse-record integration below. No version number has been changed or
+confirmed.
 
 - `main.go` discovers root sources once, outside the dependency retry loop.
 - Unrecorded source commands use `<local-owner>/dependencies.json` to remember
@@ -4077,6 +4079,46 @@ the version bump. No version number has been changed or confirmed.
   copying caches. No hard.yaml was created. The original project, installed
   runtime and user cache were not modified. Local documentation links and the
   complete change diff were checked.
+
+## Selection discovery in parse records (2026-09-16)
+
+The user chose to eliminate the separate `dependencies.json`. The selected
+default version remains in `snapshot/<actual-source>/@default`, subject to
+explicit project choices and active inherited requirements. Analysis records
+provide the previously discovered repository set.
+
+- `cacheLayout` routes parse records to `parse/fetch/<context-key>` and
+  `parse/build/<context-key>` under the existing local or logical repository
+  owner. The context key excludes selected snapshots but retains the complete
+  invocation/configuration context. Forwards, objects and binaries retain the
+  snapshot-sensitive `build/<build-key>` path.
+- Each parse record stores its selection key as well as the prior semantic
+  contents and input fingerprint. A selection mismatch is a cache miss, so
+  moving the path cannot reuse analysis from another revision. The stable
+  location keeps only the latest successful result for a source/context;
+  switching back to an older revision may reparse that source.
+- One successful root-source parse record also carries the last project-wide
+  discovery hint (pins and source/header/used-default digests) after dependency
+  resolution commits. The root-source list, command, project configuration,
+  executable, flags and environment remain in its context digest. Publication
+  and restoration use the existing owner lock and semantic checksums. The hint
+  remains disposable cache state: no new project pin or hard.yaml is written,
+  and restored pins still undergo snapshot and inherited-edge validation.
+- `--no-cache` bypasses restoration. The prior standalone dependencies.json is
+  neither read nor deleted; old parse locations are similarly left untouched.
+  Cold dependency expansion can still require repeated analysis, although root
+  source search runs once. Conditional include and include-topology limitations
+  are unchanged. The user explicitly accepted cold repeated parsing as
+  expected, and requested this change to remove the separate discovery file.
+
+Focused regressions and the full `make check` passed, including ordinary and
+race tests, vet, formatting, out-of-tree build, module verification, shell
+syntax, target manifest and Git whitespace checks. Local documentation links
+were validated. A fresh backend built a copied `example` project with copied
+snapshots in an isolated temporary root; the second build searched sources once,
+parsed all 13 translation units once with `(CACHED)`, and reused package,
+compile, link and copy caches. No dependencies.json or hard.yaml was created.
+The original project, installed runtime and user cache were not modified.
 
 ## Resume checklist
 

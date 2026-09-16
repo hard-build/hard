@@ -8,7 +8,7 @@ import (
 
 func fetchParseCachePath(root, environment, source string, layouts ...*cacheLayout) (string, error) {
 	if len(layouts) != 0 && layouts[0] != nil {
-		path, err := layouts[0].sourcePath(source, true)
+		path, err := layouts[0].parsePath(source, true)
 		if err != nil {
 			return "", err
 		}

@@ -46,16 +46,18 @@ type cacheRecord struct {
 }
 
 type parseCacheRecord struct {
-	Version             int                 `json:"version"`
-	Kind                string              `json:"kind"`
-	Input               string              `json:"input"`
-	Result              string              `json:"result"`
-	Dependencies        []string            `json:"dependencies"`
-	ManagedDependencies []string            `json:"managed_dependencies,omitempty"`
-	LibraryHeaders      []string            `json:"library_headers,omitempty"`
-	Includes            []parseCacheInclude `json:"includes,omitempty"`
-	EntryPoint          string              `json:"entry_point,omitempty"`
-	Forward             string              `json:"forward,omitempty"`
+	Version             int                        `json:"version"`
+	Kind                string                     `json:"kind"`
+	Input               string                     `json:"input"`
+	Result              string                     `json:"result"`
+	Selection           string                     `json:"selection,omitempty"`
+	Dependencies        []string                   `json:"dependencies"`
+	ManagedDependencies []string                   `json:"managed_dependencies,omitempty"`
+	LibraryHeaders      []string                   `json:"library_headers,omitempty"`
+	Includes            []parseCacheInclude        `json:"includes,omitempty"`
+	EntryPoint          string                     `json:"entry_point,omitempty"`
+	Forward             string                     `json:"forward,omitempty"`
+	Discovery           *dependencyDiscoveryRecord `json:"discovery,omitempty"`
 }
 
 type parseCacheInclude struct {
@@ -128,6 +130,16 @@ func (cache *artifactCache) paths() *cacheLayout {
 		return nil
 	}
 	return cache.layout
+}
+
+func (cache *artifactCache) parseSelection(kind string) string {
+	if cache.layout == nil {
+		return ""
+	}
+	if kind == "fetch-parse" {
+		return cache.layout.analysisKey
+	}
+	return cache.layout.buildKey
 }
 
 func (cache *artifactCache) actionFingerprint(
@@ -472,6 +484,13 @@ func parseCacheArguments(cflags []string, entryPoints []string) []string {
 }
 
 func parseCachePath(root, environment, source string, layouts ...*cacheLayout) (string, error) {
+	if len(layouts) != 0 && layouts[0] != nil {
+		path, err := layouts[0].parsePath(source, false)
+		if err != nil {
+			return "", err
+		}
+		return path + parseCacheSuffix, nil
+	}
 	object, err := objectFilePath(root, environment, source, layouts...)
 	if err != nil {
 		return "", err
@@ -491,7 +510,8 @@ func (cache *artifactCache) parseHit(
 		return parseCacheRecord{}, false, nil
 	}
 	record, ok, err := readParseCacheRecord(path)
-	if err != nil || !ok || record.Version != artifactCacheVersion || record.Kind != kind {
+	if err != nil || !ok || record.Version != artifactCacheVersion || record.Kind != kind ||
+		record.Selection != cache.parseSelection(kind) {
 		return parseCacheRecord{}, false, err
 	}
 	inputs := append([]string{source}, record.Dependencies...)
@@ -554,6 +574,7 @@ func (cache *artifactCache) storeParse(
 	}
 	record.Version = artifactCacheVersion
 	record.Input = input
+	record.Selection = cache.parseSelection(record.Kind)
 	record.Result, err = parseResultFingerprint(record)
 	if err != nil {
 		return false, err
@@ -603,21 +624,25 @@ func parseCacheInputContainsHasInclude(
 
 func parseResultFingerprint(record parseCacheRecord) (string, error) {
 	result := struct {
-		Kind                string              `json:"kind"`
-		Dependencies        []string            `json:"dependencies"`
-		ManagedDependencies []string            `json:"managed_dependencies,omitempty"`
-		LibraryHeaders      []string            `json:"library_headers,omitempty"`
-		Includes            []parseCacheInclude `json:"includes,omitempty"`
-		EntryPoint          string              `json:"entry_point,omitempty"`
-		Forward             string              `json:"forward,omitempty"`
+		Kind                string                     `json:"kind"`
+		Selection           string                     `json:"selection,omitempty"`
+		Dependencies        []string                   `json:"dependencies"`
+		ManagedDependencies []string                   `json:"managed_dependencies,omitempty"`
+		LibraryHeaders      []string                   `json:"library_headers,omitempty"`
+		Includes            []parseCacheInclude        `json:"includes,omitempty"`
+		EntryPoint          string                     `json:"entry_point,omitempty"`
+		Forward             string                     `json:"forward,omitempty"`
+		Discovery           *dependencyDiscoveryRecord `json:"discovery,omitempty"`
 	}{
 		Kind:                record.Kind,
+		Selection:           record.Selection,
 		Dependencies:        record.Dependencies,
 		ManagedDependencies: record.ManagedDependencies,
 		LibraryHeaders:      record.LibraryHeaders,
 		Includes:            record.Includes,
 		EntryPoint:          record.EntryPoint,
 		Forward:             record.Forward,
+		Discovery:           record.Discovery,
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {

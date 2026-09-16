@@ -262,7 +262,9 @@ func TestFetchCacheRevalidatesInheritedEdges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, err := newArtifactCache(true)
+	resolver := newGitHubSnapshotResolver(view, nil)
+	resolver.session = session
+	cache, err := newArtifactCache(true, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,8 +277,6 @@ func TestFetchCacheRevalidatesInheritedEdges(t *testing.T) {
 	if err != nil || !hit {
 		t.Fatalf("test requires a valid cache hit: %v", err)
 	}
-	resolver := newGitHubSnapshotResolver(view, nil)
-	resolver.session = session
 	progress := newProgressBar(io.Discard, -1, false, true, true)
 	err = fetchSourcesWithCache(view, configuration.env, cflags, []string{"main.cpp"}, 1, progress, io.Discard, false, resolver)
 	if err == nil || !strings.Contains(err.Error(), "repository pin conflict for "+leaf.Source) {

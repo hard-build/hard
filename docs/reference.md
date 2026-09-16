@@ -759,13 +759,14 @@ source forward begins with `#pragma once`. When regenerated content is
 byte-for-byte unchanged, the existing regular file is retained.
 
 A successful translation-unit analysis is persisted as a versioned
-`.hard-parse-cache.json` record beside the owner-relative source path. The record
+`.hard-parse-cache.json` record under the owner's `parse/build/<context-key>`
+directory, preserving the source-relative path. The record
 stores its managed dependency list, complete active non-system dependency
 snapshot, active library recipe headers, detected entry point, and final
 validated source-forward text. Records include a checksum of that semantic
-result. After the checksum is validated, a prospective hit restores the
-packages and package include flags named by those headers before its action
-fingerprint is validated against current inputs.
+result and the selected snapshot key. After the checksum is validated, a
+prospective hit restores the packages and package include flags named by those
+headers before its action fingerprint is validated against current inputs.
 
 A parse-cache key includes the `hard` executable digest, libclang version, the
 effective compiler flags (configured, hard-managed, and active-package flags),
@@ -774,12 +775,13 @@ every active non-system dependency known from the previous successful
 analysis, including non-system force-included headers. The invocation working
 directory participates only when a compiler argument can depend on it, such as
 a relative include, forced-include, toolchain, or response-file path, or an
-opaque forwarded driver argument. The storage key also retains the invocation's
-include context, so different invocation directories do not share direct
-source-analysis records. System headers are represented by the selected `HARD_ENV` rather
-than individual content hashes. Missing, malformed, changed, or internally
-inconsistent records are misses. A hit skips libclang analysis, restores a
-missing generated source forward when needed, and reports
+opaque forwarded driver argument. The storage context key retains the
+invocation's include context but excludes selected snapshots; the record checks
+the snapshot selection before reuse. Different invocation directories do not
+share direct source-analysis records. System headers are represented by the
+selected `HARD_ENV` rather than individual content hashes. Missing, malformed,
+changed, or internally inconsistent records are misses. A hit skips libclang
+analysis, restores a missing generated source forward when needed, and reports
 `Parsing <path> (CACHED)`.
 
 No parse record is written when `__has_include` occurs in the input itself or
@@ -1092,21 +1094,23 @@ rules are the same as for `build`, `run`, and `test`; existing repository
 directories are not refreshed automatically.
 
 Successful dependency analysis is cached independently of build analysis at
-`<owner>/fetch/<analysis-key>/<relative-source>.hard-parse-cache.json`, using
+`<owner>/parse/fetch/<context-key>/<relative-source>.hard-parse-cache.json`, using
 the same owner rules for recorded and unrecorded projects. Fetch records never
 substitute for build/run/test records and contain no entry points or generated
-forwards. Unrecorded invocations restore an input-validated dependency-selection
-hint before analysis, so warm unchanged commands do not need a preliminary
-rediscovery pass. Root source discovery runs once even on a cold cache.
+forwards. Unrecorded invocations restore an input-validated dependency selection
+from a prior root-source parse record before analysis, so warm unchanged
+commands do not need a preliminary rediscovery pass. Root source discovery
+runs once even on a cold cache.
 
 The key includes the hard executable digest, libclang version, ordered base
 analysis flags, and contents of the source and every previously known active
 non-system header, including recipe and force-included headers. Cwd-dependent
 flags also include the invocation directory. `HARD_ENV` separates immutable
-toolchains and system headers; configuration keys separate dependency revisions
-and include contexts. Missing, changed, malformed, or semantically inconsistent
-records cause fresh analysis. The same `__has_include` guard and depfile-style
-include-path topology limitations described for build analysis apply.
+toolchains and system headers; record selection keys separate dependency
+revisions and context keys separate include contexts. Missing, changed,
+malformed, or semantically inconsistent records cause fresh analysis. The same
+`__has_include` guard and depfile-style include-path topology limitations
+described for build analysis apply.
 
 A hit skips libclang, restores the dependency list and recipe source includes,
 and still discovers same-stem implementations. Stored include edges are replayed
@@ -1517,11 +1521,12 @@ across projects and environments:
 HARD_ROOT/snapshot/<actual-source>/@default
 HARD_ROOT/snapshot/<actual-source>/@<commit>/
 HARD_ROOT/snapshot/<actual-source>/@<commit>.checksum
-HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/dependencies.json
 HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/include/
-HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/fetch/<analysis-key>/
+HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/parse/fetch/<context-key>/
+HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/parse/build/<context-key>/
 HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/build/<build-key>/
-HARD_ROOT/project/<HARD_ENV>/<logical-repository>/fetch/<analysis-key>/
+HARD_ROOT/project/<HARD_ENV>/<logical-repository>/parse/fetch/<context-key>/
+HARD_ROOT/project/<HARD_ENV>/<logical-repository>/parse/build/<context-key>/
 HARD_ROOT/project/<HARD_ENV>/<logical-repository>/build/<build-key>/
 HARD_ROOT/project/<HARD_ENV>/<logical-repository>/package/<fingerprint>/
 ```
@@ -1532,27 +1537,31 @@ both a hard/library consumer and a project with a local TinyXML2 recipe.
 
 Include-view entries are relative symlinks to exact snapshots. One locked view
 is reused and refreshed when dependencies change; no selection-digest or
-dependency-set directory is created. Analysis/build keys include selected
-snapshot paths and the complete relevant configured context, but not ordinary
-local source contents. Per-record content hashes handle source edits.
+dependency-set directory is created. Build keys include selected snapshot paths
+and the complete relevant configured context, but not ordinary local source
+contents. Parse paths use a context key without selected snapshots; each record
+validates its selection and content inputs before reuse.
 Direct source keys retain the invocation and include-view paths, so distinct
 projects' direct objects remain isolated even under the same logical repository.
 Vendor package keys instead cover recipe contents, their source snapshot and
 build tools, allowing compatible cross-project reuse. Removing a replacement
 rule without changing selected contents does not invalidate analysis.
 
-For unrecorded projects, `dependencies.json` caches the last resolved selection
-for one command, root-source list and configuration. It also fingerprints the
-hard executable, analyzed sources and active non-system headers, and used
-`@default` files. Restoration occurs under the include-view lock only when
-these inputs match; malformed or stale hints are ignored. Snapshots still
-require checksum validation, and inherited pins are checked through active
-include edges. This file is not a project pin: changing an input starts fresh
-discovery rather than preserving a now-inactive inherited choice. Recording
-mode does not consult this hint. `--no-cache` bypasses it, and sources covered
-by the existing `__has_include` guard prevent its publication. The ordinary
-include-path topology limitations also apply. Searching root sources is done
-once per invocation, outside any dependency-resolution retries.
+For unrecorded projects, a successful root-source parse record also stores the
+last resolved selection for one command, root-source list and configuration.
+It fingerprints the hard executable, analyzed sources and active non-system
+headers, and used `@default` files. Restoration occurs under the include-view
+lock only when these inputs match; malformed or stale records are ignored.
+Snapshots still require checksum validation, and inherited pins are checked
+through active include edges. This cached selection is not a project pin:
+changing an input starts fresh discovery rather than preserving a now-inactive
+inherited choice. Recording mode does not consult it. `--no-cache` bypasses it,
+and sources covered by the existing `__has_include` guard prevent its
+publication. The ordinary include-path topology limitations also apply.
+Only the last parse result per source/context is kept, so switching revisions
+can require another parse. The old standalone `dependencies.json` is ignored,
+not removed. Searching root sources is done once per invocation, outside any
+dependency-resolution retries.
 
 `@default` is a regular commit-ID file, not a symlink. It is published under
 the source-directory lock after successful snapshot verification. It has no

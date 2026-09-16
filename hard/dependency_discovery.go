@@ -10,11 +10,13 @@ import (
 // In particular, restored pins do not enter project.Repositories, so inherited
 // requirements still apply when cached or fresh analysis visits include edges.
 type dependencyDiscovery struct {
-	filename, key string
-	read          bool
-	mutex         sync.Mutex
-	inputs        map[string]string
-	disabled      bool
+	key      string
+	anchors  []string
+	kind     string
+	read     bool
+	mutex    sync.Mutex
+	inputs   map[string]string
+	disabled bool
 }
 
 type dependencyDiscoveryRecord struct {
@@ -26,7 +28,7 @@ type dependencyDiscoveryRecord struct {
 }
 
 func (session *dependencySession) prepareDiscoveryCache(configuration configuration, parsed arguments, sources []string) error {
-	if session == nil || session.record {
+	if session == nil || session.record || parsed.command == "format" || len(sources) == 0 {
 		return nil
 	}
 	owner, err := localProjectRoot(session.root, configuration.env, session.workingDirectory)
@@ -51,10 +53,27 @@ func (session *dependencySession) prepareDiscoveryCache(configuration configurat
 	if err != nil {
 		return err
 	}
-	session.discovery = &dependencyDiscovery{
-		filename: filepath.Join(owner, "dependencies.json"), key: repositoryDigest(context),
+	kind := "source-parse"
+	if parsed.command == "fetch" {
+		kind = "fetch-parse"
+	}
+	discovery := &dependencyDiscovery{
+		key: repositoryDigest(context), kind: kind,
 		read: !parsed.noCache, inputs: make(map[string]string),
 	}
+	for _, source := range sources {
+		var path string
+		if kind == "fetch-parse" {
+			path, err = fetchParseCachePath(session.root, configuration.env, source, layout)
+		} else {
+			path, err = parseCachePath(session.root, configuration.env, source, layout)
+		}
+		if err != nil {
+			return err
+		}
+		discovery.anchors = append(discovery.anchors, path)
+	}
+	session.discovery = discovery
 	return session.discovery.observe(cache, sources, session.workingDirectory)
 }
 
@@ -127,30 +146,43 @@ func (session *dependencySession) restoreDiscoveryCache() {
 	if discovery == nil || !discovery.read {
 		return
 	}
-	contents, err := readRegularProjectFile(discovery.filename)
-	if err != nil {
-		return
-	}
-	var record dependencyDiscoveryRecord
-	if json.Unmarshal(contents, &record) != nil || record.Version != 1 || record.Key != discovery.key ||
-		record.Result != discoveryRecordDigest(record) || !discoveryInputsMatch(record.Inputs) {
-		return
-	}
-	for name, pin := range record.Pins {
-		if validateRepositoryPin(name, pin) != nil {
-			return
+	for _, path := range discovery.anchors {
+		parse, ok, err := readParseCacheRecord(path)
+		if err != nil || !ok || parse.Version != artifactCacheVersion || parse.Kind != discovery.kind || parse.Discovery == nil {
+			continue
 		}
-	}
-	for path, digest := range discovery.inputs {
-		if record.Inputs[path] != digest {
-			return
+		result, err := parseResultFingerprint(parse)
+		if err != nil || result != parse.Result {
+			continue
 		}
-	}
-	for name, pin := range record.Pins {
-		session.pins[name] = pin
-	}
-	for path, digest := range record.Inputs {
-		discovery.inputs[path] = digest
+		record := parse.Discovery
+		if record.Version != 1 || record.Key != discovery.key ||
+			record.Result != discoveryRecordDigest(*record) || !discoveryInputsMatch(record.Inputs) {
+			continue
+		}
+		valid := true
+		for name, pin := range record.Pins {
+			if validateRepositoryPin(name, pin) != nil {
+				valid = false
+				break
+			}
+		}
+		for path, digest := range discovery.inputs {
+			if record.Inputs[path] != digest {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		for name, pin := range record.Pins {
+			session.pins[name] = pin
+		}
+		for path, digest := range record.Inputs {
+			discovery.inputs[path] = digest
+		}
+		return
 	}
 }
 
@@ -163,9 +195,32 @@ func (session *dependencySession) storeDiscoveryCache() error {
 	}
 	record := dependencyDiscoveryRecord{Version: 1, Key: discovery.key, Pins: session.pins, Inputs: discovery.inputs}
 	record.Result = discoveryRecordDigest(record)
-	contents, err := json.Marshal(record)
-	if err != nil {
-		return err
+	selection := session.layout.buildKey
+	if discovery.kind == "fetch-parse" {
+		selection = session.layout.analysisKey
 	}
-	return writeCacheRecord(discovery.filename, append(contents, '\n'))
+	for _, path := range discovery.anchors {
+		parse, ok, err := readParseCacheRecord(path)
+		if err != nil {
+			return err
+		}
+		if !ok || parse.Version != artifactCacheVersion || parse.Kind != discovery.kind || parse.Selection != selection {
+			continue
+		}
+		result, err := parseResultFingerprint(parse)
+		if err != nil || result != parse.Result {
+			continue
+		}
+		parse.Discovery = &record
+		parse.Result, err = parseResultFingerprint(parse)
+		if err != nil {
+			return err
+		}
+		contents, err := json.Marshal(parse)
+		if err != nil {
+			return err
+		}
+		return writeCacheRecord(path, append(contents, '\n'))
+	}
+	return nil
 }

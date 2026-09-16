@@ -587,12 +587,13 @@ HARD_ROOT/
 │   └── @<commit>.checksum             # Source-tree integrity record
 └── project/<HARD_ENV>/
     ├── root/<absolute-project-dir>/
-    │   ├── dependencies.json          # Validated discovery hint for unrecorded projects
     │   ├── include/                   # Selected repository symlinks and aliases
-    │   ├── fetch/<analysis-key>/      # Fetch-only analysis records
-    │   └── build/<build-key>/         # Local analysis, forwards, objects and binaries
+    │   ├── parse/fetch/<context-key>/ # Fetch-only analysis records
+    │   ├── parse/build/<context-key>/ # Build/run/test analysis records
+    │   └── build/<build-key>/         # Local forwards, objects and binaries
     └── <logical-repository>/
-        ├── fetch/<analysis-key>/      # Library source analysis
+        ├── parse/fetch/<context-key>/ # Library source analysis
+        ├── parse/build/<context-key>/ # Direct-source analysis
         ├── build/<build-key>/         # Directly compiled library sources
         └── package/<fingerprint>/     # Recipe-built packages and retained generations
 ```
@@ -604,14 +605,15 @@ A project/environment lock keeps `include/` stable for the command. Configuratio
 keys retain the project include context for direct compilation; recipe packages
 can be reused across projects with identical package inputs.
 
-Without dependency recording, `dependencies.json` remembers the last resolved
-selection for an unchanged command, source selection and configuration. Source,
-header and used `@default` contents are checked before reuse; snapshots and
-inherited requirements are still validated normally. This avoids an initial
-rediscovery pass on warm builds without creating `hard.yaml` or pinning an old
-selection after inputs change. `--no-cache` bypasses this hint. Root sources
-are searched once per invocation, even when resolving new dependencies needs
-multiple analysis passes.
+Parse records have a stable context path independent of the selected snapshots.
+For an unrecorded project, a successful root-source record also remembers the
+last resolved selection and its source, header and used `@default` digests.
+Snapshots and inherited requirements are still validated before reuse. This
+avoids an initial rediscovery pass on warm builds without creating `hard.yaml`
+or a separate dependency index. Only the last parse result per source/context
+is retained; switching revisions can require parsing again. `--no-cache`
+bypasses cached analysis. Root sources are searched once per invocation, even
+when resolving new dependencies needs multiple analysis passes.
 
 The [annotated cache tree](docs/cache-layout.md) includes examples for
 `hard/library` and a local TinyXML2 recipe, as well as selection and locking

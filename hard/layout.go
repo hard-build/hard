@@ -15,6 +15,7 @@ import (
 type cacheLayout struct {
 	root, environment, directory, owner string
 	analysisKey, buildKey               string
+	parseAnalysisKey, parseBuildKey     string
 	snapshots                           map[string]string
 }
 
@@ -52,20 +53,34 @@ func newCacheLayout(session *dependencySession, configuration configuration, own
 	}
 	// Keep the project include context in both keys: it can affect __FILE__,
 	// relative flags and quoted includes. Package fingerprints are independent.
-	analysis, err := json.Marshal(struct {
+	analysisContext := struct {
 		Version                            int
 		Directory, Include, Runtime, Clang string
 		CFlags                             []string
 		Snapshots                          map[string]string
-	}{1, layout.directory, filepath.Join(owner, "include"), configuration.runtimeRoot, clangVersion(), configuration.cflags, layout.snapshots})
+	}{1, layout.directory, filepath.Join(owner, "include"), configuration.runtimeRoot, clangVersion(), configuration.cflags, make(map[string]string)}
+	parseAnalysis, err := json.Marshal(analysisContext)
+	if err != nil {
+		return nil, err
+	}
+	layout.parseAnalysisKey = repositoryDigest(parseAnalysis)
+	analysisContext.Snapshots = layout.snapshots
+	analysis, err := json.Marshal(analysisContext)
 	if err != nil {
 		return nil, err
 	}
 	layout.analysisKey = repositoryDigest(analysis)
-	build, err := json.Marshal(struct {
+	buildContext := struct {
 		Analysis, Compiler, Suffix string
 		LDFlags, Entries           []string
-	}{layout.analysisKey, configuration.cc, configuration.executableSuffix, configuration.ldflags, configuration.entrypoints})
+	}{layout.parseAnalysisKey, configuration.cc, configuration.executableSuffix, configuration.ldflags, configuration.entrypoints}
+	parseBuild, err := json.Marshal(buildContext)
+	if err != nil {
+		return nil, err
+	}
+	layout.parseBuildKey = repositoryDigest(parseBuild)
+	buildContext.Analysis = layout.analysisKey
+	build, err := json.Marshal(buildContext)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +89,22 @@ func newCacheLayout(session *dependencySession, configuration configuration, own
 }
 
 func (layout *cacheLayout) sourcePath(source string, fetch bool) (string, error) {
+	kind, key := "build", layout.buildKey
+	if fetch {
+		kind, key = "fetch", layout.analysisKey
+	}
+	return layout.sourcePathWithKey(source, kind, key)
+}
+
+func (layout *cacheLayout) parsePath(source string, fetch bool) (string, error) {
+	kind, key := filepath.Join("parse", "build"), layout.parseBuildKey
+	if fetch {
+		kind, key = filepath.Join("parse", "fetch"), layout.parseAnalysisKey
+	}
+	return layout.sourcePathWithKey(source, kind, key)
+}
+
+func (layout *cacheLayout) sourcePathWithKey(source, kind, key string) (string, error) {
 	canonical, err := realAbsolutePath(source, layout.directory)
 	if err != nil {
 		return "", err
@@ -115,10 +146,6 @@ func (layout *cacheLayout) sourcePath(source string, fetch bool) (string, error)
 			}
 			relative = filepath.Base(absolute)
 		}
-	}
-	kind, key := "build", layout.buildKey
-	if fetch {
-		kind, key = "fetch", layout.analysisKey
 	}
 	path := filepath.Join(owner, kind, key, relative)
 	parent, err := filepath.Rel(layout.root, filepath.Dir(path))

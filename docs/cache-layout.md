@@ -40,17 +40,18 @@ HARD_ROOT/
     `-- host/                                  # HARD_ENV: analysis and build environment
         |-- root/                              # Local project state
         |   |-- workspace/example/             # Absolute project directory without leading /
-        |   |   |-- dependencies.json          # Input-validated discovery hint, not project pins
         |   |   |-- include/                   # Selected dependencies for this project
         |   |   |   |-- github.com/hard-build/
         |   |   |   |   `-- library -> .../snapshot/github.com/hard-build/library/@<hard-commit>
         |   |   |   `-- hard -> github.com/hard-build/library
         |   |   |                              # Short include namespace
-        |   |   |-- fetch/<analysis-key>/       # Fetch analysis configuration
-        |   |   |   `-- main.cpp.hard-parse-cache.json
+        |   |   |-- parse/                     # Analysis records independent of selected snapshots
+        |   |   |   |-- fetch/<context-key>/
+        |   |   |   |   `-- main.cpp.hard-parse-cache.json
+        |   |   |   `-- build/<context-key>/
+        |   |   |       `-- main.cpp.hard-parse-cache.json
+        |   |   |                              # May include the last validated dependency selection
         |   |   `-- build/<build-key>/          # Build configuration
-        |   |       |-- main.cpp.hard-parse-cache.json
-        |   |       |                          # Build/run/test analysis record
         |   |       |-- main.cpp.fwd.h         # Generated source-context declarations
         |   |       |-- main.cpp.o              # Local project object
         |   |       |-- main.cpp.o.hard-cache.json
@@ -59,16 +60,17 @@ HARD_ROOT/
         |   |       `-- main.hard-cache.json   # Link input and output validation
         |   |
         |   `-- workspace/example2/            # Second local project's state
-        |       |-- dependencies.json          # Last unrecorded dependency selection and inputs
         |       |-- include/
         |       |   `-- github.com/leethomason/
         |       |       `-- tinyxml2 -> .../snapshot/github.com/leethomason/tinyxml2/@<tinyxml2-commit>
         |       |                              # Source snapshot, not installed package
-        |       |-- fetch/<analysis-key>/
-        |       |   `-- main.cpp.hard-parse-cache.json
-        |       |                              # Includes the local recipe's analysis inputs
+        |       |-- parse/
+        |       |   |-- fetch/<context-key>/
+        |       |   |   `-- main.cpp.hard-parse-cache.json
+        |       |   |                          # Includes the local recipe's analysis inputs
+        |       |   `-- build/<context-key>/
+        |       |       `-- main.cpp.hard-parse-cache.json
         |       `-- build/<build-key>/
-        |           |-- main.cpp.hard-parse-cache.json
         |           |-- main.cpp.fwd.h
         |           |-- main.cpp.o              # Second project's object
         |           |-- main.cpp.o.hard-cache.json
@@ -77,13 +79,15 @@ HARD_ROOT/
         |
         `-- github.com/                        # Shared logical repository state
             |-- hard-build/library/
-            |   |-- fetch/<analysis-key>/
+            |   |-- parse/fetch/<context-key>/
             |   |   `-- ...                    # Discovered library translation-unit analysis
+            |   |-- parse/build/<context-key>/
+            |   |   `-- ...                    # Direct library source analysis
             |   `-- build/<build-key>/
             |       `-- ...                    # Library objects, forwards and cache records
             |
             `-- leethomason/tinyxml2/
-                |-- fetch/<analysis-key>/
+                |-- parse/fetch/<context-key>/
                 |   `-- tinyxml2.cpp.hard-parse-cache.json
                 `-- package/<fingerprint>/     # Recipe, source and build-tool identity
                     |-- manifest.json          # Selected generation and installed file digests
@@ -149,7 +153,10 @@ wrapper; `@runtime/wine` is initialized only when Wine is used.
   incompatible flags, dependency selections or project-specific include contexts.
   Direct compilation currently keeps each invocation directory's context in
   the keys; cross-project package reuse is independent of this restriction.
-- Analysis/build directory keys distinguish configurations. Ordinary local
+- Parse directory keys distinguish configurations and invocation contexts but
+  exclude selected snapshots. Each parse record checks its selected snapshot
+  key and content inputs before reuse; the last result for one source/context
+  replaces its predecessor when revisions change. Ordinary local
   source edits invalidate individual content-checked records rather than
   creating a complete new configuration tree. Relative source paths are
   preserved within each owner's cache.
@@ -173,21 +180,23 @@ trees. Old caches are left untouched, and the first invocation after upgrading
 may download and build again. Historical container images keep their historical
 backend and runtime layout; changing cache paths does not republish those images.
 
-Unrecorded commands save the last successfully resolved dependency selection
-in the local owner's `dependencies.json`, together with input content digests.
-The hint is restored under the project/environment lock before refreshing
-`include/`. Its context includes the hard executable, command, root sources,
-project configuration and configured build context. Changed sources, headers,
-used `@default` files, malformed records, or `--no-cache` cause fresh discovery.
+Unrecorded commands attach the last successfully resolved dependency selection
+and input digests to a successful root-source parse record. Its stable path can
+be found before selecting snapshots, under the project/environment lock. The
+record's context includes the hard executable, command, root sources, project
+configuration and configured build context. Changed sources, headers, used
+`@default` files, malformed records, or `--no-cache` cause fresh discovery.
 Sources using the existing `__has_include` cache guard do not publish this hint;
 the existing include-path topology limitations still apply.
 
 This is disposable cache state, not a lockfile or a project choice. Restored
 snapshots are verified and inherited requirements are checked on active include
 edges. Project recording bypasses this hint and retains its normal authority.
-Warm unchanged invocations can immediately use final-selection parse records.
+Warm unchanged invocations can immediately use validated parse records.
 Cold or invalidated invocations may need multiple analysis passes, but root
 source discovery runs only once. No `hard.yaml` is created implicitly.
+The former standalone `dependencies.json` is ignored and left untouched if it
+already exists; no new one is written.
 
 Regression tests cover default reuse and concurrent publication, pinning and
 inheritance, fork paths, corruption detection, owner and configuration routing,

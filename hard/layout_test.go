@@ -14,7 +14,7 @@ func projectFetchRecord(t *testing.T, configuration configuration, project, sour
 	if err != nil {
 		t.Fatal(err)
 	}
-	matches, err := filepath.Glob(filepath.Join(owner, "fetch", "*", source+parseCacheSuffix))
+	matches, err := filepath.Glob(filepath.Join(owner, "parse", "fetch", "*", source+parseCacheSuffix))
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("expected one analysis record for %s: %v, %v", source, matches, err)
 	}
@@ -47,6 +47,19 @@ func TestProjectIncludeLockAndConfigurationKeys(t *testing.T) {
 	path, err := before.sourcePath(source, false)
 	if err != nil || path != filepath.Join(owner, "build", before.buildKey, "src/main.cpp") {
 		t.Fatalf("relative source layout: %s, %v", path, err)
+	}
+	parsePath, err := before.parsePath(source, false)
+	if err != nil || parsePath != filepath.Join(owner, "parse", "build", before.parseBuildKey, "src/main.cpp") {
+		t.Fatalf("selection-independent parse layout: %s, %v", parsePath, err)
+	}
+	session.selected["github.com/demo/library"] = filepath.Join(configuration.root, "snapshot", "github.com/demo/library", "@"+firstCommit)
+	withSelection, err := newCacheLayout(session, configuration, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedParsePath, err := withSelection.parsePath(source, false)
+	if err != nil || selectedParsePath != parsePath || withSelection.buildKey == before.buildKey {
+		t.Fatalf("snapshot changed parse path or failed to change build key: %s, %v", selectedParsePath, err)
 	}
 	writeProjectTestFile(t, project, "src/main.cpp", "int main() { return 1; }\n")
 	if _, err := session.view(configuration, nil); err != nil {
