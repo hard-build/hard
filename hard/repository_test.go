@@ -31,6 +31,9 @@ func newRepositoryTestProxy(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	requests := &atomic.Int32{}
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		requests.Add(1)
+		if request.Header.Get("Accept") != "application/vnd.github+json" {
+			t.Error("changed the proxy response format")
+		}
 		switch request.URL.Path {
 		case "/v1/resolve":
 			commit := firstCommit
@@ -319,11 +322,18 @@ func TestGitHubPinnedProviderAndExplicitProxyFallback(t *testing.T) {
 		mutex.Lock()
 		requests = append(requests, request.URL.EscapedPath())
 		mutex.Unlock()
+		accept := "application/vnd.github+json"
+		if strings.Contains(request.URL.Path, "/commits/") {
+			accept = "application/vnd.github.sha"
+		}
+		if request.Header.Get("Accept") != accept {
+			t.Errorf("Accept for %s: %q, want %q", request.URL.Path, request.Header.Get("Accept"), accept)
+		}
 		switch request.URL.EscapedPath() {
 		case "/repos/demo/first":
 			_, _ = io.WriteString(response, `{"default_branch":"feature/branch"}`)
 		case "/repos/demo/first/commits/feature%2Fbranch":
-			_ = json.NewEncoder(response).Encode(map[string]string{"sha": firstCommit})
+			_, _ = io.WriteString(response, firstCommit+"\n")
 		case "/repos/demo/first/tarball/" + firstCommit:
 			_, _ = response.Write(archive)
 		default:
@@ -356,5 +366,160 @@ func TestGitHubPinnedProviderAndExplicitProxyFallback(t *testing.T) {
 	defer mutex.Unlock()
 	if len(requests) != 6 || requests[len(requests)-1] != "/repos/demo/first/tarball/"+firstCommit {
 		t.Fatalf("requests: %v", requests)
+	}
+}
+
+func TestGitHubRevisionSHAResponse(t *testing.T) {
+	for _, test := range []struct {
+		name, ref, path string
+	}{
+		{"default branch", "", "feature%2Fbranch"},
+		{"branch", "feature/branch", "feature%2Fbranch"},
+		{"tag", "10.0.0", "10.0.0"},
+		{"qualified tag", "tags/10.0.0", "tags%2F10.0.0"},
+		{"commit", firstCommit, firstCommit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var metadata, commits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if request.Header.Get("User-Agent") != "hard" || request.Header.Get("X-GitHub-Api-Version") != githubAPIVersion {
+					t.Error("changed GitHub request headers")
+				}
+				switch request.URL.EscapedPath() {
+				case "/repos/demo/first":
+					metadata.Add(1)
+					if request.Header.Get("Accept") != "application/vnd.github+json" {
+						t.Error("repository metadata no longer requests JSON")
+					}
+					_, _ = io.WriteString(response, `{"default_branch":"feature/branch"}`)
+				case "/repos/demo/first/commits/" + test.path:
+					commits.Add(1)
+					if request.Header.Get("Accept") == "application/vnd.github.sha" {
+						_, _ = io.WriteString(response, firstCommit+"\n")
+						return
+					}
+					// Large commit patches must not be downloaded just to resolve a ref.
+					t.Error("commit resolution did not request the SHA response")
+					_ = json.NewEncoder(response).Encode(map[string]any{"sha": firstCommit, "files": []map[string]string{{"patch": strings.Repeat("x", 1<<20)}}})
+				default:
+					t.Errorf("unexpected GitHub request: %s", request.URL.EscapedPath())
+					http.NotFound(response, request)
+				}
+			}))
+			defer server.Close()
+			provider := newRepositoryProvider(repositoryConfiguration{})
+			provider.githubURL = server.URL
+			pin, err := provider.resolve("github.com/demo/first", test.ref)
+			ref := test.ref
+			if ref == "" {
+				ref = "feature/branch"
+			}
+			if err != nil || pin != (repositoryPin{Source: "github.com/demo/first", Ref: ref, Commit: firstCommit}) {
+				t.Fatalf("SHA resolution: %#v, %v", pin, err)
+			}
+			if commits.Load() != 1 || metadata.Load() != map[bool]int32{true: 1, false: 0}[test.ref == ""] {
+				t.Fatalf("unexpected request counts: metadata=%d commits=%d", metadata.Load(), commits.Load())
+			}
+		})
+	}
+}
+
+func TestGitHubRevisionSHAValidation(t *testing.T) {
+	for _, test := range []struct {
+		name, body, commit string
+		status             int
+		truncated          bool
+	}{
+		{name: "SHA1", body: firstCommit, commit: firstCommit},
+		{name: "SHA256", body: strings.Repeat("a", 64), commit: strings.Repeat("a", 64)},
+		{name: "whitespace", body: " \t" + firstCommit + "\r\n", commit: firstCommit},
+		{name: "limit", body: firstCommit + strings.Repeat(" ", 1024-len(firstCommit)), commit: firstCommit},
+		{name: "empty"},
+		{name: "abbreviated", body: firstCommit[:7]},
+		{name: "uppercase", body: strings.ToUpper(firstCommit)},
+		{name: "nonhex", body: strings.Repeat("z", 40)},
+		{name: "JSON", body: `{"sha":"` + firstCommit + `"}`},
+		{name: "trailing data", body: firstCommit + "\nfixture-credential"},
+		{name: "oversized", body: firstCommit + strings.Repeat(" ", 1025-len(firstCommit))},
+		{name: "hidden trailing data", body: firstCommit + strings.Repeat(" ", 2048) + "fixture-credential"},
+		{name: "truncated", body: firstCommit, truncated: true},
+		{name: "not found", status: http.StatusNotFound, body: "fixture-credential"},
+		{name: "unauthorized", status: http.StatusUnauthorized, body: "fixture-credential"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if test.truncated {
+					response.Header().Set("Content-Length", "100")
+				}
+				if test.status != 0 {
+					response.WriteHeader(test.status)
+				}
+				_, _ = io.WriteString(response, test.body)
+			}))
+			defer server.Close()
+			provider := newRepositoryProvider(repositoryConfiguration{})
+			provider.githubURL = server.URL
+			pin, err := provider.resolve("github.com/demo/first", "release")
+			if test.commit != "" {
+				if err != nil || pin.Commit != test.commit {
+					t.Fatalf("valid SHA rejected: %#v, %v", pin, err)
+				}
+				return
+			}
+			if err == nil || pin.Commit != "" || strings.Contains(err.Error(), "fixture-credential") || strings.Contains(err.Error(), server.URL) {
+				t.Fatalf("invalid response accepted or disclosed: %#v, %v", pin, err)
+			}
+			if test.status != 0 {
+				var status *repositoryHTTPError
+				if !errors.As(err, &status) || status.status != test.status {
+					t.Fatalf("lost HTTP status: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubRevisionRedirectAuthorization(t *testing.T) {
+	for _, scoped := range []bool{false, true} {
+		t.Run(map[bool]string{false: "anonymous destination", true: "scoped destination"}[scoped], func(t *testing.T) {
+			var redirected atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				redirected.Add(1)
+				want := ""
+				if scoped {
+					want = "Bearer destination-fixture"
+				}
+				if request.Header.Get("Authorization") != want || request.Header.Get("Accept") != "application/vnd.github.sha" {
+					t.Error("redirect changed the media type or credential scope")
+				}
+				_, _ = io.WriteString(response, firstCommit)
+			}))
+			defer target.Close()
+			origin := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if request.Header.Get("Authorization") != "Bearer origin-fixture" {
+					t.Error("missing origin credentials")
+				}
+				http.Redirect(response, request, target.URL+"/commit", http.StatusFound)
+			}))
+			defer origin.Close()
+			contents := "auth:\n  " + strings.TrimPrefix(origin.URL, "http://") + ":\n    token_env: HARD_AUTH_ORIGIN\n"
+			if scoped {
+				contents += "  " + strings.TrimPrefix(target.URL, "http://") + ":\n    token_env: HARD_AUTH_DESTINATION\n"
+			}
+			t.Setenv("HARD_CONFIG", writeProjectTestFile(t, t.TempDir(), "config.yaml", contents))
+			t.Setenv("HARD_PROXY", "")
+			t.Setenv("HARD_AUTH_ORIGIN", "origin-fixture")
+			t.Setenv("HARD_AUTH_DESTINATION", "destination-fixture")
+			configuration, err := loadRepositoryConfiguration()
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := newRepositoryProvider(configuration)
+			provider.githubURL = origin.URL
+			pin, err := provider.resolve("github.com/demo/first", "release")
+			if err != nil || pin.Commit != firstCommit || redirected.Load() != 1 {
+				t.Fatalf("redirected resolution: %#v, %v (requests=%d)", pin, err, redirected.Load())
+			}
+		})
 	}
 }

@@ -452,7 +452,7 @@ The presence of `repositories`, even `{}`, enables dependency recording:
 hard fetch --lock
 hard build
 hard test --locked
-hard fetch --update=github.com/leethomason/tinyxml2@9.0.0
+hard fetch --update=github.com/leethomason/tinyxml2@10.0.0
 ```
 
 `fetch --lock` creates the file or adds the section. Normal `fetch`, `build`,
@@ -471,7 +471,7 @@ resolving the inherited branch or tag again. Only dependencies reached by
 active includes or recipes are added; unrelated records, `format`, and `exclude`
 are not imported. The project's recorded selection and explicit `--update`
 take precedence over inherited pins, including under `--locked`. For example,
-the TinyXML2 update above selects `9.0.0` even if its recipe records `11.0.0`.
+the TinyXML2 update above selects `10.0.0` even if its recipe records `11.0.0`.
 An automatically inherited entry becomes a project choice once recorded;
 updating the recipe repository does not implicitly update its libraries.
 Without a project choice, conflicting inherited sources, commits, or checksums

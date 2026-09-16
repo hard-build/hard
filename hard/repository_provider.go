@@ -125,13 +125,13 @@ func (err *repositoryHTTPError) Error() string {
 	return fmt.Sprintf("dependency server returned HTTP %d", err.status)
 }
 
-func (provider *repositoryProvider) request(address string, mirror bool) (*http.Response, error) {
+func (provider *repositoryProvider) request(address string, mirror bool, accept string) (*http.Response, error) {
 	request, err := http.NewRequest(http.MethodGet, address, nil)
 	if err != nil {
 		return nil, errors.New("invalid dependency request URL")
 	}
 	request.Header.Set("User-Agent", "hard")
-	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Accept", accept)
 	request.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
 	if err := provider.authorize(request); err != nil {
 		return nil, err
@@ -170,7 +170,7 @@ func (provider *repositoryProvider) authorize(request *http.Request) error {
 }
 
 func (provider *repositoryProvider) readJSON(address string, mirror bool, value any) error {
-	response, err := provider.request(address, mirror)
+	response, err := provider.request(address, mirror, "application/vnd.github+json")
 	if err != nil {
 		return err
 	}
@@ -231,23 +231,29 @@ func (provider *repositoryProvider) resolve(source, ref string) (repositoryPin, 
 			return pin, errors.New("GitHub returned an invalid default branch")
 		}
 	}
-	var result struct {
-		SHA string `json:"sha"`
-	}
-	if err := provider.readJSON(base+"/commits/"+url.PathEscape(pin.Ref), false, &result); err != nil {
+	// Only the SHA is needed; the full commit JSON can contain very large patches.
+	response, err := provider.request(base+"/commits/"+url.PathEscape(pin.Ref), false, "application/vnd.github.sha")
+	if err != nil {
 		return pin, err
 	}
-	if !repositoryCommitPattern.MatchString(result.SHA) {
+	defer response.Body.Close()
+	const maxCommitResponseSize = 1024
+	contents, err := io.ReadAll(io.LimitReader(response.Body, maxCommitResponseSize+1))
+	if err != nil || len(contents) > maxCommitResponseSize {
+		return pin, errors.New("invalid GitHub commit response")
+	}
+	commit := strings.TrimSpace(string(contents))
+	if !repositoryCommitPattern.MatchString(commit) {
 		return pin, errors.New("GitHub returned an invalid commit")
 	}
-	pin.Commit = result.SHA
+	pin.Commit = commit
 	return pin, nil
 }
 
 func (provider *repositoryProvider) snapshot(pin repositoryPin) (io.ReadCloser, error) {
 	if proxy := provider.configuration.Proxy.URL; proxy != "" {
 		query := url.Values{"source": {pin.Source}, "commit": {pin.Commit}}
-		response, err := provider.request(proxy+"/v1/snapshot?"+query.Encode(), true)
+		response, err := provider.request(proxy+"/v1/snapshot?"+query.Encode(), true, "application/vnd.github+json")
 		if err == nil {
 			return response.Body, nil
 		}
@@ -258,7 +264,7 @@ func (provider *repositoryProvider) snapshot(pin repositoryPin) (io.ReadCloser, 
 	if !validLogicalRepository(pin.Source) {
 		return nil, fmt.Errorf("source %s requires a dependency proxy", pin.Source)
 	}
-	response, err := provider.request(provider.githubURL+"/repos/"+strings.TrimPrefix(pin.Source, "github.com/")+"/tarball/"+pin.Commit, false)
+	response, err := provider.request(provider.githubURL+"/repos/"+strings.TrimPrefix(pin.Source, "github.com/")+"/tarball/"+pin.Commit, false, "application/vnd.github+json")
 	if err != nil {
 		return nil, err
 	}

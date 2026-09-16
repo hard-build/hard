@@ -1417,17 +1417,18 @@ exclusive. Only fetch accepts `--lock` and `--update`; build, fetch, run, and
 test accept `--locked`.
 
 Explicit updates override inherited pins. For example,
-`hard fetch --update=github.com/leethomason/tinyxml2@9.0.0` selects `9.0.0`
+`hard fetch --update=github.com/leethomason/tinyxml2@10.0.0` selects `10.0.0`
 even when `recipe/hard.yaml` records `11.0.0`, without editing or forking the
 recipe repository. Repeating `fetch --lock` preserves that project selection.
 This permits an override; it does not guarantee API, ABI, or recipe compatibility
 with the chosen version. Existing corporate replacement restrictions still
 apply to recorded entries and explicit updates.
 
-Known limitation: direct GitHub revision resolution currently rejects JSON
-responses larger than 1 MiB as `invalid dependency server JSON response`.
-This affects some large commits, including TinyXML2 `10.0.0`, before dependency
-selection. Such a failure leaves the project record unchanged.
+Direct GitHub revision lookup requests only the full commit SHA, not the commit's
+metadata and patches, so large commits do not require large JSON responses.
+The SHA response is size-limited and validated; malformed or truncated responses
+fail without changing the project record. The corporate proxy's JSON protocol
+is unchanged.
 
 `--locked` requires an existing repositories section and fails on an unrecorded
 dependency without resolving its branch. Recorded snapshots absent from the

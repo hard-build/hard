@@ -1542,8 +1542,12 @@ not authorize changing old ones. Conflicting project and corporate source
 rules must produce a diagnostic rather than silently selecting a winner.
 
 The provider implements GitHub default-branch lookup, commit resolution and
-tarball-by-commit download. Other source hosts require a proxy. The proxy
-contract is `GET /v1/resolve?source=...&ref=...`, returning JSON `commit` and
+tarball-by-commit download. Commit resolution uses `application/vnd.github.sha`
+to request only the full SHA rather than metadata and patches. It rejects bodies
+larger than 1 KiB or interrupted reads, trims surrounding whitespace, and accepts
+only a full lowercase 40- or 64-digit hexadecimal commit ID. Metadata and proxy
+requests keep their JSON format and limit. Other source hosts require a proxy.
+The proxy contract is `GET /v1/resolve?source=...&ref=...`, returning JSON `commit` and
 `ref`, and `GET /v1/snapshot?source=...&commit=...`, returning a safe single-root
 tar.gz archive. Both operations stay on the proxy, including reference lookup.
 `fallback: true` permits direct GitHub fallback only on HTTP 404/502/503/504,
@@ -1695,8 +1699,34 @@ library and application, then reused package/parse/object/link caches on repeat.
 A separate XML smoke program printed `tinyxml2=9.0.0 answer=42`.
 Repeating `fetch --lock` preserved the project file byte-for-byte. Original
 project sources, binary and YAML, installed runtime, and tags were not changed.
-The attempted update to `10.0.0` exposed the pre-existing GitHub JSON size limit
-documented below; its failure also left the project file unchanged.
+The attempted update to `10.0.0` exposed a pre-existing GitHub JSON size limit;
+its failure also left the project file unchanged. The provider fix below
+supersedes that limitation.
+
+After a separately approved plan, GitHub commit resolution now requests only
+the SHA with the existing API version `2022-11-28`. The old full-commit JSON for
+TinyXML2 `10.0.0` exceeded the 1 MiB decoder limit (1,204,533 bytes even after
+compaction), causing `invalid dependency server JSON response`. The SHA media
+type removes those unused patches and metadata from the response instead of
+increasing the JSON limit. Authentication, redirect policy, proxy fallback,
+snapshot downloads, and pin/checksum semantics are unchanged.
+
+The new large-commit fixture first reproduced the failure on the old code.
+Regression coverage now includes default and slash-containing branches, tags,
+qualified refs and full commits, bounded SHA reads, empty/short/non-hex/JSON/
+trailing/oversized/truncated responses, HTTP status preservation, sanitized
+errors, proxy JSON requests and explicit fallback, and destination-scoped
+credentials after direct redirects. The complete `make check` and ten repeated
+race runs of the provider/redirect regressions passed.
+A fresh runtime and copy of `test_recipe` under `/tmp/hard-github-sha.O67si5`
+successfully updated TinyXML2 from `11.0.0` to `10.0.0` at
+`321ea883b7190d4e85cae5512a12e5eaa8f8731f`, keeping the recipe record unchanged.
+Locked execution built and ran the project; a repeat reused package, parse,
+compile and link caches. An XML smoke program printed
+`tinyxml2=10.0.0 answer=42`. A following locked fetch left the new YAML
+byte-identical. The original project sources, binary and YAML, installed
+runtime, and tags were untouched. Fetch parse caching is still separate pending
+work and is not part of this provider fix.
 
 ## Forward declarations
 
@@ -2500,13 +2530,6 @@ to leave the library unchanged for now.
 
 ## Known gaps and deliberately unchanged issues
 
-- Direct GitHub revision lookup uses the full commit JSON and limits reads to
-  1 MiB in `repositoryProvider.readJSON`. The TinyXML2 `10.0.0` response on
-  2026-09-16 exceeded that limit (1,204,533 bytes even after JSON compaction),
-  so `fetch --update=github.com/leethomason/tinyxml2@10.0.0` failed with
-  `invalid dependency server JSON response` before pin selection. The project
-  file stayed unchanged. This independent provider issue was diagnosed, not
-  fixed, during the project-precedence task; it needs a separate approved fix.
 - System-header and toolchain-state changes inside one `HARD_ENV` intentionally
   do not invalidate parse or object caches. Select a new environment after
   compiler, libclang resource, standard-library, libc, sysroot, ABI, target,
