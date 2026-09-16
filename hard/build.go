@@ -168,7 +168,7 @@ func buildSourcesWithProgressExecutable(
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
-	cache, err := newArtifactCache(!noCache)
+	cache, err := newArtifactCache(!noCache, githubResolver)
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}
@@ -639,7 +639,7 @@ func inspectBuildSourceWithCache(
 	if cache != nil {
 		cacheCandidateReady := true
 		var err error
-		recordPath, err = parseCachePath(root, environment, job.source)
+		recordPath, err = parseCachePath(root, environment, job.source, cache.paths())
 		if err != nil {
 			result.err = err
 			return result
@@ -684,10 +684,14 @@ func inspectBuildSourceWithCache(
 				return result
 			}
 			if cached {
+				if err := githubResolver.prepareInheritedIncludes(cachedIncludeAnalysis(record), workingDirectory); err != nil {
+					result.err = err
+					return result
+				}
 				if activity != nil {
 					activity(job.source, true)
 				}
-				forward, err := sourceForwardHeaderPath(root, environment, job.source)
+				forward, err := sourceForwardHeaderPath(root, environment, job.source, cache.paths())
 				if err != nil {
 					result.err = err
 					return result
@@ -737,7 +741,7 @@ func inspectBuildSourceWithCache(
 	}
 	var forwardError error
 	if err == nil && entryError == nil && cache != nil {
-		forward, pathError := sourceForwardHeaderPath(root, environment, job.source)
+		forward, pathError := sourceForwardHeaderPath(root, environment, job.source, cache.paths())
 		if pathError != nil {
 			forwardError = pathError
 		} else {
@@ -777,6 +781,7 @@ func inspectBuildSourceWithCache(
 			Dependencies:        append([]string(nil), result.cacheDependencies...),
 			ManagedDependencies: append([]string(nil), result.dependencies...),
 			LibraryHeaders:      append([]string(nil), result.libraryHeaders...),
+			Includes:            cacheIncludes(analysis),
 			EntryPoint:          result.entrypoint,
 			Forward:             result.forward,
 		},
@@ -1035,11 +1040,11 @@ func compileSourceBatchWithConfiguration(
 		if err != nil {
 			return nil, fmt.Errorf("make compile source absolute %s: %w", source, err)
 		}
-		object, err := objectFilePath(root, environment, source)
+		object, err := objectFilePath(root, environment, source, cache.paths())
 		if err != nil {
 			return nil, err
 		}
-		forward, err := sourceForwardHeaderPath(root, environment, source)
+		forward, err := sourceForwardHeaderPath(root, environment, source, cache.paths())
 		if err != nil {
 			return nil, err
 		}
@@ -1412,6 +1417,7 @@ func linkSourcesWithLibrariesExecutable(
 		rootSourceCount,
 		output,
 		workingDirectory,
+		cache.paths(),
 	)
 	if err != nil {
 		return err
@@ -1608,6 +1614,7 @@ func planLinkJobsWithLibrariesExecutable(
 	rootSourceCount int,
 	output string,
 	workingDirectory string,
+	layouts ...*cacheLayout,
 ) ([]linkJob, error) {
 	if len(dependenciesBySource) != len(sources) {
 		return nil, fmt.Errorf(
@@ -1669,7 +1676,7 @@ func planLinkJobsWithLibrariesExecutable(
 
 		objects := make([]string, 0, len(objectIndexes))
 		for _, objectIndex := range objectIndexes {
-			object, err := objectFilePath(root, environment, sources[objectIndex])
+			object, err := objectFilePath(root, environment, sources[objectIndex], layouts...)
 			if err != nil {
 				return nil, err
 			}
@@ -1681,6 +1688,7 @@ func planLinkJobsWithLibrariesExecutable(
 			environment,
 			sources[entryIndex],
 			executableSuffix,
+			layouts...,
 		)
 		if err != nil {
 			return nil, err
@@ -1935,7 +1943,10 @@ func compileSourceDisplayPath(root, source, workingDirectory string) string {
 	if err != nil {
 		return source
 	}
-	sourceRoot, err := filepath.EvalSymlinks(filepath.Join(absoluteRoot, "source"))
+	sourceRoot, err := filepath.EvalSymlinks(filepath.Join(absoluteRoot, "include"))
+	if errors.Is(err, os.ErrNotExist) {
+		sourceRoot, err = filepath.EvalSymlinks(filepath.Join(absoluteRoot, "source"))
+	}
 	if err != nil {
 		return source
 	}
@@ -2158,7 +2169,14 @@ func quoteShellArgument(argument string) string {
 	return "'" + strings.ReplaceAll(argument, "'", "'\"'\"'") + "'"
 }
 
-func objectFilePath(root, environment, source string) (string, error) {
+func objectFilePath(root, environment, source string, layouts ...*cacheLayout) (string, error) {
+	if len(layouts) != 0 && layouts[0] != nil {
+		path, err := layouts[0].sourcePath(source, false)
+		if err != nil {
+			return "", err
+		}
+		return path + ".o", nil
+	}
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("make HARD_ROOT absolute: %w", err)
@@ -2196,7 +2214,17 @@ func binaryArtifactPath(root, environment, source string) (string, error) {
 	return binaryArtifactPathWithSuffix(root, environment, source, "")
 }
 
-func binaryArtifactPathWithSuffix(root, environment, source, executableSuffix string) (string, error) {
+func binaryArtifactPathWithSuffix(root, environment, source, executableSuffix string, layouts ...*cacheLayout) (string, error) {
+	if len(layouts) != 0 && layouts[0] != nil {
+		path, err := layouts[0].sourcePath(source, false)
+		if err != nil {
+			return "", err
+		}
+		if sourceBinaryName(path) == "" {
+			return "", fmt.Errorf("cannot derive binary name from source: %s", source)
+		}
+		return appendExecutableSuffix(strings.TrimSuffix(path, filepath.Ext(path)), executableSuffix), nil
+	}
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("make HARD_ROOT absolute: %w", err)

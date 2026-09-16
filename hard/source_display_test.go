@@ -16,19 +16,19 @@ func TestPinnedSourceDisplayPaths(t *testing.T) {
 	project := filepath.Join(workspace, "project")
 	local := writeProjectTestFile(t, project, "local.cpp", "")
 	cache := filepath.Join(workspace, "cache [data]")
-	view := filepath.Join(cache, "project", "selection")
-	snapshot := filepath.Join(cache, "snapshot", repositoryDigest([]byte("git.corp.example/fork/library")), firstCommit)
+	view := filepath.Join(cache, "project", "host", "root", "workspace", "project")
+	snapshot := filepath.Join(cache, "snapshot", "git.corp.example/fork/library", "@"+firstCommit)
 	external := writeProjectTestFile(t, snapshot, "src/value.cpp", "")
 	otherRevision := writeProjectTestFile(t, filepath.Dir(snapshot), secondCommit+"/src/value.cpp", "")
 	prefixSibling := writeProjectTestFile(t, snapshot+"-other", "src/value.cpp", "")
-	alias := filepath.Join(view, "source", "github.com", "hard-build", "library")
+	alias := filepath.Join(view, "include", "github.com", "hard-build", "library")
 	if err := os.MkdirAll(filepath.Dir(alias), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureWellKnownGitHubRepositoryAlias(alias, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	wellKnown := filepath.Join(view, "source", "hard")
+	wellKnown := filepath.Join(view, "include", "hard")
 	if err := ensureWellKnownGitHubRepositoryAlias(wellKnown, alias); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestPinnedSourceProgress(t *testing.T) {
 			}
 		}
 		if args[0] == "build" {
-			snapshotSource := filepath.Join(configuration.root, "snapshot", repositoryDigest([]byte("github.com/demo/library")), firstCommit, "value.cpp")
+			snapshotSource := filepath.Join(configuration.root, "snapshot", "github.com/demo/library", "@"+firstCommit, "value.cpp")
 			if !strings.Contains(out, " -c "+quoteShellArgument(snapshotSource)+" -o ") {
 				t.Errorf("compiler command lost physical source path:\n%s", out)
 			}

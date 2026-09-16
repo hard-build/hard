@@ -232,7 +232,7 @@ hard fetch -j src tests
 ```
 
 `fetch` performs dependency analysis but does not compile, link, run CMake,
-create environment artifacts, or execute tests. Existing snapshots are reused.
+create build artifacts, or execute tests. Existing snapshots are reused.
 Successful analysis is cached separately from build artifacts. Repeating an
 unchanged invocation reports `Parsing <source> (CACHED)`, including discovered
 library implementations. Source/header changes, analysis flags, `HARD_ENV`,
@@ -282,8 +282,8 @@ runtime inputs such as files, services, network responses, or time matter.
 ## Dependencies and Recipes
 
 Without dependency recording, an include below the public GitHub namespace
-downloads the repository's current default-branch snapshot when it is not
-already cached:
+resolves the default branch to an exact commit on first use and downloads its
+snapshot. Later invocations reuse that commit from a regular `@default` file:
 
 ```cpp
 #include <github.com/nlohmann/json/single_include/nlohmann/json.hpp>
@@ -309,9 +309,10 @@ behavior are documented in the
 [compiled-library recipe reference](docs/reference.md#compiled-library-recipes).
 
 Compiled libraries are shared between projects under
-`HARD_ROOT/env/HARD_ENV/library`. Identical recipe contents, vendor sources and
-build tools reuse one package; a different environment or package input keeps
-its own cache. `--no-cache` builds a new package generation without removing
+`HARD_ROOT/project/HARD_ENV/<logical-repository>/package`. Identical recipe
+contents, vendor sources and build tools reuse one package; a different
+environment or package input keeps its own cache. `--no-cache` builds a new
+package generation without removing
 files that another running build may still use.
 
 Downloaded repository directories are persistent snapshots and are not
@@ -498,14 +499,16 @@ overridden library version remains the project's responsibility.
 
 Repository updates are atomic after successful dependency resolution. Other
 settings and their comments are preserved. Commit `hard.yaml` with the project.
-Omitting `repositories` retains the unpinned dependency behavior. `format`,
-`version`, and `environment` do not download repositories or update the record.
+Omitting `repositories` uses cached defaults and inherited requirements without
+creating or modifying `hard.yaml`. `fetch --lock` can record a cached default;
+when only its commit is known, the recorded `ref` is that exact commit.
+`format`, `version`, and `environment` do not download repositories or update
+the record.
 
 Corporate forks and mirrors use a separate `HARD_CONFIG` file, with optional
 `HARD_PROXY` override and host-scoped credential environment variables. A
 replacement selects another source; a proxy transports the same pinned
-contents. Corporate configuration requires dependency recording and never
-silently falls back to the old downloader. See the
+contents. Corporate configuration requires dependency recording. See the
 [dependency and proxy reference](docs/reference.md#project-configuration-and-pinned-dependencies)
 for the schema, conflict rules, cache layout, and proxy protocol.
 
@@ -573,37 +576,43 @@ The portable installer uses:
     └── hard/              downloaded sources and persistent caches
 ```
 
-Without dependency recording, persistent state below `HARD_ROOT` is separated
-into shared sources and environment-specific artifacts:
+All source-processing commands use the same persistent layout, with or without
+dependency recording:
 
 ```text
 HARD_ROOT/
-├── source/
-│   ├── github.com/
-│   ├── hard -> github.com/hard-build/library
-│   └── recipe -> github.com/hard-build/recipe
-├── fetch/
-│   └── HARD_ENV/          dependency-analysis records, mirrored source paths
-└── env/
-    ├── host/
-    ├── linux64:v4.0-glibc.2.35/
-    ├── linux64:v4.0-musl.1.2.5-static/
-    └── windows64:v4.0-llvm-mingw.20260616-ucrt/
+├── snapshot/<actual-source>/
+│   ├── @default                       # Regular file containing a full commit ID
+│   ├── @<commit>/                     # Immutable source tree
+│   └── @<commit>.checksum             # Source-tree integrity record
+└── project/<HARD_ENV>/
+    ├── root/<absolute-project-dir>/
+    │   ├── include/                   # Selected repository symlinks and aliases
+    │   ├── fetch/<analysis-key>/      # Fetch-only analysis records
+    │   └── build/<build-key>/         # Local analysis, forwards, objects and binaries
+    └── <logical-repository>/
+        ├── fetch/<analysis-key>/      # Library source analysis
+        ├── build/<build-key>/         # Directly compiled library sources
+        └── package/<fingerprint>/     # Recipe-built packages and retained generations
 ```
 
-Generated forwards, objects, internal binaries, package installations, and
-build cache records remain below `env/HARD_ENV`; fetch-only analysis records
-remain below `fetch/HARD_ENV`. Build binaries are copied
-according to `-o` or beside their entry sources; run and test binaries remain
-internal. Executable suffixes and runners come from the corresponding generic
-configuration variables, not from `HARD_ENV`.
+`<absolute-project-dir>` is the invocation directory without its leading slash.
+Source-relative paths are preserved inside configuration directories; editing
+a local source invalidates its content records without creating a new key.
+A project/environment lock keeps `include/` stable for the command. Configuration
+keys retain the project include context for direct compilation; recipe packages
+can be reused across projects with identical package inputs.
 
-Pinned projects instead use shared `snapshot/` directories and isolated
-`project/<selection-digest>/` source views, analysis records and application
-artifacts. Compiled libraries still use the shared
-`HARD_ROOT/env/HARD_ENV/library` cache; see the
-[pinned cache layout](docs/reference.md#pinned-source-and-artifact-layout).
-For pinned dependencies, `Parsing` and `Compiling` progress labels still use
+The [annotated cache tree](docs/cache-layout.md) includes examples for
+`hard/library` and a local TinyXML2 recipe, as well as selection and locking
+rules. No top-level `source`, `fetch`, or `env` tree is created by the backend.
+The version-independent Windows image stores its shared Wine prefix at
+`project/<HARD_ENV>/@runtime/wine`; historical images keep their original paths.
+Old caches are left intact, but are not silently adopted as verified snapshots.
+The first invocation after this layout change may download and build again.
+
+Build binaries are copied according to `-o` or beside their entry sources;
+run and test binaries remain internal. `Parsing` and `Compiling` labels use
 logical repository paths such as `github.com/leethomason/tinyxml2/tinyxml2.cpp`,
 not internal snapshot paths. Verbose compiler commands retain the real paths.
 Stale generated artifacts, old library generations and downloaded snapshots

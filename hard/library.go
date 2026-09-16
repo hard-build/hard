@@ -168,6 +168,9 @@ func (manager *libraryManager) prepareRecipe(
 		return libraryArtifact{}, err
 	}
 	sourceRoot, err := githubRepositoryDirectory(manager.root, repository.owner, repository.name)
+	if session := manager.githubResolver.session; session != nil {
+		sourceRoot = session.selected[recipe.Source]
+	}
 	if err != nil {
 		return libraryArtifact{}, err
 	}
@@ -261,8 +264,17 @@ func (manager *libraryManager) buildRecipe(
 	if err != nil {
 		return libraryArtifact{}, err
 	}
-	if err := os.MkdirAll(packageRoot, 0o755); err != nil {
-		return libraryArtifact{}, fmt.Errorf("create library cache directory %s: %w", packageRoot, err)
+	cacheRoot, err = filepath.Abs(cacheRoot)
+	if err != nil {
+		return libraryArtifact{}, err
+	}
+	relativePackage, err := filepath.Rel(cacheRoot, packageRoot)
+	if err != nil {
+		return libraryArtifact{}, err
+	}
+	packageRoot, err = ensureCacheDirectory(cacheRoot, relativePackage)
+	if err != nil {
+		return libraryArtifact{}, fmt.Errorf("create library cache directory: %w", err)
 	}
 	info, err := os.Lstat(packageRoot)
 	if err != nil {
@@ -581,16 +593,16 @@ func libraryPackageRoot(root, environment, source, fingerprint string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("make HARD_ROOT absolute: %w", err)
 	}
-	environmentRoot := filepath.Join(absoluteRoot, "env")
-	libraryRoot := filepath.Join(environmentRoot, environment, "library")
-	if !pathWithin(environmentRoot, libraryRoot) {
-		return "", fmt.Errorf("HARD_ENV escapes environment directory: %s", environment)
+	libraryRoot, err := projectEnvironmentRoot(absoluteRoot, environment)
+	if err != nil {
+		return "", err
 	}
 	packageRoot := filepath.Join(
 		libraryRoot,
 		"github.com",
 		repository.owner,
 		repository.name,
+		"package",
 		fingerprint,
 	)
 	if !pathWithin(libraryRoot, packageRoot) {

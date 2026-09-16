@@ -64,6 +64,24 @@ type parseCacheInclude struct {
 	Spelling string `json:"spelling"`
 }
 
+func cacheIncludes(analysis clangAnalysis) []parseCacheInclude {
+	var includes []parseCacheInclude
+	for _, include := range analysis.includes {
+		if !include.system {
+			includes = append(includes, parseCacheInclude{Source: include.source, Target: include.target, Spelling: include.spelling})
+		}
+	}
+	return includes
+}
+
+func cachedIncludeAnalysis(record parseCacheRecord) clangAnalysis {
+	var analysis clangAnalysis
+	for _, include := range record.Includes {
+		analysis.includes = append(analysis.includes, clangInclude{source: include.Source, target: include.Target, spelling: include.Spelling})
+	}
+	return analysis
+}
+
 type digestResult struct {
 	path   string
 	digest string
@@ -71,6 +89,7 @@ type digestResult struct {
 }
 
 type artifactCache struct {
+	layout      *cacheLayout
 	read        bool
 	hard        string
 	mu          sync.Mutex
@@ -78,7 +97,7 @@ type artifactCache struct {
 	toolDigests map[string]digestResult
 }
 
-func newArtifactCache(read bool) (*artifactCache, error) {
+func newArtifactCache(read bool, resolvers ...*githubSnapshotResolver) (*artifactCache, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("locate hard executable for cache: %w", err)
@@ -87,12 +106,24 @@ func newArtifactCache(read bool) (*artifactCache, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fingerprint hard executable for cache: %w", err)
 	}
+	var layout *cacheLayout
+	if len(resolvers) != 0 && resolvers[0] != nil && resolvers[0].session != nil {
+		layout = resolvers[0].session.layout
+	}
 	return &artifactCache{
+		layout:      layout,
 		read:        read,
 		hard:        hard,
 		fileDigests: make(map[string]digestResult),
 		toolDigests: make(map[string]digestResult),
 	}, nil
+}
+
+func (cache *artifactCache) paths() *cacheLayout {
+	if cache == nil {
+		return nil
+	}
+	return cache.layout
 }
 
 func (cache *artifactCache) actionFingerprint(
@@ -436,8 +467,8 @@ func parseCacheArguments(cflags []string, entryPoints []string) []string {
 	return arguments
 }
 
-func parseCachePath(root, environment, source string) (string, error) {
-	object, err := objectFilePath(root, environment, source)
+func parseCachePath(root, environment, source string, layouts ...*cacheLayout) (string, error) {
+	object, err := objectFilePath(root, environment, source, layouts...)
 	if err != nil {
 		return "", err
 	}

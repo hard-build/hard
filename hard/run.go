@@ -94,7 +94,7 @@ func runSourcesWithProgressExecutable(
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
-	cache, err := newArtifactCache(!noCache)
+	cache, err := newArtifactCache(!noCache, resolvers...)
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}
@@ -161,6 +161,7 @@ func runSourcesWithProgressExecutable(
 		entryPointsBySource,
 		rootSourceCount,
 		workingDirectory,
+		cache.paths(),
 	)
 	if err != nil {
 		return errors.Join(err, progress.finish())
@@ -289,6 +290,7 @@ func planRunLinkWithLibrariesExecutable(
 	entryPointsBySource []string,
 	rootSourceCount int,
 	workingDirectory string,
+	layouts ...*cacheLayout,
 ) (linkJob, error) {
 	if len(dependenciesBySource) != len(sources) {
 		return linkJob{}, fmt.Errorf(
@@ -344,7 +346,7 @@ func planRunLinkWithLibrariesExecutable(
 	}
 	objects := make([]string, 0, len(objectIndexes))
 	for _, objectIndex := range objectIndexes {
-		object, err := objectFilePath(root, environment, sources[objectIndex])
+		object, err := objectFilePath(root, environment, sources[objectIndex], layouts...)
 		if err != nil {
 			return linkJob{}, err
 		}
@@ -356,6 +358,7 @@ func planRunLinkWithLibrariesExecutable(
 		environment,
 		sources[entryIndex],
 		executableSuffix,
+		layouts...,
 	)
 	if err != nil {
 		return linkJob{}, err

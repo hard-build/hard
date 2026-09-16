@@ -3966,6 +3966,83 @@ the old version and rename of `v1.0` to `hard`. Preserve future unrelated
 changes, and keep verification binaries outside the repository so the default
 module output `hard/hard` is not created or overwritten.
 
+## Environment-first cache layout migration (2026-09-16)
+
+The user approved a unified HARD_ROOT tree and requested an anonymized,
+English-commented document before implementation. `docs/cache-layout.md`
+records that tree using fictional `/workspace/example` and
+`/workspace/example2` paths. The latter has a local TinyXML2 CMake recipe;
+the former uses the hard-build/library namespace.
+
+The current migration supersedes older layout descriptions in this memory:
+
+- Public build/fetch/run/test commands use dependency sessions even without
+  project recording. They do not create or modify hard.yaml unless recording
+  is explicitly enabled by `repositories` or `fetch --lock`.
+- Sources use `snapshot/<actual-source>/@<commit>` and the adjacent checksum,
+  with readable corporate source paths. `@default` is a regular commit-ID
+  file, published only after snapshot validation under the source lock.
+  Reserved @ prefixes avoid collisions with nested corporate source names.
+  Defaults persist without branch refresh; project updates and --no-cache
+  never change them. A cached default can be locked with its commit as ref.
+- All generated backend state uses `project/<HARD_ENV>`: local owners are
+  `root/<absolute-invocation-directory-without-leading-slash>` and library
+  owners are logical repository names. Local include links select snapshots
+  directly; there is no selection-digest/dependency-set directory.
+- Each local owner is directory-inode locked until the command finishes,
+  independently of the short-lived project YAML update lock. This currently
+  includes run/test child execution; recursively invoking hard from a child
+  in the same directory/environment must not be done while that lock is held.
+- Immutable per-attempt layout objects route fetch analysis into
+  `fetch/<analysis-key>` and forwards/objects/binaries/build analysis into
+  `build/<build-key>`, preserving owner-relative source paths. Configuration
+  keys do not hash ordinary local source contents. They do retain invocation
+  and include-view context for direct compilation: sharing a logical owner
+  does not promise cross-project direct-object reuse. Recipe packages remain
+  shared through context-independent content fingerprints.
+- Recipe packages move to `<logical-repository>/package/<fingerprint>` and
+  retain manifest-selected immutable generations and their interprocess lock.
+- Cached build analysis, like fetch analysis, now replays active include edges
+  for inherited dependency validation.
+- Old caches are neither removed nor migrated silently. Managed cache parent
+  directories reject symlinks; an explicitly symlinked HARD_ROOT is resolved
+  once. No installed runtime, project outside fixtures, wrapper mounts,
+  release versions/tags, or credential forwarding is changed.
+- The version-independent Windows Dockerfile keeps one shared Wine prefix per
+  environment at the user's explicitly selected
+  `project/<HARD_ENV>/@runtime/wine`. Wine does not create intermediate
+  directories, so `target/windows64/wine.sh` creates the prefix parent on
+  demand and execs `/usr/lib/wine/wine64` with unchanged arguments. The generic
+  Dockerfile installs this launcher instead of the old Wine symlink; neither
+  the backend nor hard.sh initializes Wine state. This supersedes the initially
+  implemented `@wine` location. Historical versioned Dockerfiles are unchanged;
+  no image was rebuilt or published.
+
+Verification has passed: full `GOCACHE=/tmp/hard-go-cache make check` (ordinary
+and race tests, vet, formatting, out-of-tree build, module verification, shell
+syntax, target manifest and Git whitespace checks). New cache tests also passed
+five repeated runs under the race detector. Coverage includes default
+concurrency/reuse, corruption, legacy-cache preservation, offline unrecorded
+commands, project-file preservation, owner routing, configuration keys, stale
+include cleanup, lock lifetime, an intentionally symlinked HARD_ROOT and fork
+identity. Local Markdown links were checked and the implementation/doc diffs
+reviewed. Real C++/CMake fixture compilation is covered by the tests; no live
+user project or installed hard runtime was modified. The generic Windows image
+was not built end to end; its new Wine prefix was checked in isolation.
+After the user's runtime-path choice, the actual Wine launcher was checked in
+a disposable network-disabled v4.0 Windows container as UID/GID 65534, with
+only the launcher mounted read-only and an initially absent cache tree. Prefix
+creation and execution succeeded at `project/<HARD_ENV>/@runtime/wine` without
+creating the legacy env tree. `TestWindowsWineLauncher` covers missing parents,
+existing prefixes, unset/empty WINEPREFIX, parent creation failures, argument
+preservation and exit status. `make check` includes the launcher's shell syntax.
+
+Low-level test entry points retain their pre-session path helpers; public CLI
+source commands always supply a session and use the new layout. Unrecorded
+commands may repeat discovery as their in-memory selection is rebuilt, while
+reusing defaults and final-selection analysis records without network access.
+Historical container images retain their historical backend/runtime paths.
+
 ## Resume checklist
 
 When resuming work:

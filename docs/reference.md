@@ -6,9 +6,9 @@ overview and first build, start with the [project README](../README.md).
 The public interface contains only `version`, `environment`, `format`, `build`,
 `fetch`, `run`, and `test`.
 
-Source and artifact layouts below describe unpinned operation unless stated
-otherwise. [Project configuration and pinned dependencies](#project-configuration-and-pinned-dependencies)
-defines `hard.yaml`, fixed revisions, and the isolated pinned layout.
+Recorded and unrecorded projects use the same [persistent cache layout](cache-layout.md).
+[Project configuration and pinned dependencies](#project-configuration-and-pinned-dependencies)
+defines `hard.yaml`, fixed revisions, defaults, and update policy.
 
 ## Installation
 
@@ -138,7 +138,7 @@ Depending on the command, using `hard` also requires:
   linking;
 - network access to GitHub when a referenced `github.com/<owner>/<repository>/`
   or well-known repository snapshot is not already cached below
-  `HARD_ROOT/source`.
+  `HARD_ROOT/snapshot`.
 
 `curl` and network access to GHCR are optional for refreshing versioned target
 completion. Stable targets and an existing cached registry list remain usable
@@ -432,9 +432,16 @@ documented as a fully static target. The generic suffix and runner variables
 make `hard run` and `hard test` execute the resulting `.exe` files through
 Wine; the backend does not recognize the `windows64` environment name.
 
-The backend always adds `-I/hard/source` and
+Those historical v4.0 backends add `-I/hard/source` and
 `-include /usr/local/libexec/hard/hard.h` internally. These are hard-managed
 include mechanics rather than part of the image `HARD_CFLAGS` value.
+The current backend instead adds its project's environment-specific `include/`
+view, as described in the [cache layout](cache-layout.md).
+The version-independent Windows Dockerfile also moves its environment-wide
+Wine prefix to `/hard/project/windows64:${IMAGE_VERSION}/@runtime/wine`. Its
+Wine launcher creates missing parent directories on first use; the backend
+and host wrapper do not initialize Wine state. Historical versioned Dockerfiles
+and already-published images retain their original paths.
 
 Hard scans `<runtime-root>/lib/clang/*/include` and adds the directory only to
 libclang arguments when exactly one exists. It is not part of `HARD_CFLAGS`
@@ -556,12 +563,12 @@ with:
 github.com/<owner>/<repository>/
 ```
 
-causes `hard` to download a tar snapshot of that public GitHub repository's
-current default branch. The archive contains source files only, not Git history,
-and is installed at:
+causes `hard` to select the project's pin, an applicable inherited pin, or the
+cached default. On first default use it resolves the branch to a full commit.
+The archive contains source files only, not Git history, and is installed at:
 
 ```text
-HARD_ROOT/source/github.com/<owner>/<repository>
+HARD_ROOT/snapshot/github.com/<owner>/<repository>/@<commit>
 ```
 
 Well-known include prefixes map shorter public paths to canonical repositories.
@@ -572,16 +579,17 @@ hard/<path>   -> github.com/hard-build/library/<path>
 recipe/<path> -> github.com/hard-build/recipe/<path>
 ```
 
-The repository is installed in the canonical GitHub cache, and `hard` creates
-a relative source alias:
+Each project's locked include view exposes relative aliases:
 
 ```text
-HARD_ROOT/source/hard   -> github.com/hard-build/library
-HARD_ROOT/source/recipe -> github.com/hard-build/recipe
+<project-owner>/include/github.com/<owner>/<repository> -> <selected-snapshot>
+<project-owner>/include/hard   -> github.com/hard-build/library
+<project-owner>/include/recipe -> github.com/hard-build/recipe
 ```
 
-An existing alias must be a symbolic link resolving to the mapped repository;
-conflicting files, directories, and links are errors and are never replaced.
+Managed repository links are refreshed under the project/environment lock when
+the selected revisions change. Stale aliases are removed; non-symlink entries
+where an alias is expected are errors and are not overwritten.
 
 The repository archive is extracted into a temporary directory, checked for
 path and symlink escapes, stripped of GitHub's generated top-level directory,
@@ -596,19 +604,14 @@ repository is downloaded in the same way and scanning repeats until the
 external dependency closure is available. Parallel translation units share one
 resolver, so one repository is downloaded at most once per invocation.
 
-An existing repository directory is a persistent local cache and is never
-updated automatically. Remove:
-
-```text
-HARD_ROOT/source/github.com/<owner>/<repository>
-```
-
-to request a fresh snapshot on the next build, fetch, run, or test. The
-resolver is shared by `build`, `fetch`, `run`, and `test`. Immediately before
-each actual request, it reports
-`Downloading github.com/<owner>/<repository>` as the command's first progress
-step. A missing non-GitHub header retains the original libclang
-diagnostic and does not cause a network request.
+Snapshots are verified against their adjacent checksum and are never refreshed
+in place. `@default` is a regular file containing the default full commit ID;
+reusing it does not resolve a moving branch again. To select a newer revision
+for a project, record dependencies and use `fetch --update`. This does not
+change `@default`. The resolver is shared by `build`, `fetch`, `run`, and `test`.
+Before downloading it reports `Downloading <source>@<commit>` in preparation
+step one. A missing non-GitHub header retains the original libclang diagnostic
+and does not cause a network request.
 
 #### Compiled library recipes
 
@@ -678,8 +681,8 @@ not cause a download, package build, compiler flag, or link input.
 Packages are stored at:
 
 ```text
-HARD_ROOT/env/HARD_ENV/library/
-└── github.com/<owner>/<repository>/<fingerprint>/
+HARD_ROOT/project/HARD_ENV/
+└── github.com/<owner>/<repository>/package/<fingerprint>/
     ├── manifest.json
     └── generation-<id>/
         ├── build/
@@ -743,8 +746,8 @@ allowing valid declarations from macro-heavy amalgamated headers to remain
 usable. Since extraction uses the translation-unit AST, conditional and
 macro-dependent declarations remain specific to that source and flag context.
 
-The forward path mirrors the lexical absolute source path below the environment
-build directory and appends `.fwd.h` to the complete source name:
+The forward path preserves the owner-relative source path below
+`<owner>/build/<build-key>` and appends `.fwd.h` to the complete source name:
 
 ```text
 first.cpp  -> first.cpp.fwd.h
@@ -756,7 +759,7 @@ source forward begins with `#pragma once`. When regenerated content is
 byte-for-byte unchanged, the existing regular file is retained.
 
 A successful translation-unit analysis is persisted as a versioned
-`.hard-parse-cache.json` record beside the mirrored source path. The record
+`.hard-parse-cache.json` record beside the owner-relative source path. The record
 stores its managed dependency list, complete active non-system dependency
 snapshot, active library recipe headers, detected entry point, and final
 validated source-forward text. Records include a checksum of that semantic
@@ -771,9 +774,9 @@ every active non-system dependency known from the previous successful
 analysis, including non-system force-included headers. The invocation working
 directory participates only when a compiler argument can depend on it, such as
 a relative include, forced-include, toolchain, or response-file path, or an
-opaque forwarded driver argument. Sources using only cwd-independent flags can
-reuse parsing when selected from a parent directory and then from their own
-directory. System headers are represented by the selected `HARD_ENV` rather
+opaque forwarded driver argument. The storage key also retains the invocation's
+include context, so different invocation directories do not share direct
+source-analysis records. System headers are represented by the selected `HARD_ENV` rather
 than individual content hashes. Missing, malformed, changed, or internally
 inconsistent records are misses. A hit skips libclang analysis, restores a
 missing generated source forward when needed, and reports
@@ -795,7 +798,7 @@ source-context forward is force-included for that translation unit:
 
 ```text
 HARD_CC <HARD_CFLAGS...> \
-  -I<HARD_ROOT>/source \
+  -I<project-owner>/include \
   -include <runtime-root>/hard.h \
   <active-library-include-flags...> \
   -include <source.cpp.fwd.h> \
@@ -814,16 +817,16 @@ exception. It is force-included by the backend independently of
 `HARD_CFLAGS`, but its declarations are excluded from the generated source
 forward. Other project or external headers named `hard.h` are treated normally.
 
-The object path mirrors the absolute source path. The original source
+The object path preserves the owner-relative source path. The original source
 extension is preserved before `.o`, avoiding collisions between sources such
 as `file.c` and `file.cpp`:
 
 ```text
-/home/user/project/src/file.c
-  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/file.c.o
+/workspace/example/src/file.c
+  -> HARD_ROOT/project/HARD_ENV/root/workspace/example/build/<build-key>/src/file.c.o
 
-/home/user/project/src/file.cpp
-  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/file.cpp.o
+/workspace/example/src/file.cpp
+  -> HARD_ROOT/project/HARD_ENV/root/workspace/example/build/<build-key>/src/file.cpp.o
 ```
 
 Each successful compilation stores an atomic cache record beside its object.
@@ -831,10 +834,10 @@ The cache key includes the `hard` executable, compiler path and content,
 complete compiler argument vector with the absolute source, source content,
 every resolved active non-system include, and the generated source forward.
 As with parsing, the invocation working directory is included only for
-relative or opaque cwd-dependent compiler arguments. Thus a source using
-cwd-independent flags can reuse its object across equivalent selections from
-different directories, while `HARD_CFLAGS=-I.` deliberately keeps those
-contexts separate. System headers and other toolchain state are represented by
+relative or opaque cwd-dependent compiler arguments. The directory key retains
+the invocation's include context as well; direct library objects from distinct
+projects therefore remain isolated, unlike context-independent recipe packages.
+System headers and other toolchain state are represented by
 `HARD_ENV`. A hit is accepted only when the object is still a regular file
 with the recorded content digest. Missing, changed, malformed, or non-regular
 artifacts and records are cache misses.
@@ -846,7 +849,7 @@ delivery, and `hard test` reruns its tests.
 Program execution by `hard run` is never cached and therefore happens on every
 successful invocation with or without this flag. Fresh successful build records
 are written. The flag does not remove or refresh downloaded GitHub snapshots
-below `HARD_ROOT/source`.
+below `HARD_ROOT/snapshot`.
 
 #### Entry points and linking
 
@@ -910,20 +913,20 @@ non-`main` names. A configured entry point such as `_start` must therefore be
 compatible with ordinary linking and the supplied `HARD_LDFLAGS`; otherwise
 the linker failure is reported normally.
 
-The internal binary mirrors the entry source path below the environment build
-directory and removes the source extension:
+The internal binary preserves the owner-relative entry source path below its
+configuration's build directory and removes the source extension:
 
 ```text
-/home/user/project/src/application.cpp
-  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/application
+/workspace/example/src/application.cpp
+  -> HARD_ROOT/project/HARD_ENV/root/workspace/example/build/<build-key>/src/application
 ```
 
 When `HARD_EXECUTABLE_SUFFIX=.exe`, inferred internal binary names receive that
 suffix instead:
 
 ```text
-/home/user/project/src/application.cpp
-  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/src/application.exe
+/workspace/example/src/application.cpp
+  -> HARD_ROOT/project/HARD_ENV/root/workspace/example/build/<build-key>/src/application.exe
 ```
 
 After successful linking, the binary is copied atomically to its delivery
@@ -965,7 +968,7 @@ unknown denominator:
 ```text
 [1/?] Searching source files
 [1/?] Parsing example.cpp
-[1/?] Downloading github.com/owner/repository
+[1/?] Downloading github.com/owner/repository@<commit>
 [2/4] Compiling example.cpp
 [3/4] Linking example
 [4/4] Copying example
@@ -996,13 +999,11 @@ lines, and silent mode hides the complete progress stream. All entries follow
 - `-s` suppresses progress and successful compiler output; compiler, linker,
   and copy errors still go to stderr.
 
-For sources in the canonical GitHub cache, the `Compiling` label is relative
-to `HARD_ROOT/source`, for example
-`github.com/hard-build/library/application/application.cpp`. A source selected
-through a well-known alias is canonicalized to that same label. Pinned snapshots
-are mapped through the selected source view's repository links, so `Parsing`
-and `Compiling` use `github.com/<owner>/<repository>/<path>` even when the file
-physically resides under `snapshot/<hash>/<commit>`. Replacements retain their
+Snapshots are mapped through the project's selected repository links, so
+`Parsing` and `Compiling` use `github.com/<owner>/<repository>/<path>`, for
+example `github.com/hard-build/library/application/application.cpp`, even when
+the file physically resides under `snapshot/<source>/@<commit>`. Well-known
+aliases use the same canonical label. Replacements retain their
 logical repository names. Cached progress entries use the same labels. This
 affects only progress output: verbose compiler commands, diagnostics, object
 paths, and other artifacts continue to use the actual source path.
@@ -1023,8 +1024,8 @@ hard run [--locked] [--no-cache] [-s|--silent] [path...] [-- program-argument...
 `run` selects ordinary non-test translation units by the same rules as
 `build`, prepares their complete managed dependency closure, compiles the
 required objects, links one internal binary, and executes it. It never performs
-the `build` delivery step: the binary remains only at its mirrored path below
-`HARD_ROOT/env/HARD_ENV/build`, and no extensionless copy is created beside the
+the `build` delivery step: the binary remains below its owner's
+`build/<build-key>` directory, and no extensionless copy is created beside the
 entry source.
 
 Exactly one originally selected root source must define a configured entry
@@ -1091,17 +1092,18 @@ rules are the same as for `build`, `run`, and `test`; existing repository
 directories are not refreshed automatically.
 
 Successful dependency analysis is cached independently of build analysis at
-`HARD_ROOT/fetch/HARD_ENV/<absolute-source-without-leading-slash>.hard-parse-cache.json`.
-Pinned projects use the same `fetch/HARD_ENV` subtree below their selected
-`HARD_ROOT/project/<selection-digest>` view. Fetch records never substitute for
-build/run/test records and contain no entry points or generated forwards.
+`<owner>/fetch/<analysis-key>/<relative-source>.hard-parse-cache.json`, using
+the same owner rules for recorded and unrecorded projects. Fetch records never
+substitute for build/run/test records and contain no entry points or generated
+forwards. Unrecorded invocations can repeat discovery while rebuilding their
+in-memory selection, then reuse final-selection records and cached defaults.
 
 The key includes the hard executable digest, libclang version, ordered base
 analysis flags, and contents of the source and every previously known active
 non-system header, including recipe and force-included headers. Cwd-dependent
 flags also include the invocation directory. `HARD_ENV` separates immutable
-toolchains and system headers; the pinned view separates dependency revisions
-and replacements. Missing, changed, malformed, or semantically inconsistent
+toolchains and system headers; configuration keys separate dependency revisions
+and include contexts. Missing, changed, malformed, or semantically inconsistent
 records cause fresh analysis. The same `__has_include` guard and depfile-style
 include-path topology limitations described for build analysis apply.
 
@@ -1118,7 +1120,7 @@ header or changing optional-header availability inside a dependency.
 When a recipe is active, `fetch` temporarily appends its
 `source_include_directories` below the downloaded repository and repeats
 dependency analysis. It does not start CMake or `HARD_CC`, install a package,
-write a manifest, or create `HARD_ROOT/env`.
+write a manifest, or create build artifacts.
 
 This command does not generate forward headers, compile objects, link or copy
 binaries, run tests, or create an environment build tree. An empty selection
@@ -1127,7 +1129,7 @@ is a successful no-op. `-j` limits concurrent libclang analyses.
 Search, dependency parsing, and every actual request reuse one command
 preparation step. Live activity is shown as `[1/?] Searching source files`,
 `[1/?] Parsing <source>`, or
-`[1/?] Downloading github.com/<owner>/<repository>`; each download label is
+`[1/?] Downloading <source>@<commit>`; each download label is
 emitted immediately before its HTTP request. The exact final total is one.
 Normal mode rewrites one line, `-v` writes permanent activity lines, and `-s`
 suppresses successful progress. Colors obey `--no-color`. Cached repositories
@@ -1259,11 +1261,11 @@ HARD_CC <test-and-dependency-objects...> \
   -o <internal-test-binary>
 ```
 
-The internal binary follows the same mirrored path rule as a build binary:
+The internal binary follows the same owner-relative path rule as a build binary:
 
 ```text
-/home/user/project/tests/random.test.cpp
-  -> HARD_ROOT/env/HARD_ENV/build/home/user/project/tests/random.test
+/workspace/example/tests/random.test.cpp
+  -> HARD_ROOT/project/HARD_ENV/root/workspace/example/build/<build-key>/tests/random.test
 ```
 
 With `HARD_EXECUTABLE_SUFFIX=.exe`, the corresponding path ends in
@@ -1395,8 +1397,9 @@ and completion do not load project configuration or fetch dependencies.
   Traversal skips matching paths and directory subtrees; explicitly selecting
   a file overrides exclusion. Exclusions do not suppress headers or same-stem
   implementation sources needed through the active include graph.
-- `repositories` enables pinning by its presence, even when empty. Omission
-  retains legacy unpinned behavior. Each logical key remains
+- `repositories` enables project recording by its presence, even when empty.
+  Omission uses cached defaults and inherited pins without writing hard.yaml.
+  Each logical key remains
   `github.com/owner/repository`; `source` can identify another upstream or a
   corporate fork without changing includes or recipe source names.
 
@@ -1413,7 +1416,11 @@ command hooks, or extra project sections are supported.
 
 `hard fetch --lock` creates `hard.yaml` in the current directory if none was
 found, or adds `repositories` to the selected file. Ordinary `fetch`, `build`,
-`run`, and `test` use recorded revisions and add new dependencies automatically.
+`run`, and `test` use recorded revisions and add new dependencies automatically
+when recording is enabled. Without it, the selected revisions remain in memory
+for that invocation and sources are still verified snapshots. `fetch --lock`
+can record an existing cached default; when its branch spelling is unknown,
+the full commit is recorded as `ref` as well as `commit`.
 Only active include graphs are discovered, including recipe and vendor-source
 repositories; separate platforms may add different entries. One logical
 repository has one selected revision. There is no semantic-version solver.
@@ -1494,44 +1501,59 @@ failure does not undo a successfully resolved record. Failed resolution leaves
 the file unchanged. Only the repositories section is serialized; other bytes
 and comments are preserved. Directory-inode advisory locking serializes hard's
 updates, and a changed original file is rejected instead of overwriting an
-editor's concurrent changes. The lock is released after resolution, before
-the application runs. Downloaded snapshots may remain after a failed command.
+editor's concurrent changes. This YAML lock is released after resolution.
+A separate cache-owner lock protects the single include view until the command
+finishes, including run/test child processes. A child must not recursively
+invoke hard in the same directory and environment while its parent holds this
+lock. Downloaded snapshots may remain after a failed command.
 
 ### Pinned source and artifact layout
 
-Snapshots are shared across projects and environments:
+Recorded and unrecorded projects use the same layout. Snapshots are shared
+across projects and environments:
 
 ```text
-HARD_ROOT/snapshot/<sha256(source)>/<commit>/
-HARD_ROOT/snapshot/<sha256(source)>/<commit>.checksum
-HARD_ROOT/project/<selection-digest>/source/github.com/<owner>/<repository>
-HARD_ROOT/project/<selection-digest>/source/hard
-HARD_ROOT/project/<selection-digest>/source/recipe
-HARD_ROOT/project/<selection-digest>/fetch/HARD_ENV/...
-HARD_ROOT/project/<selection-digest>/env/HARD_ENV/build/...
-HARD_ROOT/env/HARD_ENV/library/...
+HARD_ROOT/snapshot/<actual-source>/@default
+HARD_ROOT/snapshot/<actual-source>/@<commit>/
+HARD_ROOT/snapshot/<actual-source>/@<commit>.checksum
+HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/include/
+HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/fetch/<analysis-key>/
+HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/build/<build-key>/
+HARD_ROOT/project/<HARD_ENV>/<logical-repository>/fetch/<analysis-key>/
+HARD_ROOT/project/<HARD_ENV>/<logical-repository>/build/<build-key>/
+HARD_ROOT/project/<HARD_ENV>/<logical-repository>/package/<fingerprint>/
 ```
 
-Source-view entries are relative symlinks to exact snapshots. The selection
-digest includes the project filename, complete pins, corporate replacement
-rules and configured compiler, flags and entry names. Different replacement
-configurations use separate views, even when their recorded pins are identical.
-Existing views are never switched to other revisions.
-Discovery or revision selection repeats analysis with a new immutable
-view; compilation/execution waits for a stable selection. The view enters
-compiler arguments and the artifact root, separating parsing, objects, forwards,
-links and tests for different dependency sets. Vendor packages instead use the
-shared library cache: their keys cover their own selected source snapshot,
-recipe contents and build tools, not the consuming project's filename or
-unrelated pins. Existing unversioned `HARD_ROOT/source` directories cannot
-satisfy pinned dependencies.
+`<absolute-project-dir>` is the invocation directory without its leading slash.
+The [annotated tree](cache-layout.md) explains each file and directory and shows
+both a hard/library consumer and a project with a local TinyXML2 recipe.
+
+Include-view entries are relative symlinks to exact snapshots. One locked view
+is reused and refreshed when dependencies change; no selection-digest or
+dependency-set directory is created. Analysis/build keys include selected
+snapshot paths and the complete relevant configured context, but not ordinary
+local source contents. Per-record content hashes handle source edits.
+Direct source keys retain the invocation and include-view paths, so distinct
+projects' direct objects remain isolated even under the same logical repository.
+Vendor package keys instead cover recipe contents, their source snapshot and
+build tools, allowing compatible cross-project reuse. Removing a replacement
+rule without changing selected contents does not invalidate analysis.
+
+`@default` is a regular commit-ID file, not a symlink. It is published under
+the source-directory lock after successful snapshot verification. It has no
+separate checksum: the selected `@<commit>.checksum` validates the source tree.
+The reserved `@` prefix separates revision metadata from nested corporate
+repository paths. Project pins and inherited requirements override the default;
+explicit project updates and `--no-cache` do not change it.
 
 Recorded snapshots are hydrated and verified when constructing a view, including
 records inactive for the current platform. Fetch creates only dependency-analysis
-records under its separate `fetch/HARD_ENV` subtree, not an environment build
-tree. Snapshots and obsolete views are not garbage-collected automatically.
-Treat snapshot contents as immutable; changed cached contents, missing checksum
-metadata, or source mutations during recipe preparation are errors.
+records, not build artifacts. Existing unversioned source trees and hashed
+snapshots are neither adopted nor deleted; a first build with this layout may
+download and compile again. No cache garbage collection is performed.
+Treat snapshots as immutable: changed contents, missing checksum metadata, or
+source mutations during recipe preparation are errors. Managed cache parent
+directories cannot be symlinks; HARD_ROOT itself may be an intentional symlink.
 
 The normalized tree digest is SHA-256 over the JSON-encoded string
 `hard-source-tree-v1` followed by lexically ordered depth-first JSON array
@@ -1565,7 +1587,7 @@ Proxy and replacement settings are not copied into project top-level fields.
 Replacement selections appear as repository `source`, `ref`, commit and checksum.
 A rule conflicting with an existing source/ref is an error until an explicit
 matching update is requested. With corporate configuration present, commands
-require recording or `fetch --lock`; they never silently use the legacy client.
+require recording or `fetch --lock`.
 
 An explicit replacement that changes an inherited source or requested ref
 overrides that upstream requirement, allowing a corporate fork without editing
@@ -1627,7 +1649,7 @@ Default compiler flags:
 ```
 
 Regardless of this value, the backend then appends
-`-I<HARD_ROOT>/source` and `-include <runtime-root>/hard.h`. The runtime root
+`-I<project-owner>/include` and `-include <runtime-root>/hard.h`. The runtime root
 is not configured by an environment variable: `hard` derives it from the
 physical path of the running backend executable. This keeps source resolution
 and the runtime support header available even when `HARD_CFLAGS` is explicitly
@@ -1687,8 +1709,8 @@ supplied through `-isystem` or `-idirafter` changes. System headers are not
 content-hashed; keeping the same `HARD_ENV` asserts that they remain compatible
 and unchanged. `--no-cache` can force a one-off rebuild in the current
 environment, while a new `HARD_ENV` keeps old artifacts isolated. Artifact
-generation rejects environment names that escape `HARD_ROOT/env`; fetch analysis
-likewise rejects escapes from `HARD_ROOT/fetch`.
+generation requires HARD_ENV to name one directory component: empty names,
+`.`/`..`, absolute paths and path separators are invalid after default selection.
 
 These variables describe host-mode execution. Target mode does not forward
 their host values into the container; container images use the fixed values
@@ -1779,39 +1801,15 @@ The backend, support header, and format files form an immutable runtime bundle:
     └── format.v1
 ```
 
-Generated artifacts and downloaded source snapshots use the separate
-persistent layout:
-
-```text
-HARD_ROOT/
-├── source/
-│   ├── hard -> github.com/hard-build/library
-│   ├── recipe -> github.com/hard-build/recipe
-│   └── github.com/
-│       └── <owner>/
-│           └── <repository>/
-├── fetch/
-│   └── HARD_ENV/
-│       └── <absolute path without the leading slash>/
-│           └── file.cpp.hard-parse-cache.json
-└── env/
-    └── HARD_ENV/
-        ├── build/
-        │   └── <absolute path without the leading slash>/
-        │       ├── file.cpp.hard-parse-cache.json
-        │       ├── file.cpp.fwd.h
-        │       ├── file.cpp.o
-        │       ├── file.cpp.o.hard-cache.json
-        │       ├── application
-        │       ├── application.hard-cache.json
-        │       └── application.hard-test-cache.json
-        └── library/
-            └── github.com/<owner>/<repository>/<fingerprint>/
-                ├── manifest.json
-                └── generation-<id>/
-                    ├── build/
-                    └── install/
-```
+Generated artifacts and source snapshots use the separate
+[persistent cache layout](cache-layout.md). Source snapshots live below
+`snapshot/<actual-source>/@<commit>`. Each environment's local project and
+logical repository owners live below `project/<HARD_ENV>`; their analysis,
+build and package directories are described in that annotated tree.
+Local source edits invalidate content records rather than creating a new
+configuration directory. `fetch` writes only its separate analysis records.
+Legacy top-level `source`, `fetch` and `env` directories are not created by
+the current backend, and existing old caches are left untouched.
 
 An entry source or test source normally creates an extensionless internal
 binary beside its object, such as `application` beside `application.cpp.o`.

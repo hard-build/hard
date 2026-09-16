@@ -48,6 +48,7 @@ check:
 	@sh -n install.sh
 	@sh -n tools/bump-version.sh
 	@sh -n tools/release-check.sh
+	@sh -n target/windows64/wine.sh
 	@printf '%s\n' 'Checking target manifest'
 	@python3 tools/target-manifest-check.py
 	@printf '%s\n' 'Checking Git diff'

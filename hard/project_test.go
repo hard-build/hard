@@ -196,8 +196,10 @@ func TestProjectRejectsSymlinkAndLockedMissingSection(t *testing.T) {
 		session.close()
 		t.Fatal("locked accepted missing repositories")
 	}
-	if _, session, err := prepareProject(&parsed, projectOptions{}, t.TempDir(), other); err != nil || session != nil {
+	if _, session, err := prepareProject(&parsed, projectOptions{}, t.TempDir(), other); err != nil || session == nil || session.record {
 		t.Fatalf("ordinary unpinned: %v", err)
+	} else {
+		session.close()
 	}
 	if _, err := os.Stat(filepath.Join(other, "env")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("unexpected artifact directory")

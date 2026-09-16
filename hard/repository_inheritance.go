@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 type repositoryRequirement struct {
@@ -15,7 +16,7 @@ type repositoryRequirement struct {
 }
 
 func (requirement repositoryRequirement) origin() string {
-	return requirement.owner + "@" + filepath.Base(requirement.snapshot) + "/" + projectFilename
+	return requirement.owner + "@" + strings.TrimPrefix(filepath.Base(requirement.snapshot), "@") + "/" + projectFilename
 }
 
 func sameRepositoryContents(left, right repositoryPin) bool {

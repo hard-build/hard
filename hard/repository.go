@@ -18,12 +18,16 @@ import (
 var errDependencySetChanged = errors.New("dependency set expanded; repeat source analysis")
 
 type dependencySession struct {
-	project   *projectFile
-	provider  *repositoryProvider
-	root      string
-	locked    bool
-	directory *os.File
-	onCommit  func() error
+	project          *projectFile
+	provider         *repositoryProvider
+	root             string
+	locked           bool
+	record           bool
+	directory        *os.File
+	onCommit         func() error
+	viewLock         *os.File
+	workingDirectory string
+	layout           *cacheLayout
 
 	mutex        sync.Mutex
 	pins         map[string]repositoryPin
@@ -38,13 +42,15 @@ type dependencySession struct {
 }
 
 func newDependencySession(project *projectFile, root string, options projectOptions, provider *repositoryProvider) (*dependencySession, error) {
-	root, err := filepath.Abs(root)
+	root, err := ensureCacheDirectory(root, ".")
 	if err != nil {
 		return nil, err
 	}
 	session := &dependencySession{
 		project: project, provider: provider, root: root, locked: options.locked,
-		pins: make(map[string]repositoryPin), snapshots: make(map[string]string),
+		record:           project.recorded || options.lock,
+		workingDirectory: filepath.Dir(project.filename),
+		pins:             make(map[string]repositoryPin), snapshots: make(map[string]string),
 		manifests: make(map[string]*projectFile), requirements: make(map[string]map[string]repositoryRequirement),
 		dirty: !project.recorded,
 	}
@@ -91,6 +97,14 @@ func newDependencySession(project *projectFile, root string, options projectOpti
 }
 
 func (session *dependencySession) close() {
+	if session != nil && session.viewLock != nil {
+		_ = session.viewLock.Close()
+		session.viewLock = nil
+	}
+	session.closeProjectFile()
+}
+
+func (session *dependencySession) closeProjectFile() {
 	if session != nil && session.directory != nil {
 		_ = session.directory.Close()
 		session.directory = nil
@@ -135,10 +149,14 @@ func (session *dependencySession) ensure(repository githubRepository, progress *
 			if replacement, ok := session.provider.configuration.Replace[name]; ok {
 				source, ref = replacement.Source, replacement.Ref
 			}
-			if progress != nil {
-				progress.updateStep("Resolving " + name)
+			if ref == "" {
+				pin, err = session.defaultPin(source, progress)
+			} else {
+				if progress != nil {
+					progress.updateStep("Resolving " + name)
+				}
+				pin, err = session.provider.resolve(source, ref)
 			}
-			pin, err = session.provider.resolve(source, ref)
 			if err != nil {
 				return fmt.Errorf("resolve %s: %w", name, err)
 			}
@@ -183,33 +201,30 @@ func (session *dependencySession) view(configuration configuration, progress *pr
 		}
 		session.selected[name] = session.snapshots[name]
 	}
-	identity, err := json.Marshal(struct {
-		Version                  int
-		Project                  string
-		Pins                     map[string]repositoryPin
-		Replace                  map[string]repositoryReplacement
-		Compiler                 string
-		CFlags, LDFlags, Entries []string
-	}{2, session.project.filename, session.pins, session.provider.configuration.Replace, configuration.cc, configuration.cflags, configuration.ldflags, configuration.entrypoints})
+	view, err := localProjectRoot(session.root, configuration.env, session.workingDirectory)
 	if err != nil {
 		return "", err
 	}
-	view := filepath.Join(session.root, "project", repositoryDigest(identity))
-	if err := os.MkdirAll(filepath.Join(view, "source"), 0o755); err != nil {
+	relative, err := filepath.Rel(session.root, view)
+	if err != nil {
 		return "", err
 	}
-	for _, name := range names {
-		alias := filepath.Join(view, "source", filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(alias), 0o755); err != nil {
+	view, err = ensureCacheDirectory(session.root, relative)
+	if err != nil {
+		return "", err
+	}
+	if session.viewLock == nil {
+		session.viewLock, err = lockProjectDirectory(filepath.Join(view, "include"))
+		if err != nil {
 			return "", err
 		}
-		if err := ensureWellKnownGitHubRepositoryAlias(alias, session.snapshots[name]); err != nil {
-			return "", err
-		}
-		repository, _ := libraryRecipeRepository(name)
-		if err := ensureWellKnownGitHubRepositoryAliases(view, repository, alias); err != nil {
-			return "", err
-		}
+	}
+	if err := session.prepareIncludeView(view); err != nil {
+		return "", err
+	}
+	session.layout, err = newCacheLayout(session, configuration, view)
+	if err != nil {
+		return "", err
 	}
 	return view, nil
 }
@@ -233,7 +248,7 @@ func (session *dependencySession) commit() error {
 			return fmt.Errorf("checksum mismatch after dependency preparation for %s", name)
 		}
 	}
-	if session.dirty {
+	if session.dirty && session.record {
 		if session.locked {
 			return errors.New("--locked: dependency record would change")
 		}
@@ -242,7 +257,7 @@ func (session *dependencySession) commit() error {
 		}
 	}
 	session.committed = true
-	session.close()
+	session.closeProjectFile()
 	if session.onCommit != nil {
 		return session.onCommit()
 	}
@@ -250,8 +265,11 @@ func (session *dependencySession) commit() error {
 }
 
 func (session *dependencySession) obtain(pin repositoryPin, progress *progressBar) (string, string, error) {
-	parent := filepath.Join(session.root, "snapshot", repositoryDigest([]byte(pin.Source)))
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if !repositoryCommitPattern.MatchString(pin.Commit) {
+		return "", "", errors.New("invalid snapshot commit")
+	}
+	parent, err := snapshotSourceDirectory(session.root, pin.Source)
+	if err != nil {
 		return "", "", err
 	}
 	// Serialize installation and validation of snapshots from this source.
@@ -260,7 +278,12 @@ func (session *dependencySession) obtain(pin repositoryPin, progress *progressBa
 		return "", "", err
 	}
 	defer lock.Close()
-	destination := filepath.Join(parent, pin.Commit)
+	return session.obtainLocked(parent, pin, progress)
+}
+
+// The caller holds the source-directory lock, including when publishing @default.
+func (session *dependencySession) obtainLocked(parent string, pin repositoryPin, progress *progressBar) (string, string, error) {
+	destination := filepath.Join(parent, "@"+pin.Commit)
 	exists, err := existingGitHubRepository(destination)
 	if err != nil {
 		return "", "", err
@@ -401,7 +424,9 @@ func prepareProject(parsed *arguments, options projectOptions, root string, work
 			if parsed.command != "format" && (os.Getenv("HARD_CONFIG") != "" || os.Getenv("HARD_PROXY") != "") {
 				return nil, nil, errors.New("corporate dependency configuration requires hard.yaml; run fetch --lock first")
 			}
-			return nil, nil, nil
+			if parsed.command == "format" {
+				return nil, nil, nil
+			}
 		}
 		filename = filepath.Join(workingDirectory, projectFilename)
 	}
@@ -418,7 +443,7 @@ func prepareProject(parsed *arguments, options projectOptions, root string, work
 		}
 	}()
 	project, err := readProjectFile(filename)
-	if errors.Is(err, os.ErrNotExist) && options.lock {
+	if errors.Is(err, os.ErrNotExist) && !options.locked && len(options.updates) == 0 {
 		project = &projectFile{Version: 1, filename: filename}
 		if err = yaml.Unmarshal([]byte("version: 1\n"), &project.document); err != nil {
 			return nil, nil, err
@@ -440,7 +465,6 @@ func prepareProject(parsed *arguments, options projectOptions, root string, work
 		if os.Getenv("HARD_CONFIG") != "" || os.Getenv("HARD_PROXY") != "" {
 			return nil, nil, errors.New("corporate dependency configuration requires repositories or fetch --lock")
 		}
-		return project, nil, nil
 	}
 	providerConfiguration, err := loadRepositoryConfiguration()
 	if err != nil {
@@ -450,7 +474,10 @@ func prepareProject(parsed *arguments, options projectOptions, root string, work
 	if err != nil {
 		return nil, nil, err
 	}
-	session.directory = directory
-	keepLock = true
+	session.workingDirectory = workingDirectory
+	if session.record {
+		session.directory = directory
+		keepLock = true
+	}
 	return project, session, nil
 }

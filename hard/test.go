@@ -228,7 +228,7 @@ func testSourcesWithProgressSelectionExecutable(
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
-	cache, err := newArtifactCache(!noCache)
+	cache, err := newArtifactCache(!noCache, githubResolver)
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}
@@ -317,6 +317,7 @@ func testSourcesWithProgressSelectionExecutable(
 		root,
 		environment,
 		plans,
+		cache.paths(),
 	)
 	if err != nil {
 		progress.setTotal(1)
@@ -358,6 +359,7 @@ func testSourcesWithProgressSelectionExecutable(
 		plans,
 		compileResults,
 		workingDirectory,
+		cache.paths(),
 	)
 	failures = append(failures, linkPlanFailures...)
 	linkResults := linkTests(
@@ -777,6 +779,7 @@ func mergeTestCompileSources(
 	root string,
 	environment string,
 	plans []testPlan,
+	layouts ...*cacheLayout,
 ) ([]testPlan, []string, [][]string, [][]string, [][]string, error) {
 	compileIndexes := make(map[string]int)
 	sources := make([]string, 0)
@@ -786,7 +789,7 @@ func mergeTestCompileSources(
 	for planIndex := range plans {
 		plans[planIndex].compileIndexes = make([]int, len(plans[planIndex].sources))
 		for sourceIndex, source := range plans[planIndex].sources {
-			object, err := objectFilePath(root, environment, source)
+			object, err := objectFilePath(root, environment, source, layouts...)
 			if err != nil {
 				return nil, nil, nil, nil, nil, err
 			}
@@ -866,6 +869,7 @@ func planTestLinkJobsWithSuffix(
 	plans []testPlan,
 	compileResults []*compileResult,
 	workingDirectory string,
+	layouts ...*cacheLayout,
 ) ([]testLinkJob, []error) {
 	tasks := make([]testLinkJob, 0, len(plans))
 	artifacts := make(map[string]string)
@@ -914,7 +918,7 @@ func planTestLinkJobsWithSuffix(
 		}
 		objects := make([]string, 0, len(objectIndexes))
 		for _, index := range objectIndexes {
-			object, err := objectFilePath(root, environment, plan.sources[index])
+			object, err := objectFilePath(root, environment, plan.sources[index], layouts...)
 			if err != nil {
 				failures = append(failures, err)
 				objects = nil
@@ -931,6 +935,7 @@ func planTestLinkJobsWithSuffix(
 			environment,
 			plan.source,
 			executableSuffix,
+			layouts...,
 		)
 		if err != nil {
 			failures = append(failures, err)

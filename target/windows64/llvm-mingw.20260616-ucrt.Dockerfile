@@ -74,6 +74,8 @@ LABEL org.opencontainers.image.source="https://github.com/hard-build/hard" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${HARD_REVISION}"
 
+COPY target/windows64/wine.sh /usr/local/bin/wine
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         autoconf \
@@ -91,7 +93,7 @@ RUN apt-get update \
         python3-pip \
         wine64 \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/lib/wine/wine64 /usr/local/bin/wine
+    && chmod 0755 /usr/local/bin/wine
 
 RUN curl --fail --location --retry 3 \
         --output /tmp/llvm-mingw.tar.xz \
@@ -173,7 +175,7 @@ ENV CMAKE_TOOLCHAIN_FILE=/opt/windows64/toolchain.cmake
 ENV PKG_CONFIG_LIBDIR=/opt/windows64/lib/pkgconfig
 ENV WINEARCH=win64
 ENV WINEDEBUG=-all
-ENV WINEPREFIX=/hard/env/windows64:${IMAGE_VERSION}/wine
+ENV WINEPREFIX=/hard/project/windows64:${IMAGE_VERSION}/@runtime/wine
 
 WORKDIR /project
 ENTRYPOINT ["/usr/local/libexec/hard/hard"]

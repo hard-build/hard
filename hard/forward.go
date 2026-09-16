@@ -348,8 +348,8 @@ func renderForwardDeclarations(declarations []forwardDeclaration) []byte {
 	return []byte(output.String())
 }
 
-func sourceForwardHeaderPath(root, environment, source string) (string, error) {
-	object, err := objectFilePath(root, environment, source)
+func sourceForwardHeaderPath(root, environment, source string, layouts ...*cacheLayout) (string, error) {
+	object, err := objectFilePath(root, environment, source, layouts...)
 	if err != nil {
 		return "", err
 	}

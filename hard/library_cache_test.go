@@ -86,7 +86,7 @@ func TestLibraryPackageSharedAcrossPinnedProjects(t *testing.T) {
 	if artifacts[0].archives[0] != artifacts[1].archives[0] {
 		t.Fatalf("identical libraries were rebuilt per project:\n%s\n%s", artifacts[0].archives[0], artifacts[1].archives[0])
 	}
-	if !pathWithin(filepath.Join(configuration.root, "env", "host", "library"), artifacts[0].archives[0]) {
+	if !pathWithin(filepath.Join(configuration.root, "project", "host", filepath.FromSlash(vendor.Source), "package"), artifacts[0].archives[0]) {
 		t.Fatalf("package not in shared cache: %s", artifacts[0].archives[0])
 	}
 }

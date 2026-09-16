@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -176,9 +177,13 @@ func defaultCFlags() []string {
 
 func effectiveCFlags(cflags []string, root, runtimeRoot string) []string {
 	flags := append([]string(nil), cflags...)
+	include := filepath.Join(root, "include")
+	if _, err := os.Stat(include); errors.Is(err, os.ErrNotExist) {
+		include = filepath.Join(root, "source")
+	}
 	return append(
 		flags,
-		"-I"+filepath.Join(root, "source"),
+		"-I"+include,
 		"-include",
 		filepath.Join(runtimeRoot, "hard.h"),
 	)

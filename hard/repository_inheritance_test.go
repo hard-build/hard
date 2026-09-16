@@ -409,7 +409,7 @@ func TestInheritedPinReplacementAndCache(t *testing.T) {
 	filename := filepath.Join(project, projectFilename)
 	before, _ := os.ReadFile(filename)
 	t.Setenv("HARD_CONFIG", "")
-	if out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked", "-v", "--no-color"); err != nil || strings.Contains(out, "Parsing app.cpp (CACHED)") {
+	if out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked", "-v", "--no-color"); err != nil || !strings.Contains(out, "Parsing app.cpp (CACHED)") {
 		t.Fatalf("recorded fork failed after removing its replacement rule: %v\n%s\n%s", err, out, diagnostics)
 	}
 	after, _ := os.ReadFile(filename)
@@ -535,7 +535,7 @@ func TestProjectPinOverridePreservesChecksumValidation(t *testing.T) {
 					t.Fatalf("initial override: %v\n%s\n%s", err, out, diagnostics)
 				}
 				if kind == "cached snapshot" {
-					snapshot := filepath.Join(configuration.root, "snapshot", repositoryDigest([]byte(pin.Source)), pin.Commit)
+					snapshot := filepath.Join(configuration.root, "snapshot", filepath.FromSlash(pin.Source), "@"+pin.Commit)
 					writeProjectTestFile(t, snapshot, "shared.h", "#pragma once\n// corrupted\n")
 				} else {
 					files["shared.h"] = "#pragma once\n// changed upstream at the same commit\n"

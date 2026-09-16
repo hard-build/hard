@@ -76,7 +76,7 @@ func runConfiguredCommand(parsed arguments, options projectOptions, configuratio
 		}
 		err = executeSourceCommand(parsed, current, sources, progress, resolver, stdin, stdout, diagnostics)
 		if session != nil && session.changed {
-			// A larger immutable source view is needed; no binary was executed.
+			// Refresh the locked include view; no binary was executed.
 			continue
 		}
 		if staged != nil {

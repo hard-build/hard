@@ -60,7 +60,7 @@ func fetchSourcesWithCache(
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
 	}
-	cache, err := newArtifactCache(!noCache)
+	cache, err := newArtifactCache(!noCache, resolver)
 	if err != nil {
 		return errors.Join(err, progress.finish())
 	}

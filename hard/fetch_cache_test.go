@@ -77,10 +77,7 @@ func TestFetchCacheMissesAndSourceClosure(t *testing.T) {
 	if out := run(true); !strings.Contains(out, "Parsing value.cpp (CACHED)") {
 		t.Fatalf("implementation not cached:\n%s", out)
 	}
-	recordPath, err := fetchParseCachePath(configuration.root, configuration.env, "main.cpp")
-	if err != nil {
-		t.Fatal(err)
-	}
+	recordPath := projectFetchRecord(t, configuration, project, "main.cpp")
 	for _, corrupt := range []string{"json", "version", "kind", "include edges"} {
 		t.Run(corrupt, func(t *testing.T) {
 			record, ok, err := readParseCacheRecord(recordPath)
@@ -212,7 +209,7 @@ func TestFetchCachePinnedRecipe(t *testing.T) {
 	run(true, "--locked")
 	// Corrupt a file which is not an analysis input. Snapshot validation must
 	// still fail instead of returning a valid parse-cache hit.
-	snapshot := filepath.Join(configuration.root, "snapshot", repositoryDigest([]byte(recipe.Source)), recipe.Commit)
+	snapshot := filepath.Join(configuration.root, "snapshot", filepath.FromSlash(recipe.Source), "@"+recipe.Commit)
 	writeProjectTestFile(t, snapshot, "hard.yaml", "invalid manifest\n")
 	if _, _, err := runProjectTestCommand(configuration, "fetch", "--locked"); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("cached analysis bypassed snapshot validation: %v", err)
@@ -270,7 +267,7 @@ func TestFetchCacheRevalidatesInheritedEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	cflags := effectiveCFlags(configuration.cflags, view, configuration.runtimeRoot)
-	recordPath, err := fetchParseCachePath(view, configuration.env, "main.cpp")
+	recordPath, err := fetchParseCachePath(view, configuration.env, "main.cpp", session.layout)
 	if err != nil {
 		t.Fatal(err)
 	}

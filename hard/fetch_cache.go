@@ -6,7 +6,14 @@ import (
 	"strings"
 )
 
-func fetchParseCachePath(root, environment, source string) (string, error) {
+func fetchParseCachePath(root, environment, source string, layouts ...*cacheLayout) (string, error) {
+	if len(layouts) != 0 && layouts[0] != nil {
+		path, err := layouts[0].sourcePath(source, true)
+		if err != nil {
+			return "", err
+		}
+		return path + parseCacheSuffix, nil
+	}
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("make HARD_ROOT absolute: %w", err)
@@ -45,7 +52,7 @@ func inspectFetchSourceWithCache(
 	var recordPath string
 	if cache != nil {
 		var err error
-		recordPath, err = fetchParseCachePath(root, environment, job.source)
+		recordPath, err = fetchParseCachePath(root, environment, job.source, cache.paths())
 		if err != nil {
 			result.err = err
 			return result
