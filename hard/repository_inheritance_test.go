@@ -174,7 +174,7 @@ func TestInheritedRepositoryPins(t *testing.T) {
 	})
 }
 
-func TestInheritedRepositoryConflicts(t *testing.T) {
+func TestInheritedRepositorySelection(t *testing.T) {
 	for _, kind := range []string{"recorded", "two parents", "same commit different ref", "source", "checksum"} {
 		for _, reverse := range []bool{false, true} {
 			t.Run(kind+map[bool]string{false: "/forward", true: "/reverse"}[reverse], func(t *testing.T) {
@@ -213,8 +213,8 @@ func TestInheritedRepositoryConflicts(t *testing.T) {
 				}
 				args := []string{"fetch", "--lock", "-j4"}
 				pins := map[string]repositoryPin{parents[0].Source: parents[0], parents[1].Source: parents[1]}
-				// Preselect the correct snapshot for source/checksum errors: this must
-				// validate resolved includes rather than only missing-include recovery.
+				// The project selection overrides disagreements between parents,
+				// including different sources and checksums for the same commit.
 				if kind == "source" || kind == "checksum" || kind == "recorded" {
 					pins[pin.Source] = pin
 					args = []string{"fetch", "--locked", "-j4"}
@@ -223,9 +223,22 @@ func TestInheritedRepositoryConflicts(t *testing.T) {
 				writeProjectTestFile(t, project, "app.cpp", "#include <"+first.Source+"/parent.h>\n#include <"+second.Source+"/parent.h>\n")
 				before, _ := os.ReadFile(filename)
 				out, diagnostics, err := runProjectTestCommand(configuration, args...)
-				if kind == "same commit different ref" {
+				if kind != "two parents" {
 					if err != nil {
-						t.Fatalf("equivalent refs conflict: %v\n%s\n%s", err, out, diagnostics)
+						t.Fatalf("compatible or overridden selection failed: %v\n%s\n%s", err, out, diagnostics)
+					}
+					file, err := readProjectFile(filename)
+					if err != nil || !sameRepositoryContents(file.Repositories[pin.Source], pin) {
+						t.Fatalf("wrong selected contents: %v, %#v", err, file)
+					}
+					if kind != "same commit different ref" {
+						after, _ := os.ReadFile(filename)
+						if !bytes.Equal(before, after) {
+							t.Fatal("inherited requirements changed a locked project selection")
+						}
+						if strings.Contains(proxy.log(), "/v1/resolve") || strings.Contains(proxy.log(), "/v1/snapshot "+other.Source+"@"+other.Commit) && (other.Source != pin.Source || other.Commit != pin.Commit) {
+							t.Fatalf("resolved or downloaded an overridden selection: %s", proxy.log())
+						}
 					}
 					return
 				}
@@ -323,12 +336,12 @@ func TestInheritedPinExplicitUpdate(t *testing.T) {
 	writeProjectTestFile(t, project, "app.cpp", "#include <github.com/demo/parent/parent.h>\n")
 	configuration := projectTestConfiguration(t)
 	before, _ := os.ReadFile(filename)
-	if _, _, err := runProjectTestCommand(configuration, "fetch", "--lock"); err == nil || !strings.Contains(err.Error(), "repository pin conflict") {
-		t.Fatalf("existing incompatible pin was accepted: %v", err)
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--lock"); err != nil {
+		t.Fatalf("existing project pin was rejected: %v\n%s\n%s", err, out, diagnostics)
 	}
 	after, _ := os.ReadFile(filename)
 	if !bytes.Equal(before, after) {
-		t.Fatal("--lock silently repaired an existing pin")
+		t.Fatal("--lock replaced an existing project pin")
 	}
 	proxy.mutex.Lock()
 	proxy.defaults[pin.Source] = pin
@@ -340,16 +353,24 @@ func TestInheritedPinExplicitUpdate(t *testing.T) {
 	if err != nil || file.Repositories[pin.Source] != pin {
 		t.Fatalf("explicit repair recorded the wrong pin: %v, %#v", err, file)
 	}
-	before, _ = os.ReadFile(filename)
 	proxy.mutex.Lock()
 	proxy.defaults[pin.Source] = moving
 	proxy.mutex.Unlock()
-	if _, _, err := runProjectTestCommand(configuration, "fetch", "--update="+pin.Source+"@main"); err == nil || !strings.Contains(err.Error(), "repository pin conflict") {
-		t.Fatalf("update ignored an inherited requirement: %v", err)
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--update="+pin.Source+"@main"); err != nil {
+		t.Fatalf("inherited pin prevented explicit update: %v\n%s\n%s", err, out, diagnostics)
+	}
+	file, err = readProjectFile(filename)
+	if err != nil || file.Repositories[pin.Source] != moving || file.Repositories[parent.Source] != parent {
+		t.Fatalf("explicit override recorded the wrong pins: %v, %#v", err, file)
+	}
+	before, _ = os.ReadFile(filename)
+	configuration.root = t.TempDir()
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--locked"); err != nil {
+		t.Fatalf("cold locked override: %v\n%s\n%s", err, out, diagnostics)
 	}
 	after, _ = os.ReadFile(filename)
 	if !bytes.Equal(before, after) {
-		t.Fatal("incompatible update changed the project")
+		t.Fatal("locked fetch replaced the explicit override")
 	}
 }
 
@@ -388,8 +409,8 @@ func TestInheritedPinReplacementAndCache(t *testing.T) {
 	filename := filepath.Join(project, projectFilename)
 	before, _ := os.ReadFile(filename)
 	t.Setenv("HARD_CONFIG", "")
-	if out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked"); err == nil || !strings.Contains(err.Error(), "repository pin conflict") || strings.Contains(out, "Parsing app.cpp (CACHED)") {
-		t.Fatalf("cache hid a removed replacement: %v\n%s\n%s", err, out, diagnostics)
+	if out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked", "-v", "--no-color"); err != nil || strings.Contains(out, "Parsing app.cpp (CACHED)") {
+		t.Fatalf("recorded fork failed after removing its replacement rule: %v\n%s\n%s", err, out, diagnostics)
 	}
 	after, _ := os.ReadFile(filename)
 	if !bytes.Equal(before, after) {
@@ -446,6 +467,91 @@ func TestInheritedPinFailuresDoNotWrite(t *testing.T) {
 			}
 			if kind == "locked missing" && strings.Contains(proxy.log(), "/v1/snapshot "+pin.Source) {
 				t.Fatal("locked fetched an unrecorded inherited pin")
+			}
+		})
+	}
+}
+
+func TestRecordedInheritedPinSurvivesParentUpdate(t *testing.T) {
+	proxy := newInheritanceTestProxy(t)
+	pin, archive := inheritedTestSnapshot(t, "github.com/demo/shared", "release", secondCommit, map[string]string{"shared.h": "#pragma once\n"})
+	proxy.add(pin, archive)
+	parentFiles := map[string]string{
+		"parent.h":  "#pragma once\n#include <github.com/demo/shared/shared.h>\n",
+		"hard.yaml": inheritedTestYAML(t, map[string]repositoryPin{pin.Source: pin}),
+	}
+	parent, parentArchive := inheritedTestSnapshot(t, "github.com/demo/parent", "main", firstCommit, parentFiles)
+	proxy.add(parent, parentArchive)
+	project := t.TempDir()
+	withWorkingDirectory(t, project)
+	writeProjectTestFile(t, project, "app.cpp", "#include <github.com/demo/parent/parent.h>\n")
+	configuration := projectTestConfiguration(t)
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--lock"); err != nil {
+		t.Fatalf("initial inheritance: %v\n%s\n%s", err, out, diagnostics)
+	}
+	other := pin
+	other.Ref, other.Commit = "next", nextCommit
+	parentFiles["hard.yaml"] = inheritedTestYAML(t, map[string]repositoryPin{pin.Source: other})
+	nextParent, nextArchive := inheritedTestSnapshot(t, parent.Source, "next", nextCommit, parentFiles)
+	proxy.add(nextParent, nextArchive)
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--update="+parent.Source+"@next"); err != nil {
+		t.Fatalf("parent update changed the recorded dependency: %v\n%s\n%s", err, out, diagnostics)
+	}
+	file, err := readProjectFile(filepath.Join(project, projectFilename))
+	if err != nil || file.Repositories[parent.Source] != nextParent || file.Repositories[pin.Source] != pin {
+		t.Fatalf("parent update did not preserve the project pin: %v, %#v", err, file)
+	}
+	if strings.Contains(proxy.log(), "/v1/resolve "+pin.Source) || strings.Contains(proxy.log(), "/v1/snapshot "+pin.Source+"@"+nextCommit) {
+		t.Fatalf("requested the overridden upstream revision: %s", proxy.log())
+	}
+}
+
+func TestProjectPinOverridePreservesChecksumValidation(t *testing.T) {
+	for _, kind := range []string{"recorded checksum", "cached snapshot", "same revision update"} {
+		t.Run(kind, func(t *testing.T) {
+			proxy := newInheritanceTestProxy(t)
+			files := map[string]string{"shared.h": "#pragma once\n"}
+			pin, archive := inheritedTestSnapshot(t, "github.com/demo/shared", "selected", secondCommit, files)
+			proxy.add(pin, archive)
+			upstream := pin
+			upstream.Ref, upstream.Commit = "upstream", nextCommit
+			parent, parentArchive := inheritedTestSnapshot(t, "github.com/demo/parent", "main", firstCommit, map[string]string{
+				"parent.h":  "#pragma once\n#include <github.com/demo/shared/shared.h>\n",
+				"hard.yaml": inheritedTestYAML(t, map[string]repositoryPin{pin.Source: upstream}),
+			})
+			proxy.add(parent, parentArchive)
+			if kind == "recorded checksum" {
+				pin.Checksum = "sha256:" + strings.Repeat("0", 64)
+			}
+			project := t.TempDir()
+			withWorkingDirectory(t, project)
+			filename := writeProjectTestFile(t, project, projectFilename, inheritedTestYAML(t, map[string]repositoryPin{parent.Source: parent, pin.Source: pin}))
+			writeProjectTestFile(t, project, "app.cpp", "#include <github.com/demo/parent/parent.h>\n")
+			configuration := projectTestConfiguration(t)
+			before, _ := os.ReadFile(filename)
+			args := []string{"fetch", "--locked"}
+			if kind != "recorded checksum" {
+				if out, diagnostics, err := runProjectTestCommand(configuration, args...); err != nil {
+					t.Fatalf("initial override: %v\n%s\n%s", err, out, diagnostics)
+				}
+				if kind == "cached snapshot" {
+					snapshot := filepath.Join(configuration.root, "snapshot", repositoryDigest([]byte(pin.Source)), pin.Commit)
+					writeProjectTestFile(t, snapshot, "shared.h", "#pragma once\n// corrupted\n")
+				} else {
+					files["shared.h"] = "#pragma once\n// changed upstream at the same commit\n"
+					changed, changedArchive := inheritedTestSnapshot(t, pin.Source, pin.Ref, pin.Commit, files)
+					proxy.add(changed, changedArchive)
+					configuration.root = t.TempDir()
+					args = []string{"fetch", "--update=" + pin.Source + "@" + pin.Ref}
+				}
+			}
+			out, diagnostics, err := runProjectTestCommand(configuration, args...)
+			if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+				t.Fatalf("override bypassed checksum validation: %v\n%s\n%s", err, out, diagnostics)
+			}
+			after, _ := os.ReadFile(filename)
+			if !bytes.Equal(before, after) {
+				t.Fatal("checksum failure changed the project file")
 			}
 		})
 	}

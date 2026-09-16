@@ -1403,24 +1403,32 @@ inference for arbitrary C++ repositories.
 
 Pinned execution also reads the root `hard.yaml` of the selected downloaded
 repository that owns an including file or recipe header. For each actively
-requested dependency, its record supplies exact source/ref/commit/checksum,
-without resolving the inherited ref. This recurses across ordinary includes,
+requested dependency not already recorded by the consuming project, its record
+supplies exact source/ref/commit/checksum, without resolving the inherited ref.
+This recurses across ordinary includes,
 well-known aliases, and recipe vendor requests. Only requested entries are
 added: other repositories, format and exclude are not imported, and nested or
 ancestor project files are not searched. The ordinary strict YAML validator is
-reused; invalid manifests/checksums fail instead of reverting to a moving ref.
+reused; invalid manifests and invalid checksums of selected snapshots fail
+instead of reverting to a moving ref.
 
-Existing project pins and active inherited requirements must agree on source,
-commit and checksum; ref aliases for identical contents are compatible. Errors
-identify both selections and origins and do not rewrite the project. A new,
+Recorded project pins, including explicit updates, take precedence over
+inherited requirements and resolve disagreements between their owners. No
+additional override field is used. An automatically inherited entry becomes a
+project choice once recorded; updating its parent never implicitly updates it.
+Without a project choice, inherited requirements must agree on source, commit
+and checksum; ref aliases for identical contents are compatible. Errors identify
+both selections and origins and do not rewrite the project. A new,
 not-yet-written default-branch selection can be replaced by a subsequently
 discovered inherited pin, followed by analysis in a new immutable view.
 Conflicting inherited pins are errors rather than first-discovered wins.
 An explicit corporate replace selecting another source/ref overrides upstream
 requirements; an identical rule preserves the inherited checksum. Existing
-project pins still require explicit updates for corporate changes. Updates
-otherwise remain subject to inherited requirements. Locked mode does not add
-inherited entries missing from the project record.
+project pins still require explicit updates for corporate changes. Locked mode
+honors project precedence but does not add inherited entries missing from the
+project record. Selected snapshots retain checksum validation; overridden
+API/ABI/recipe compatibility is not inferred. Removing a corporate replacement
+does not revert a recorded fork.
 
 ### Creation, ordinary use, updates, and CI
 
@@ -1482,8 +1490,8 @@ Each `HARD_ROOT/project/<selection-digest>` contains a `source` view with
 relative logical-repository and well-known aliases, plus its own
 `env/HARD_ENV/build` and `env/HARD_ENV/library`. Identity includes the project
 filename, complete pins, corporate replacement rules, compiler, flags and entry
-names. Replacement rules prevent cached source analysis from bypassing a
-conflict after an override is removed. A newly discovered
+names. Different replacement configurations keep separate source views, even
+when their recorded pins match. A newly discovered
 repository stages a pin and retries analysis with an expanded view; it never
 switches an existing view's aliases. This naturally places the selection in
 parse/compiler arguments and artifact/cache paths without changing cache
@@ -1653,13 +1661,42 @@ equivalent ref spellings, checksum/configuration errors, cold locked downloads,
 missing locked records, explicit repair and fork updates, cached C++ builds,
 GoogleTest results, and removal of a replacement after a cached build.
 The user's `test_recipe/hard.yaml` and
-installed runtime are intentionally untouched. An existing conflicting
-TinyXML2 record needs an explicit
-`fetch --update=github.com/leethomason/tinyxml2@11.0.0`, not another `--lock`.
+installed runtime are intentionally untouched. In that initial implementation,
+an existing conflicting TinyXML2 record needed an explicit
+`fetch --update=github.com/leethomason/tinyxml2@11.0.0`, not another `--lock`;
+the project-precedence decision below supersedes that conflict rule.
 Targeted regressions and the complete `make check` passed, including real CMake
 and GoogleTest execution, ordinary/race tests, vet, isolated build, module,
 shell, target-manifest and diff checks. Local documentation links and anchors
 were validated. No release tag or installed runtime was changed.
+
+The user subsequently approved project-level overrides of inherited pins.
+Recorded project choices and explicit `--update` now win over recipe/include
+manifests, including when multiple parents disagree and when using `--locked`.
+Initial inheritance, conflicts without a project choice, corporate replacement
+restrictions, and checksum validation remain. Changing only a record's `ref`
+does not move its authoritative `commit`. The schema is unchanged.
+Regression coverage includes locked project precedence over source/commit/checksum
+differences, explicit updates in both directions, preserving an automatically
+inherited pin after a parent update, cold locked fetches, recorded and cached
+checksum failures, same-revision update integrity, and a real CMake library
+whose changed function result proves the new revision was linked. The first
+run after a vendor update must miss parse/package/object/link caches and the
+next run must reuse them. Fetch parse caching remains separate pending work;
+this override change does not implement it.
+
+Verification passed the complete `make check` and ten repeated race runs of
+selection, provisional-default, parent-update, and override-integrity tests.
+A fresh backend and a copy of `test_recipe` under
+`/tmp/hard-project-override.Ch8E3w` built its existing TinyXML2 `11.0.0`, then
+successfully updated to `9.0.0` at `1dee28e51f9175a31955b9791c74c430fe13dc82`
+while keeping the recipe revision unchanged. Locked execution rebuilt the
+library and application, then reused package/parse/object/link caches on repeat.
+A separate XML smoke program printed `tinyxml2=9.0.0 answer=42`.
+Repeating `fetch --lock` preserved the project file byte-for-byte. Original
+project sources, binary and YAML, installed runtime, and tags were not changed.
+The attempted update to `10.0.0` exposed the pre-existing GitHub JSON size limit
+documented below; its failure also left the project file unchanged.
 
 ## Forward declarations
 
@@ -2463,6 +2500,13 @@ to leave the library unchanged for now.
 
 ## Known gaps and deliberately unchanged issues
 
+- Direct GitHub revision lookup uses the full commit JSON and limits reads to
+  1 MiB in `repositoryProvider.readJSON`. The TinyXML2 `10.0.0` response on
+  2026-09-16 exceeded that limit (1,204,533 bytes even after JSON compaction),
+  so `fetch --update=github.com/leethomason/tinyxml2@10.0.0` failed with
+  `invalid dependency server JSON response` before pin selection. The project
+  file stayed unchanged. This independent provider issue was diagnosed, not
+  fixed, during the project-precedence task; it needs a separate approved fix.
 - System-header and toolchain-state changes inside one `HARD_ENV` intentionally
   do not invalidate parse or object caches. Select a new environment after
   compiler, libclang resource, standard-library, libc, sysroot, ABI, target,

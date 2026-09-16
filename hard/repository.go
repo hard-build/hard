@@ -120,16 +120,9 @@ func (session *dependencySession) ensure(repository githubRepository, progress *
 	}
 	pin, exists := session.pins[name]
 	if required != nil && exists && pin != required.pin {
-		if _, recorded := session.project.Repositories[name]; recorded {
-			if !sameRepositoryContents(pin, required.pin) {
-				session.failure = repositoryRequirementConflict(name, session.project.filename, pin, required.origin(), required.pin)
-				return session.failure
-			}
-		} else {
-			// A provisional default-branch choice is not a project pin. A subsequently
-			// discovered requirement replaces it before the dependency record is written.
-			exists = false
-		}
+		// Inherited requirements apply only to unrecorded dependencies. Replace a
+		// provisional default-branch choice before the project record is written.
+		exists = false
 	}
 	if session.locked && !exists {
 		return fmt.Errorf("--locked: repository %s is not recorded in %s", name, session.project.filename)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,11 +28,14 @@ static_libraries: [lib/libvendor.a]
 #pragma once
 #include <vendor.h>
 `
-	vendorPin, vendorArchive := inheritedTestSnapshot(t, "github.com/demo/vendor", "release", secondCommit, map[string]string{
+	vendorFiles := map[string]string{
 		"CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(vendor LANGUAGES CXX)\nadd_library(vendor STATIC vendor.cpp)\ninstall(TARGETS vendor ARCHIVE DESTINATION lib)\ninstall(FILES vendor.h DESTINATION include)\n",
 		"vendor.cpp":     "int vendor_value() { return 7; }\n",
 		"vendor.h":       "#pragma once\nint vendor_value();\n",
-	})
+	}
+	vendorPin, vendorArchive := inheritedTestSnapshot(t, "github.com/demo/vendor", "release", secondCommit, vendorFiles)
+	vendorFiles["vendor.cpp"] = "int vendor_value() { return 19; }\n"
+	override, overrideArchive := inheritedTestSnapshot(t, vendorPin.Source, "override", nextCommit, vendorFiles)
 	_, recipeArchive := inheritedTestSnapshot(t, "github.com/hard-build/recipe", "main", firstCommit, map[string]string{
 		"vendor.hard.h": recipe,
 		"hard.yaml":     inheritedTestYAML(t, map[string]repositoryPin{vendorPin.Source: vendorPin}),
@@ -40,11 +44,19 @@ static_libraries: [lib/libvendor.a]
 		switch request.URL.Path {
 		case "/v1/resolve":
 			if request.URL.Query().Get("source") == vendorPin.Source {
-				t.Error("resolved the vendor default branch instead of inheriting the recipe pin")
+				if request.URL.Query().Get("ref") != override.Ref {
+					t.Error("resolved the vendor default branch instead of inheriting the recipe pin")
+				}
+				_ = json.NewEncoder(response).Encode(map[string]string{"commit": override.Commit, "ref": override.Ref})
+				return
 			}
 			_ = json.NewEncoder(response).Encode(map[string]string{"commit": firstCommit, "ref": "main"})
 		case "/v1/snapshot":
 			if request.URL.Query().Get("source") == vendorPin.Source {
+				if request.URL.Query().Get("commit") == override.Commit {
+					_, _ = response.Write(overrideArchive)
+					return
+				}
 				if request.URL.Query().Get("commit") != vendorPin.Commit {
 					t.Error("downloaded the wrong vendor revision")
 				}
@@ -60,7 +72,7 @@ static_libraries: [lib/libvendor.a]
 	t.Setenv("HARD_PROXY", server.URL)
 	project := t.TempDir()
 	withWorkingDirectory(t, project)
-	writeProjectTestFile(t, project, "app.cpp", "#include <recipe/vendor.hard.h>\nint main() { return vendor_value() == 7 ? 0 : 41; }\n")
+	writeProjectTestFile(t, project, "app.cpp", "#include <recipe/vendor.hard.h>\n#include <cstdlib>\nint main(int argc, char** argv) { return argc == 2 && vendor_value() == std::atoi(argv[1]) ? 0 : 41; }\n")
 	configuration := projectTestConfiguration(t)
 	for _, args := range [][]string{{"fetch", "--lock", "--no-color"}, {"fetch", "--locked", "--no-color", "-v"}} {
 		out, diagnostics, err := runProjectTestCommand(configuration, args...)
@@ -82,13 +94,36 @@ static_libraries: [lib/libvendor.a]
 		t.Fatalf("fetch built a package: %v", paths)
 	}
 	for pass := 0; pass < 2; pass++ {
-		out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked", "-v")
+		out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked", "-v", "--", "7")
 		if err != nil {
 			t.Fatalf("recipe run: %v\n%s\n%s", err, out, diagnostics)
 		}
 		if pass == 1 && !strings.Contains(out, "Building github.com/demo/vendor (CACHED)") {
 			t.Fatalf("vendor cache not reused: %s", out)
 		}
+	}
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--update="+vendorPin.Source+"@"+override.Ref); err != nil {
+		t.Fatalf("recipe vendor override: %v\n%s\n%s", err, out, diagnostics)
+	}
+	updated, err := readProjectFile(file.filename)
+	if err != nil || len(updated.Repositories) != 2 || updated.Repositories[vendorPin.Source] != override || updated.Repositories["github.com/hard-build/recipe"] != file.Repositories["github.com/hard-build/recipe"] {
+		t.Fatalf("incorrect recipe override record: %v, %#v", err, updated)
+	}
+	before, _ := os.ReadFile(file.filename)
+	for pass := 0; pass < 2; pass++ {
+		out, diagnostics, err := runProjectTestCommand(configuration, "run", "--locked", "--no-color", "-v", "--", "19")
+		if err != nil {
+			t.Fatalf("overridden recipe run: %v\n%s\n%s", err, out, diagnostics)
+		}
+		for _, step := range []string{"Building github.com/demo/vendor", "Parsing app.cpp", "Compiling app.cpp", "Linking app"} {
+			if strings.Contains(out, step+" (CACHED)") != (pass == 1) {
+				t.Fatalf("wrong cache state for %s on override pass %d: %s", step, pass, out)
+			}
+		}
+	}
+	after, _ := os.ReadFile(file.filename)
+	if !bytes.Equal(before, after) {
+		t.Fatal("locked recipe run changed the override")
 	}
 }
 

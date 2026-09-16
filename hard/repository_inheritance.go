@@ -82,6 +82,11 @@ func (session *dependencySession) inheritedRequirement(name, parent string) (*re
 			}
 		}
 	}
+	// Any recorded project choice, including an explicit update, takes precedence
+	// over inherited pins and resolves disagreements between their owners.
+	if _, recorded := session.project.Repositories[name]; recorded {
+		return nil, nil
+	}
 	owners := make([]string, 0, len(session.requirements[name]))
 	for owner := range session.requirements[name] {
 		owners = append(owners, owner)

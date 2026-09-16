@@ -452,7 +452,7 @@ The presence of `repositories`, even `{}`, enables dependency recording:
 hard fetch --lock
 hard build
 hard test --locked
-hard fetch --update=github.com/leethomason/tinyxml2@10.0.0
+hard fetch --update=github.com/leethomason/tinyxml2@9.0.0
 ```
 
 `fetch --lock` creates the file or adds the section. Normal `fetch`, `build`,
@@ -466,11 +466,19 @@ snapshots. `--no-cache` never refreshes dependency revisions.
 
 When a downloaded repository includes another dependency or supplies its recipe,
 hard reads that repository's root `hard.yaml` and inherits the dependency's exact
-record, without resolving its branch or tag again. Only dependencies reached by
+record when the project has not already recorded its own choice, without
+resolving the inherited branch or tag again. Only dependencies reached by
 active includes or recipes are added; unrelated records, `format`, and `exclude`
-are not imported. Conflicting sources, commits, or checksums are errors, not
-implicit updates. Different `ref` names for identical pinned contents are allowed.
-Explicit corporate replacements can override inherited upstream selections.
+are not imported. The project's recorded selection and explicit `--update`
+take precedence over inherited pins, including under `--locked`. For example,
+the TinyXML2 update above selects `9.0.0` even if its recipe records `11.0.0`.
+An automatically inherited entry becomes a project choice once recorded;
+updating the recipe repository does not implicitly update its libraries.
+Without a project choice, conflicting inherited sources, commits, or checksums
+are errors; different `ref` names for identical contents are compatible.
+Explicit corporate replacement rules retain their own conflict checks.
+Selected snapshots still require matching checksums, and compatibility with an
+overridden library version remains the project's responsibility.
 
 Repository updates are atomic after successful dependency resolution. Other
 settings and their comments are preserved. Commit `hard.yaml` with the project.
