@@ -985,9 +985,13 @@ lines, and silent mode hides the complete progress stream. All entries follow
 For sources in the canonical GitHub cache, the `Compiling` label is relative
 to `HARD_ROOT/source`, for example
 `github.com/hard-build/library/application/application.cpp`. A source selected
-through a well-known alias is canonicalized to that same label. This affects
-only progress output: verbose compiler commands, diagnostics, object paths, and
-other artifacts continue to use the actual source path.
+through a well-known alias is canonicalized to that same label. Pinned snapshots
+are mapped through the selected source view's repository links, so `Parsing`
+and `Compiling` use `github.com/<owner>/<repository>/<path>` even when the file
+physically resides under `snapshot/<hash>/<commit>`. Replacements retain their
+logical repository names. Cached progress entries use the same labels. This
+affects only progress output: verbose compiler commands, diagnostics, object
+paths, and other artifacts continue to use the actual source path.
 
 Root translation units without a configured entry point remain object files.
 Automatically discovered implementation sources are dependency-only even when

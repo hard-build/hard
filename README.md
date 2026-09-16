@@ -566,6 +566,9 @@ configuration variables, not from `HARD_ENV`.
 Pinned projects instead use shared `snapshot/` directories and isolated
 `project/<selection-digest>/` source views and artifact trees; see the
 [pinned cache layout](docs/reference.md#pinned-source-and-artifact-layout).
+For pinned dependencies, `Parsing` and `Compiling` progress labels still use
+logical repository paths such as `github.com/leethomason/tinyxml2/tinyxml2.cpp`,
+not internal snapshot paths. Verbose compiler commands retain the real paths.
 Stale generated artifacts and downloaded snapshots are not removed
 automatically.
 

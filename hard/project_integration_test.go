@@ -21,7 +21,7 @@ func TestProjectRecipeAndVendorAreBothPinned(t *testing.T) {
 source: github.com/demo/vendor
 build_system: cmake
 source_directory: .
-source_include_directories: [include]
+source_include_directories: [.]
 include_directories: [include]
 static_libraries: [lib/libvendor.a]
 */
@@ -31,9 +31,9 @@ static_libraries: [lib/libvendor.a]
 	archives := map[string][]byte{
 		"github.com/hard-build/recipe": githubTestArchive(t, []githubTestArchiveEntry{{name: "recipe/vendor.hard.h", typeflag: tar.TypeReg, mode: 0o644, contents: recipe}}),
 		"github.com/demo/vendor": githubTestArchive(t, []githubTestArchiveEntry{
-			{name: "vendor/CMakeLists.txt", typeflag: tar.TypeReg, mode: 0o644, contents: "cmake_minimum_required(VERSION 3.16)\nproject(vendor LANGUAGES CXX)\nadd_library(vendor STATIC vendor.cpp)\ninstall(TARGETS vendor ARCHIVE DESTINATION lib)\ninstall(FILES include/vendor.h DESTINATION include)\n"},
+			{name: "vendor/CMakeLists.txt", typeflag: tar.TypeReg, mode: 0o644, contents: "cmake_minimum_required(VERSION 3.16)\nproject(vendor LANGUAGES CXX)\nadd_library(vendor STATIC vendor.cpp)\ninstall(TARGETS vendor ARCHIVE DESTINATION lib)\ninstall(FILES vendor.h DESTINATION include)\n"},
 			{name: "vendor/vendor.cpp", typeflag: tar.TypeReg, mode: 0o644, contents: "int vendor_value() { return 7; }\n"},
-			{name: "vendor/include/vendor.h", typeflag: tar.TypeReg, mode: 0o644, contents: "#pragma once\nint vendor_value();\n"},
+			{name: "vendor/vendor.h", typeflag: tar.TypeReg, mode: 0o644, contents: "#pragma once\nint vendor_value();\n"},
 		}),
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -52,8 +52,14 @@ static_libraries: [lib/libvendor.a]
 	withWorkingDirectory(t, project)
 	writeProjectTestFile(t, project, "app.cpp", "#include <recipe/vendor.hard.h>\nint main() { return vendor_value() == 7 ? 0 : 41; }\n")
 	configuration := projectTestConfiguration(t)
-	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--lock"); err != nil {
-		t.Fatalf("recipe fetch: %v\n%s\n%s", err, out, diagnostics)
+	for _, args := range [][]string{{"fetch", "--lock", "--no-color"}, {"fetch", "--locked", "--no-color", "-v"}} {
+		out, diagnostics, err := runProjectTestCommand(configuration, args...)
+		if err != nil {
+			t.Fatalf("recipe fetch: %v\n%s\n%s", err, out, diagnostics)
+		}
+		if !strings.Contains(out, "Parsing github.com/demo/vendor/vendor.cpp") || strings.Contains(out, "snapshot/") {
+			t.Errorf("recipe fetch lost canonical vendor label:\n%s", out)
+		}
 	}
 	file, err := readProjectFile(filepath.Join(project, projectFilename))
 	if err != nil || len(file.Repositories) != 2 {

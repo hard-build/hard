@@ -1936,14 +1936,41 @@ func compileSourceDisplayPath(root, source, workingDirectory string) string {
 	if err != nil {
 		return source
 	}
-	if !pathWithin(filepath.Join(sourceRoot, "github.com"), canonicalSource) {
-		return source
+	githubRoot := filepath.Join(sourceRoot, "github.com")
+	if pathWithin(githubRoot, canonicalSource) {
+		relative, err := filepath.Rel(sourceRoot, canonicalSource)
+		if err != nil {
+			return source
+		}
+		return filepath.ToSlash(relative)
 	}
-	relative, err := filepath.Rel(sourceRoot, canonicalSource)
+	// Pinned source views link logical repository names to snapshots outside
+	// sourceRoot. Match only this view's repository links, not the shared cache.
+	owners, err := os.ReadDir(githubRoot)
 	if err != nil {
 		return source
 	}
-	return filepath.ToSlash(relative)
+	for _, owner := range owners {
+		ownerRoot := filepath.Join(githubRoot, owner.Name())
+		repositories, err := os.ReadDir(ownerRoot)
+		if err != nil {
+			continue
+		}
+		for _, repository := range repositories {
+			if repository.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			snapshot, err := filepath.EvalSymlinks(filepath.Join(ownerRoot, repository.Name()))
+			if err != nil || !pathWithin(snapshot, canonicalSource) {
+				continue
+			}
+			relative, err := filepath.Rel(snapshot, canonicalSource)
+			if err == nil {
+				return filepath.ToSlash(filepath.Join("github.com", owner.Name(), repository.Name(), relative))
+			}
+		}
+	}
+	return source
 }
 
 func buildParsingDisplayPath(root, path, workingDirectory string) string {

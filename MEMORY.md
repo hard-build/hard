@@ -241,6 +241,7 @@ cache entries and are not refreshed automatically.
 | `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
 | `hard/source.go` | File classification, recursive discovery, symlink traversal, and deduplication |
 | `hard/source_test.go` | Extensions, ordering, explicit paths, symlinks, cycles, and failures |
+| `hard/source_display_test.go` | Pinned source progress paths, source-view aliases, local-path preservation, and real fetch/build/run progress with cache reuse |
 | `hard/progress.go` | Thread-safe normal, verbose, silent, color, and live-step output |
 | `hard/progress_test.go` | Progress rendering, details, colors, padding, and unknown totals |
 | `hard/format.go` | Style validation, parallel clang-format execution, and unified diffs |
@@ -1062,7 +1063,10 @@ Paths below canonical `HARD_ROOT/source/github.com` are displayed relative to
 `github.com/hard-build/library/application/application.cpp`. Well-known aliases
 use the same canonical display. Only the progress label changes; actual source
 arguments, diagnostics, errors, object paths, and verbose commands keep their
-real paths.
+real paths. For pinned dependencies, `Parsing` and `Compiling` resolve the
+physical snapshot through the active source view's repository symlinks and use
+the logical `github.com/<owner>/<repository>/<path>` label, including for forks
+and cached steps. Unselected snapshots are not assigned another view's labels.
 
 Errors and diagnostics use stderr. Top-level errors are rendered as:
 
@@ -1586,6 +1590,23 @@ and types were checked. The installed wrapper successfully ran `format`,
 `hard.yaml`, selecting only cwd and respecting YAML-relative exclusions.
 A separate CLI smoke check rejected `paths` as an unknown field. Docker argument
 checks use the test suite's fake Docker executable; no real container was run.
+
+On 2026-09-16 a reported `fetch --lock` regression exposed relative internal
+snapshot paths in `Parsing` progress. The old display helper recognized only
+physical files below `source/github.com`; resolving pinned repository symlinks
+put files outside that tree. The common display helper now also matches
+repository symlinks in the selected source view, without scanning snapshot
+contents or changing compiler paths, dependency identities, or cache layouts.
+Regression tests first reproduced the failure, including recipe vendor parsing,
+compilation, and cached progress. They cover absolute/relative and symlinked
+roots, well-known aliases, fork snapshots, broken links, unchanged local paths,
+and rejection of unselected revisions or similarly prefixed snapshot paths.
+The recipe fixture places its header beside the implementation so `fetch`
+discovers the vendor translation unit, as in the reported TinyXML2 case.
+The targeted regression and legacy display tests passed after the fix, followed
+by the complete `make check` (ordinary and race tests, vet, isolated build,
+module, shell, manifest, and diff checks). Documentation links were checked.
+The installed runtime and the existing `v6.0` tag were not changed.
 
 ## Forward declarations
 
