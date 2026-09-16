@@ -90,6 +90,7 @@ type digestResult struct {
 
 type artifactCache struct {
 	layout      *cacheLayout
+	discovery   *dependencyDiscovery
 	read        bool
 	hard        string
 	mu          sync.Mutex
@@ -107,11 +108,14 @@ func newArtifactCache(read bool, resolvers ...*githubSnapshotResolver) (*artifac
 		return nil, fmt.Errorf("fingerprint hard executable for cache: %w", err)
 	}
 	var layout *cacheLayout
+	var discovery *dependencyDiscovery
 	if len(resolvers) != 0 && resolvers[0] != nil && resolvers[0].session != nil {
 		layout = resolvers[0].session.layout
+		discovery = resolvers[0].session.discovery
 	}
 	return &artifactCache{
 		layout:      layout,
+		discovery:   discovery,
 		read:        read,
 		hard:        hard,
 		fileDigests: make(map[string]digestResult),
@@ -506,6 +510,9 @@ func (cache *artifactCache) parseHit(
 	if err != nil || result != record.Result {
 		return parseCacheRecord{}, false, nil
 	}
+	if err := cache.discovery.observe(cache, inputs, workingDirectory); err != nil {
+		return parseCacheRecord{}, false, err
+	}
 	return record, true, nil
 }
 
@@ -530,6 +537,7 @@ func (cache *artifactCache) storeParse(
 		return false, err
 	}
 	if unsafe {
+		cache.discovery.disable()
 		return false, nil
 	}
 	inputs := append([]string{source}, record.Dependencies...)
@@ -556,6 +564,9 @@ func (cache *artifactCache) storeParse(
 	}
 	encoded = append(encoded, '\n')
 	if err := writeCacheRecord(path, encoded); err != nil {
+		return false, err
+	}
+	if err := cache.discovery.observe(cache, inputs, workingDirectory); err != nil {
 		return false, err
 	}
 	return true, nil

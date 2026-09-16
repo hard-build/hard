@@ -28,6 +28,7 @@ type dependencySession struct {
 	viewLock         *os.File
 	workingDirectory string
 	layout           *cacheLayout
+	discovery        *dependencyDiscovery
 
 	mutex        sync.Mutex
 	pins         map[string]repositoryPin
@@ -182,6 +183,25 @@ func (session *dependencySession) view(configuration configuration, progress *pr
 	if session.failure != nil {
 		return "", session.failure
 	}
+	view, err := localProjectRoot(session.root, configuration.env, session.workingDirectory)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(session.root, view)
+	if err != nil {
+		return "", err
+	}
+	view, err = ensureCacheDirectory(session.root, relative)
+	if err != nil {
+		return "", err
+	}
+	if session.viewLock == nil {
+		session.viewLock, err = lockProjectDirectory(filepath.Join(view, "include"))
+		if err != nil {
+			return "", err
+		}
+		session.restoreDiscoveryCache()
+	}
 	session.changed = false
 	session.selected = make(map[string]string)
 	names := make([]string, 0, len(session.pins))
@@ -200,24 +220,6 @@ func (session *dependencySession) view(configuration configuration, progress *pr
 			session.pins[name], session.snapshots[name] = pin, snapshot
 		}
 		session.selected[name] = session.snapshots[name]
-	}
-	view, err := localProjectRoot(session.root, configuration.env, session.workingDirectory)
-	if err != nil {
-		return "", err
-	}
-	relative, err := filepath.Rel(session.root, view)
-	if err != nil {
-		return "", err
-	}
-	view, err = ensureCacheDirectory(session.root, relative)
-	if err != nil {
-		return "", err
-	}
-	if session.viewLock == nil {
-		session.viewLock, err = lockProjectDirectory(filepath.Join(view, "include"))
-		if err != nil {
-			return "", err
-		}
 	}
 	if err := session.prepareIncludeView(view); err != nil {
 		return "", err
@@ -255,6 +257,9 @@ func (session *dependencySession) commit() error {
 		if err := session.project.writeRepositories(session.pins); err != nil {
 			return err
 		}
+	}
+	if err := session.storeDiscoveryCache(); err != nil {
+		return err
 	}
 	session.committed = true
 	session.closeProjectFile()

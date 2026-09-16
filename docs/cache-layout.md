@@ -40,6 +40,7 @@ HARD_ROOT/
     `-- host/                                  # HARD_ENV: analysis and build environment
         |-- root/                              # Local project state
         |   |-- workspace/example/             # Absolute project directory without leading /
+        |   |   |-- dependencies.json          # Input-validated discovery hint, not project pins
         |   |   |-- include/                   # Selected dependencies for this project
         |   |   |   |-- github.com/hard-build/
         |   |   |   |   `-- library -> .../snapshot/github.com/hard-build/library/@<hard-commit>
@@ -58,6 +59,7 @@ HARD_ROOT/
         |   |       `-- main.hard-cache.json   # Link input and output validation
         |   |
         |   `-- workspace/example2/            # Second local project's state
+        |       |-- dependencies.json          # Last unrecorded dependency selection and inputs
         |       |-- include/
         |       |   `-- github.com/leethomason/
         |       |       `-- tinyxml2 -> .../snapshot/github.com/leethomason/tinyxml2/@<tinyxml2-commit>
@@ -171,9 +173,21 @@ trees. Old caches are left untouched, and the first invocation after upgrading
 may download and build again. Historical container images keep their historical
 backend and runtime layout; changing cache paths does not republish those images.
 
-Unrecorded commands can repeat discovery while rebuilding their in-memory
-dependency selection, then reuse final-selection analysis records and cached
-defaults. They never create `hard.yaml` implicitly.
+Unrecorded commands save the last successfully resolved dependency selection
+in the local owner's `dependencies.json`, together with input content digests.
+The hint is restored under the project/environment lock before refreshing
+`include/`. Its context includes the hard executable, command, root sources,
+project configuration and configured build context. Changed sources, headers,
+used `@default` files, malformed records, or `--no-cache` cause fresh discovery.
+Sources using the existing `__has_include` cache guard do not publish this hint;
+the existing include-path topology limitations still apply.
+
+This is disposable cache state, not a lockfile or a project choice. Restored
+snapshots are verified and inherited requirements are checked on active include
+edges. Project recording bypasses this hint and retains its normal authority.
+Warm unchanged invocations can immediately use final-selection parse records.
+Cold or invalidated invocations may need multiple analysis passes, but root
+source discovery runs only once. No `hard.yaml` is created implicitly.
 
 Regression tests cover default reuse and concurrent publication, pinning and
 inheritance, fork paths, corruption detection, owner and configuration routing,

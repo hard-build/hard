@@ -52,8 +52,16 @@ func runConfiguredCommand(parsed arguments, options projectOptions, configuratio
 	}
 	defer session.close()
 	paths, excluded := project.sourcePaths(parsed)
+	progress := newProgressBar(stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
+	progress.updateStep("Searching source files")
+	sources, err := discoverSourcesFrom(parsed.command, paths, workingDirectory, excluded)
+	if err != nil {
+		return errors.Join(err, progress.finish())
+	}
+	if err := session.prepareDiscoveryCache(configuration, parsed, sources); err != nil {
+		return errors.Join(err, progress.finish())
+	}
 	for {
-		progress := newProgressBar(stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
 		current := configuration
 		var resolver *githubSnapshotResolver
 		diagnostics := stderr
@@ -69,14 +77,10 @@ func runConfiguredCommand(parsed arguments, options projectOptions, configuratio
 			session.onCommit = staged.activate
 			diagnostics = staged
 		}
-		progress.updateStep("Searching source files")
-		sources, err := discoverSourcesFrom(parsed.command, paths, workingDirectory, excluded)
-		if err != nil {
-			return errors.Join(err, progress.finish())
-		}
 		err = executeSourceCommand(parsed, current, sources, progress, resolver, stdin, stdout, diagnostics)
 		if session != nil && session.changed {
 			// Refresh the locked include view; no binary was executed.
+			progress = newProgressBar(stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
 			continue
 		}
 		if staged != nil {

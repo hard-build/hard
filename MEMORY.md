@@ -4038,10 +4038,45 @@ existing prefixes, unset/empty WINEPREFIX, parent creation failures, argument
 preservation and exit status. `make check` includes the launcher's shell syntax.
 
 Low-level test entry points retain their pre-session path helpers; public CLI
-source commands always supply a session and use the new layout. Unrecorded
-commands may repeat discovery as their in-memory selection is rebuilt, while
-reusing defaults and final-selection analysis records without network access.
+source commands always supply a session and use the new layout. The initial
+migration repeated discovery for unrecorded commands; the follow-up below
+adds an input-validated warm-start hint while retaining the resolution rules.
 Historical container images retain their historical backend/runtime paths.
+
+## Warm unrecorded dependency discovery (2026-09-16)
+
+The user reported two searches and repeated parsing on every unchanged build
+of the example repository without hard.yaml, and approved fixing this before
+the version bump. No version number has been changed or confirmed.
+
+- `main.go` discovers root sources once, outside the dependency retry loop.
+- Unrecorded source commands use `<local-owner>/dependencies.json` to remember
+  the last resolved selection. `dependency_discovery.go` validates the command,
+  selected root sources, configured build context, project configuration and
+  hard executable, plus source/header and used @default content digests.
+- Restoration and atomic publication use the existing project/environment lock.
+  Snapshots are still validated; restored pins are not added to
+  project.Repositories, so active inherited requirements remain authoritative.
+  Recording mode ignores the hint. Changes to defaults, roots, flags, local
+  headers or project recording cannot turn old selections into implicit pins.
+- Parse-cache hits and successful fresh records contribute their source/header
+  inputs. The existing __has_include guard disables publication; --no-cache
+  skips restoration. Existing include-path topology limitations still apply.
+  One hint stores the last command/configuration; switching those may require
+  rediscovery. Missing, malformed and checksum-inconsistent hints are misses.
+- `dependency_discovery_test.go` covers warm build/fetch/run/test, single source
+  search, inherited-to-default transitions, changed defaults, explicit project
+  overrides, flags/root selection, corruption and --no-cache. Existing tests
+  and these regressions passed, as did full `GOCACHE=/tmp/hard-go-cache make
+  check` (ordinary/race tests, vet, formatting, build, modules, shell syntax,
+  target manifest and whitespace checks).
+- The real example repository and its cached snapshots were copied into an
+  isolated temporary directory and built with a fresh backend. Both subsequent
+  builds performed one source search, parsed all 13 translation units exactly
+  once with `(CACHED)`, and reused the recipe package, compilation, linking and
+  copying caches. No hard.yaml was created. The original project, installed
+  runtime and user cache were not modified. Local documentation links and the
+  complete change diff were checked.
 
 ## Resume checklist
 

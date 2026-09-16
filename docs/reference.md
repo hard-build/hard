@@ -1095,8 +1095,9 @@ Successful dependency analysis is cached independently of build analysis at
 `<owner>/fetch/<analysis-key>/<relative-source>.hard-parse-cache.json`, using
 the same owner rules for recorded and unrecorded projects. Fetch records never
 substitute for build/run/test records and contain no entry points or generated
-forwards. Unrecorded invocations can repeat discovery while rebuilding their
-in-memory selection, then reuse final-selection records and cached defaults.
+forwards. Unrecorded invocations restore an input-validated dependency-selection
+hint before analysis, so warm unchanged commands do not need a preliminary
+rediscovery pass. Root source discovery runs once even on a cold cache.
 
 The key includes the hard executable digest, libclang version, ordered base
 analysis flags, and contents of the source and every previously known active
@@ -1516,6 +1517,7 @@ across projects and environments:
 HARD_ROOT/snapshot/<actual-source>/@default
 HARD_ROOT/snapshot/<actual-source>/@<commit>/
 HARD_ROOT/snapshot/<actual-source>/@<commit>.checksum
+HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/dependencies.json
 HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/include/
 HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/fetch/<analysis-key>/
 HARD_ROOT/project/<HARD_ENV>/root/<absolute-project-dir>/build/<build-key>/
@@ -1538,6 +1540,19 @@ projects' direct objects remain isolated even under the same logical repository.
 Vendor package keys instead cover recipe contents, their source snapshot and
 build tools, allowing compatible cross-project reuse. Removing a replacement
 rule without changing selected contents does not invalidate analysis.
+
+For unrecorded projects, `dependencies.json` caches the last resolved selection
+for one command, root-source list and configuration. It also fingerprints the
+hard executable, analyzed sources and active non-system headers, and used
+`@default` files. Restoration occurs under the include-view lock only when
+these inputs match; malformed or stale hints are ignored. Snapshots still
+require checksum validation, and inherited pins are checked through active
+include edges. This file is not a project pin: changing an input starts fresh
+discovery rather than preserving a now-inactive inherited choice. Recording
+mode does not consult this hint. `--no-cache` bypasses it, and sources covered
+by the existing `__has_include` guard prevent its publication. The ordinary
+include-path topology limitations also apply. Searching root sources is done
+once per invocation, outside any dependency-resolution retries.
 
 `@default` is a regular commit-ID file, not a symlink. It is published under
 the source-directory lock after successful snapshot verification. It has no

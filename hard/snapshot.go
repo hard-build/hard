@@ -70,6 +70,7 @@ func (session *dependencySession) defaultPin(source string, progress *progressBa
 		}
 		pin := repositoryPin{Source: source, Ref: commit, Commit: commit}
 		_, pin.Checksum, err = session.obtainLocked(parent, pin, progress)
+		session.discovery.observeDefault(filename, contents)
 		return pin, err
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -89,5 +90,6 @@ func (session *dependencySession) defaultPin(source string, progress *progressBa
 	if err := writeCacheRecord(filename, []byte(pin.Commit+"\n")); err != nil {
 		return repositoryPin{}, fmt.Errorf("write default snapshot for %s: %w", source, err)
 	}
+	session.discovery.observeDefault(filename, []byte(pin.Commit+"\n"))
 	return pin, nil
 }
