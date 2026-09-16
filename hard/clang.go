@@ -382,6 +382,9 @@ func sourceAnalysisWithLibraries(
 		if err != nil {
 			return true, clangDependencySet{}, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
+		if err := githubResolver.prepareInheritedIncludes(analysis, workingDirectory); err != nil {
+			return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
+		}
 		var artifacts []libraryArtifact
 		var libraryHeaders []string
 		if libraryManager != nil {

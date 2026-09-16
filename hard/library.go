@@ -163,7 +163,7 @@ func (manager *libraryManager) prepareRecipe(
 	if manager.githubResolver == nil {
 		return libraryArtifact{}, fmt.Errorf("library recipe %s requires GitHub dependency %s", header, recipe.Source)
 	}
-	if err := manager.githubResolver.ensure(repository); err != nil {
+	if err := manager.githubResolver.ensure(repository, header); err != nil {
 		return libraryArtifact{}, err
 	}
 	sourceRoot, err := githubRepositoryDirectory(manager.root, repository.owner, repository.name)

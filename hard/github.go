@@ -99,9 +99,9 @@ func (resolver *githubSnapshotResolver) downloadProgressEntries() []string {
 	return append([]string(nil), resolver.downloads...)
 }
 
-func (resolver *githubSnapshotResolver) ensure(repository githubRepository) error {
+func (resolver *githubSnapshotResolver) ensure(repository githubRepository, parents ...string) error {
 	if resolver.session != nil {
-		return resolver.session.ensure(repository, resolver.progress)
+		return resolver.session.ensure(repository, resolver.progress, parents...)
 	}
 	destination, err := githubRepositoryDirectory(
 		resolver.root,

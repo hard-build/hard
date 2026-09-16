@@ -464,6 +464,14 @@ recorded repository and may be repeated. `--locked` requires sufficient records
 and never changes them; it can still download and verify missing pinned
 snapshots. `--no-cache` never refreshes dependency revisions.
 
+When a downloaded repository includes another dependency or supplies its recipe,
+hard reads that repository's root `hard.yaml` and inherits the dependency's exact
+record, without resolving its branch or tag again. Only dependencies reached by
+active includes or recipes are added; unrelated records, `format`, and `exclude`
+are not imported. Conflicting sources, commits, or checksums are errors, not
+implicit updates. Different `ref` names for identical pinned contents are allowed.
+Explicit corporate replacements can override inherited upstream selections.
+
 Repository updates are atomic after successful dependency resolution. Other
 settings and their comments are preserved. Commit `hard.yaml` with the project.
 Omitting `repositories` retains the unpinned dependency behavior. `format`,

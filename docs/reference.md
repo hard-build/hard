@@ -1376,6 +1376,32 @@ Only active include graphs are discovered, including recipe and vendor-source
 repositories; separate platforms may add different entries. One logical
 repository has one selected revision. There is no semantic-version solver.
 
+When an active include or recipe requests a dependency from a downloaded
+repository, hard reads `hard.yaml` at the root of that repository's selected
+snapshot. If its `repositories` section records the dependency, hard inherits
+the exact `source`, `ref`, `commit`, and `checksum`; it does not resolve the
+recorded branch or tag again. This applies recursively to ordinary includes,
+well-known aliases, and recipe vendor sources. The same strict project-file
+validation applies. A missing file or missing entry retains default-branch
+resolution for a new dependency; malformed configuration or a bad checksum is
+an error, not permission to fall back.
+
+Only dependencies actually requested by active includes or recipes are added.
+Other entries in a downloaded manifest are not fetched or copied just because
+the manifest exists. Its `format` and `exclude` settings do not affect the
+consuming project, and hard does not search snapshot ancestors or nested
+directories for another configuration.
+
+An inherited record must agree with an existing project pin and with other
+active inherited requirements on source, commit, and checksum. Different `ref`
+names for identical contents are compatible. A conflict names the repository,
+both selections and their origins, and leaves the project file unchanged.
+Already recorded entries never change automatically. During initial discovery,
+an inherited record can replace a provisional default-branch choice that has
+not yet been written; source analysis then restarts with the selected revision.
+Hard does not choose between incompatible inherited requirements by discovery
+order or attempt version-range solving.
+
 `hard fetch --update=github.com/owner/repository@ref` updates an already recorded
 repository; repeat the option for several distinct repositories. Duplicate
 updates are errors. A new dependency should first be discovered with ordinary
@@ -1383,10 +1409,19 @@ fetch or `fetch --lock`. `--lock`, `--locked`, and updates are mutually
 exclusive. Only fetch accepts `--lock` and `--update`; build, fetch, run, and
 test accept `--locked`.
 
+Explicit updates must still satisfy active inherited requirements, unless an
+explicit corporate replacement overrides them. For an existing project that
+previously recorded TinyXML2's default branch despite a recipe pinning `11.0.0`,
+use `hard fetch --update=github.com/leethomason/tinyxml2@11.0.0` to select the
+recipe-compatible revision. Repeating `fetch --lock` does not repair an existing
+conflicting entry automatically.
+
 `--locked` requires an existing repositories section and fails on an unrecorded
 dependency without resolving its branch. Recorded snapshots absent from the
 cache may still be downloaded: this is not offline mode. Known branch/tag
 references never move implicitly, and `--no-cache` only forces artifact work.
+An inherited record does not authorize an addition under `--locked`; inherited
+requirements are also checked against already available pinned snapshots.
 
 The `ref` records intent; `commit` selects the snapshot. Downloads and cached
 snapshots must match `checksum`, including during explicit updates that resolve
@@ -1418,9 +1453,11 @@ HARD_ROOT/project/<selection-digest>/env/HARD_ENV/library/...
 ```
 
 Source-view entries are relative symlinks to exact snapshots. The selection
-digest includes the project filename, complete pins and configured compiler,
-flags and entry names. Existing views are never switched to other revisions.
-Discovery of a new dependency repeats analysis with an expanded immutable
+digest includes the project filename, complete pins, corporate replacement
+rules and configured compiler, flags and entry names. Including replacements
+prevents cached analysis from hiding a conflict when an override is removed.
+Existing views are never switched to other revisions.
+Discovery or revision selection repeats analysis with a new immutable
 view; compilation/execution waits for a stable selection. The view enters
 compiler arguments and the artifact root, separating parsing, objects, forwards,
 links, tests and vendor packages for different dependency sets. Existing
@@ -1465,6 +1502,12 @@ Replacement selections appear as repository `source`, `ref`, commit and checksum
 A rule conflicting with an existing source/ref is an error until an explicit
 matching update is requested. With corporate configuration present, commands
 require recording or `fetch --lock`; they never silently use the legacy client.
+
+An explicit replacement that changes an inherited source or requested ref
+overrides that upstream requirement, allowing a corporate fork without editing
+the recipe repository. It still cannot change an existing project pin without
+`--update`. A replacement identical to the inherited source/ref retains its
+exact commit and checksum. Proxy-only changes do not override inherited pins.
 
 Authentication is optional and keyed by exact `host[:port]`. `token_env` names
 an environment variable with the `HARD_AUTH_` prefix; its non-empty value is

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/tar"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,20 +27,31 @@ static_libraries: [lib/libvendor.a]
 #pragma once
 #include <vendor.h>
 `
-	archives := map[string][]byte{
-		"github.com/hard-build/recipe": githubTestArchive(t, []githubTestArchiveEntry{{name: "recipe/vendor.hard.h", typeflag: tar.TypeReg, mode: 0o644, contents: recipe}}),
-		"github.com/demo/vendor": githubTestArchive(t, []githubTestArchiveEntry{
-			{name: "vendor/CMakeLists.txt", typeflag: tar.TypeReg, mode: 0o644, contents: "cmake_minimum_required(VERSION 3.16)\nproject(vendor LANGUAGES CXX)\nadd_library(vendor STATIC vendor.cpp)\ninstall(TARGETS vendor ARCHIVE DESTINATION lib)\ninstall(FILES vendor.h DESTINATION include)\n"},
-			{name: "vendor/vendor.cpp", typeflag: tar.TypeReg, mode: 0o644, contents: "int vendor_value() { return 7; }\n"},
-			{name: "vendor/vendor.h", typeflag: tar.TypeReg, mode: 0o644, contents: "#pragma once\nint vendor_value();\n"},
-		}),
-	}
+	vendorPin, vendorArchive := inheritedTestSnapshot(t, "github.com/demo/vendor", "release", secondCommit, map[string]string{
+		"CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(vendor LANGUAGES CXX)\nadd_library(vendor STATIC vendor.cpp)\ninstall(TARGETS vendor ARCHIVE DESTINATION lib)\ninstall(FILES vendor.h DESTINATION include)\n",
+		"vendor.cpp":     "int vendor_value() { return 7; }\n",
+		"vendor.h":       "#pragma once\nint vendor_value();\n",
+	})
+	_, recipeArchive := inheritedTestSnapshot(t, "github.com/hard-build/recipe", "main", firstCommit, map[string]string{
+		"vendor.hard.h": recipe,
+		"hard.yaml":     inheritedTestYAML(t, map[string]repositoryPin{vendorPin.Source: vendorPin}),
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/v1/resolve":
+			if request.URL.Query().Get("source") == vendorPin.Source {
+				t.Error("resolved the vendor default branch instead of inheriting the recipe pin")
+			}
 			_ = json.NewEncoder(response).Encode(map[string]string{"commit": firstCommit, "ref": "main"})
 		case "/v1/snapshot":
-			_, _ = response.Write(archives[request.URL.Query().Get("source")])
+			if request.URL.Query().Get("source") == vendorPin.Source {
+				if request.URL.Query().Get("commit") != vendorPin.Commit {
+					t.Error("downloaded the wrong vendor revision")
+				}
+				_, _ = response.Write(vendorArchive)
+			} else {
+				_, _ = response.Write(recipeArchive)
+			}
 		default:
 			http.Error(response, "unexpected request", 500)
 		}
@@ -64,6 +74,9 @@ static_libraries: [lib/libvendor.a]
 	file, err := readProjectFile(filepath.Join(project, projectFilename))
 	if err != nil || len(file.Repositories) != 2 {
 		t.Fatalf("recipe and vendor records: %v, %#v", err, file)
+	}
+	if file.Repositories[vendorPin.Source] != vendorPin {
+		t.Fatalf("recipe pin was not inherited: %#v", file.Repositories[vendorPin.Source])
 	}
 	if paths, _ := filepath.Glob(filepath.Join(configuration.root, "project", "*", "env")); len(paths) != 0 {
 		t.Fatalf("fetch built a package: %v", paths)

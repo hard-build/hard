@@ -25,13 +25,16 @@ type dependencySession struct {
 	directory *os.File
 	onCommit  func() error
 
-	mutex     sync.Mutex
-	pins      map[string]repositoryPin
-	snapshots map[string]string
-	selected  map[string]bool
-	changed   bool
-	dirty     bool
-	committed bool
+	mutex        sync.Mutex
+	pins         map[string]repositoryPin
+	snapshots    map[string]string
+	selected     map[string]string
+	manifests    map[string]*projectFile
+	requirements map[string]map[string]repositoryRequirement
+	failure      error
+	changed      bool
+	dirty        bool
+	committed    bool
 }
 
 func newDependencySession(project *projectFile, root string, options projectOptions, provider *repositoryProvider) (*dependencySession, error) {
@@ -42,6 +45,7 @@ func newDependencySession(project *projectFile, root string, options projectOpti
 	session := &dependencySession{
 		project: project, provider: provider, root: root, locked: options.locked,
 		pins: make(map[string]repositoryPin), snapshots: make(map[string]string),
+		manifests: make(map[string]*projectFile), requirements: make(map[string]map[string]repositoryRequirement),
 		dirty: !project.recorded,
 	}
 	updates := make(map[string]string)
@@ -93,30 +97,58 @@ func (session *dependencySession) close() {
 	}
 }
 
-func (session *dependencySession) ensure(repository githubRepository, progress *progressBar) error {
+func (session *dependencySession) ensure(repository githubRepository, progress *progressBar, parents ...string) error {
 	session.mutex.Lock()
 	defer session.mutex.Unlock()
 	name := "github.com/" + repository.key()
 	if !validLogicalRepository(name) {
 		return fmt.Errorf("invalid logical repository %q", name)
 	}
-	if session.selected[name] {
-		return nil
+	if session.failure != nil {
+		return session.failure
 	}
-	if session.locked {
+	var parent string
+	if len(parents) != 0 {
+		parent = parents[0]
+	}
+	required, err := session.inheritedRequirement(name, parent)
+	if err != nil {
+		if !errors.Is(err, errDependencySetChanged) {
+			session.failure = err
+		}
+		return err
+	}
+	pin, exists := session.pins[name]
+	if required != nil && exists && pin != required.pin {
+		if _, recorded := session.project.Repositories[name]; recorded {
+			if !sameRepositoryContents(pin, required.pin) {
+				session.failure = repositoryRequirementConflict(name, session.project.filename, pin, required.origin(), required.pin)
+				return session.failure
+			}
+		} else {
+			// A provisional default-branch choice is not a project pin. A subsequently
+			// discovered requirement replaces it before the dependency record is written.
+			exists = false
+		}
+	}
+	if session.locked && !exists {
 		return fmt.Errorf("--locked: repository %s is not recorded in %s", name, session.project.filename)
 	}
-	if _, exists := session.pins[name]; !exists {
-		source, ref := name, ""
-		if replacement, ok := session.provider.configuration.Replace[name]; ok {
-			source, ref = replacement.Source, replacement.Ref
-		}
-		if progress != nil {
-			progress.updateStep("Resolving " + name)
-		}
-		pin, err := session.provider.resolve(source, ref)
-		if err != nil {
-			return fmt.Errorf("resolve %s: %w", name, err)
+	if !exists {
+		if required != nil {
+			pin = required.pin
+		} else {
+			source, ref := name, ""
+			if replacement, ok := session.provider.configuration.Replace[name]; ok {
+				source, ref = replacement.Source, replacement.Ref
+			}
+			if progress != nil {
+				progress.updateStep("Resolving " + name)
+			}
+			pin, err = session.provider.resolve(source, ref)
+			if err != nil {
+				return fmt.Errorf("resolve %s: %w", name, err)
+			}
 		}
 		snapshot, checksum, err := session.obtain(pin, progress)
 		if err != nil {
@@ -125,14 +157,22 @@ func (session *dependencySession) ensure(repository githubRepository, progress *
 		pin.Checksum = checksum
 		session.pins[name], session.snapshots[name] = pin, snapshot
 		session.dirty = true
+		session.changed = true
+		return errDependencySetChanged
+	}
+	if session.selected[name] != "" && session.selected[name] == session.snapshots[name] {
+		return nil
 	}
 	session.changed = true
 	return errDependencySetChanged
 }
 
 func (session *dependencySession) view(configuration configuration, progress *progressBar) (string, error) {
+	if session.failure != nil {
+		return "", session.failure
+	}
 	session.changed = false
-	session.selected = make(map[string]bool)
+	session.selected = make(map[string]string)
 	names := make([]string, 0, len(session.pins))
 	for name := range session.pins {
 		names = append(names, name)
@@ -148,15 +188,16 @@ func (session *dependencySession) view(configuration configuration, progress *pr
 			pin.Checksum = checksum
 			session.pins[name], session.snapshots[name] = pin, snapshot
 		}
-		session.selected[name] = true
+		session.selected[name] = session.snapshots[name]
 	}
 	identity, err := json.Marshal(struct {
 		Version                  int
 		Project                  string
 		Pins                     map[string]repositoryPin
+		Replace                  map[string]repositoryReplacement
 		Compiler                 string
 		CFlags, LDFlags, Entries []string
-	}{1, session.project.filename, session.pins, configuration.cc, configuration.cflags, configuration.ldflags, configuration.entrypoints})
+	}{2, session.project.filename, session.pins, session.provider.configuration.Replace, configuration.cc, configuration.cflags, configuration.ldflags, configuration.entrypoints})
 	if err != nil {
 		return "", err
 	}
@@ -183,6 +224,9 @@ func (session *dependencySession) view(configuration configuration, progress *pr
 func (session *dependencySession) commit() error {
 	if session == nil || session.committed {
 		return nil
+	}
+	if session.failure != nil {
+		return session.failure
 	}
 	if session.changed {
 		return errDependencySetChanged

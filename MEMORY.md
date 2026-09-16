@@ -236,8 +236,10 @@ cache entries and are not refreshed automatically.
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
 | `hard/project.go` | Strict project YAML, discovery, defaults, directory locking, and section-preserving atomic updates |
 | `hard/repository.go` | Dependency sessions, immutable source views, snapshot checksums, and resolution commits |
+| `hard/repository_inheritance.go` | Including-file ownership, snapshot-root dependency records, inherited pin conflicts, and resolved-include validation |
 | `hard/repository_provider.go` | Direct GitHub and proxy protocols, corporate replacements, and host-scoped authentication |
 | `hard/project_test.go`, `hard/repository_test.go`, `hard/project_integration_test.go` | Project schema, pinning, proxies, real builds/tests/recipes, concurrent updates, and wrapper mounts |
+| `hard/repository_inheritance_test.go` | Exact transitive pin inheritance, inactive records, conflicts, provisional defaults, locked failures, replacements, and cache isolation |
 | `hard/wrapper_test.go` | Host forwarding, target parsing, Docker arguments, mounts, and errors |
 | `hard/source.go` | File classification, recursive discovery, symlink traversal, and deduplication |
 | `hard/source_test.go` | Extensions, ordering, explicit paths, symlinks, cycles, and failures |
@@ -1399,6 +1401,27 @@ revision per logical repository; the initial design has no semantic-version
 range solver, Go-style minimal version selection, or automatic compatibility
 inference for arbitrary C++ repositories.
 
+Pinned execution also reads the root `hard.yaml` of the selected downloaded
+repository that owns an including file or recipe header. For each actively
+requested dependency, its record supplies exact source/ref/commit/checksum,
+without resolving the inherited ref. This recurses across ordinary includes,
+well-known aliases, and recipe vendor requests. Only requested entries are
+added: other repositories, format and exclude are not imported, and nested or
+ancestor project files are not searched. The ordinary strict YAML validator is
+reused; invalid manifests/checksums fail instead of reverting to a moving ref.
+
+Existing project pins and active inherited requirements must agree on source,
+commit and checksum; ref aliases for identical contents are compatible. Errors
+identify both selections and origins and do not rewrite the project. A new,
+not-yet-written default-branch selection can be replaced by a subsequently
+discovered inherited pin, followed by analysis in a new immutable view.
+Conflicting inherited pins are errors rather than first-discovered wins.
+An explicit corporate replace selecting another source/ref overrides upstream
+requirements; an identical rule preserves the inherited checksum. Existing
+project pins still require explicit updates for corporate changes. Updates
+otherwise remain subject to inherited requirements. Locked mode does not add
+inherited entries missing from the project record.
+
 ### Creation, ordinary use, updates, and CI
 
 The implemented CLI extends existing commands rather than adding a dependency
@@ -1458,7 +1481,9 @@ Integrity is trust on first use, not a publisher signature.
 Each `HARD_ROOT/project/<selection-digest>` contains a `source` view with
 relative logical-repository and well-known aliases, plus its own
 `env/HARD_ENV/build` and `env/HARD_ENV/library`. Identity includes the project
-filename, complete pins, compiler, flags and entry names. A newly discovered
+filename, complete pins, corporate replacement rules, compiler, flags and entry
+names. Replacement rules prevent cached source analysis from bypassing a
+conflict after an override is removed. A newly discovered
 repository stages a pin and retries analysis with an expanded view; it never
 switches an existing view's aliases. This naturally places the selection in
 parse/compiler arguments and artifact/cache paths without changing cache
@@ -1607,6 +1632,34 @@ The targeted regression and legacy display tests passed after the fix, followed
 by the complete `make check` (ordinary and race tests, vet, isolated build,
 module, shell, manifest, and diff checks). Documentation links were checked.
 The installed runtime and the existing `v6.0` tag were not changed.
+
+Later on 2026-09-16, the user reported that `recipe` at
+`dd688a0fbf73be20804bf0d0555cc1e3fef482ad` already pins TinyXML2 `11.0.0`
+at `9148bdf719e997d1f474be6bcc7943881046dba1`, but `fetch --lock` had
+independently selected its default branch. The old implementation read only
+the consuming project's configuration. After an explicitly approved plan,
+including-file context now reaches the dependency session from recipes and
+libclang includes, including already resolved edges. Snapshot-root manifests
+and active requirements are cached only within the session. Provisional
+selection changes do not mutate any existing source view. The source-view
+identity version is now 2 and includes corporate replacements; persistent
+parse-record serialization is unchanged.
+
+Regression tests first failed on the original implementation for both recipe
+and multilevel include inheritance. Coverage includes exact pins without ref
+resolution, ignored unused records and project defaults, default-versus-pin
+selection with serial/parallel workers, conflicting origins and existing pins,
+equivalent ref spellings, checksum/configuration errors, cold locked downloads,
+missing locked records, explicit repair and fork updates, cached C++ builds,
+GoogleTest results, and removal of a replacement after a cached build.
+The user's `test_recipe/hard.yaml` and
+installed runtime are intentionally untouched. An existing conflicting
+TinyXML2 record needs an explicit
+`fetch --update=github.com/leethomason/tinyxml2@11.0.0`, not another `--lock`.
+Targeted regressions and the complete `make check` passed, including real CMake
+and GoogleTest execution, ordinary/race tests, vet, isolated build, module,
+shell, target-manifest and diff checks. Local documentation links and anchors
+were validated. No release tag or installed runtime was changed.
 
 ## Forward declarations
 
