@@ -180,7 +180,7 @@ hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [--lock | --locked | --update=<repository>@<ref>...]
-            [-s|--silent] [path...]
+            [--no-cache] [-s|--silent] [path...]
 hard run    [--locked] [--no-cache] [-s|--silent] [path...]
             [-- program-argument...]
 hard test   [--list-tests] [--test=<selector>]...
@@ -680,18 +680,32 @@ Packages are stored at:
 ```text
 HARD_ROOT/env/HARD_ENV/library/
 └── github.com/<owner>/<repository>/<fingerprint>/
-    ├── build/
-    ├── install/
-    └── manifest.json
+    ├── manifest.json
+    └── generation-<id>/
+        ├── build/
+        └── install/
 ```
 
-The fingerprint includes the `hard` executable, recipe header and bytes, full
-downloaded source tree, CMake executable, resolved `HARD_CC` executable,
+The fingerprint includes the `hard` executable, complete recipe header bytes,
+full downloaded source tree, CMake executable, resolved `HARD_CC` executable,
 recipe paths, configure arguments, and stable vendor source working directory.
-The invocation working directory is not part of this package key. A manifest
-verifies the complete installed file tree before reuse. `--no-cache` rebuilds
-the package but does not refresh the downloaded GitHub snapshot. Because vendor
-builds intentionally do not receive `HARD_CFLAGS`, changing ABI-affecting
+Neither the invocation working directory nor the recipe header's filename is
+part of this package key. Packages are shared between projects, including
+pinned projects with separate source views and projects with identical local
+recipes. `HARD_ENV` and differing package inputs keep builds isolated. A
+manifest verifies the complete installed file tree before reuse.
+
+An interprocess lock serializes validation and building of each package.
+Successful builds atomically publish a manifest pointing to a new generation;
+consumers use that generation's stable paths. `--no-cache` also builds a new
+generation and refreshes the manifest, but does not refresh the downloaded
+GitHub snapshot or remove files that another build may still use. A failed
+rebuild leaves no reusable manifest and removes its partial generation while
+preserving previously published files. Old generations and the former
+project-local library caches are not automatically migrated or removed, so the
+first build after this cache-layout change compiles the library once.
+
+Because vendor builds intentionally do not receive `HARD_CFLAGS`, changing ABI-affecting
 project flags without also changing `HARD_ENV` can produce an incompatible
 project/package combination; use a distinct environment for such flag changes.
 
@@ -1058,7 +1072,7 @@ exit is propagated as the `hard` process exit status without an additional
 
 ```bash
 hard fetch [--lock | --locked | --update=<repository>@<ref>...]
-           [-s|--silent] [path...]
+           [--no-cache] [-s|--silent] [path...]
 ```
 
 `fetch` downloads the external GitHub dependencies required by the selected C
@@ -1076,8 +1090,30 @@ expanded `github.com/<owner>/<repository>/...` and well-known includes.
 rules are the same as for `build`, `run`, and `test`; existing repository
 directories are not refreshed automatically.
 
-`fetch` does not read or write persistent parse-result records, because it
-must remain independent of the environment build tree.
+Successful dependency analysis is cached independently of build analysis at
+`HARD_ROOT/fetch/HARD_ENV/<absolute-source-without-leading-slash>.hard-parse-cache.json`.
+Pinned projects use the same `fetch/HARD_ENV` subtree below their selected
+`HARD_ROOT/project/<selection-digest>` view. Fetch records never substitute for
+build/run/test records and contain no entry points or generated forwards.
+
+The key includes the hard executable digest, libclang version, ordered base
+analysis flags, and contents of the source and every previously known active
+non-system header, including recipe and force-included headers. Cwd-dependent
+flags also include the invocation directory. `HARD_ENV` separates immutable
+toolchains and system headers; the pinned view separates dependency revisions
+and replacements. Missing, changed, malformed, or semantically inconsistent
+records cause fresh analysis. The same `__has_include` guard and depfile-style
+include-path topology limitations described for build analysis apply.
+
+A hit skips libclang, restores the dependency list and recipe source includes,
+and still discovers same-stem implementations. Stored include edges are replayed
+to validate inherited requirements, and recipe vendors are revalidated without
+building packages. Project/corporate configuration and snapshot checksums are
+still checked; cache hits cannot bypass `--locked` or inherited-pin conflicts.
+`--no-cache` forces fresh analysis and replaces successful records, but does not
+update recorded revisions or redownload valid snapshots. Failed analysis does
+not retain an eligible record. Use the flag after adding a higher-priority
+header or changing optional-header availability inside a dependency.
 
 When a recipe is active, `fetch` temporarily appends its
 `source_include_directories` below the downloaded repository and repeats
@@ -1095,7 +1131,13 @@ preparation step. Live activity is shown as `[1/?] Searching source files`,
 emitted immediately before its HTTP request. The exact final total is one.
 Normal mode rewrites one line, `-v` writes permanent activity lines, and `-s`
 suppresses successful progress. Colors obey `--no-color`. Cached repositories
-omit `Downloading`, but search and parsing are still reported.
+omit `Downloading`; reused analysis reports `Parsing <source> (CACHED)`:
+
+```text
+[1/?] Searching source files
+[1/?] Parsing main.cpp (CACHED)
+[1/?] Parsing github.com/leethomason/tinyxml2/tinyxml2.cpp (CACHED)
+```
 
 ### `hard test`
 
@@ -1433,7 +1475,8 @@ is unchanged.
 `--locked` requires an existing repositories section and fails on an unrecorded
 dependency without resolving its branch. Recorded snapshots absent from the
 cache may still be downloaded: this is not offline mode. Known branch/tag
-references never move implicitly, and `--no-cache` only forces artifact work.
+references never move implicitly. `--no-cache` forces analysis in `fetch` and
+analysis/artifact work in build commands, without updating revisions.
 An inherited record does not authorize an addition under `--locked`. Existing
 project selections retain their precedence over inherited records in this mode.
 
@@ -1464,8 +1507,9 @@ HARD_ROOT/snapshot/<sha256(source)>/<commit>.checksum
 HARD_ROOT/project/<selection-digest>/source/github.com/<owner>/<repository>
 HARD_ROOT/project/<selection-digest>/source/hard
 HARD_ROOT/project/<selection-digest>/source/recipe
+HARD_ROOT/project/<selection-digest>/fetch/HARD_ENV/...
 HARD_ROOT/project/<selection-digest>/env/HARD_ENV/build/...
-HARD_ROOT/project/<selection-digest>/env/HARD_ENV/library/...
+HARD_ROOT/env/HARD_ENV/library/...
 ```
 
 Source-view entries are relative symlinks to exact snapshots. The selection
@@ -1476,11 +1520,15 @@ Existing views are never switched to other revisions.
 Discovery or revision selection repeats analysis with a new immutable
 view; compilation/execution waits for a stable selection. The view enters
 compiler arguments and the artifact root, separating parsing, objects, forwards,
-links, tests and vendor packages for different dependency sets. Existing
-unversioned `HARD_ROOT/source` directories cannot satisfy pinned dependencies.
+links and tests for different dependency sets. Vendor packages instead use the
+shared library cache: their keys cover their own selected source snapshot,
+recipe contents and build tools, not the consuming project's filename or
+unrelated pins. Existing unversioned `HARD_ROOT/source` directories cannot
+satisfy pinned dependencies.
 
 Recorded snapshots are hydrated and verified when constructing a view, including
-records inactive for the current platform. Fetch creates no environment build
+records inactive for the current platform. Fetch creates only dependency-analysis
+records under its separate `fetch/HARD_ENV` subtree, not an environment build
 tree. Snapshots and obsolete views are not garbage-collected automatically.
 Treat snapshot contents as immutable; changed cached contents, missing checksum
 metadata, or source mutations during recipe preparation are errors.
@@ -1639,7 +1687,8 @@ supplied through `-isystem` or `-idirafter` changes. System headers are not
 content-hashed; keeping the same `HARD_ENV` asserts that they remain compatible
 and unchanged. `--no-cache` can force a one-off rebuild in the current
 environment, while a new `HARD_ENV` keeps old artifacts isolated. Artifact
-generation rejects environment names that escape `HARD_ROOT/env`.
+generation rejects environment names that escape `HARD_ROOT/env`; fetch analysis
+likewise rejects escapes from `HARD_ROOT/fetch`.
 
 These variables describe host-mode execution. Target mode does not forward
 their host values into the container; container images use the fixed values
@@ -1741,6 +1790,10 @@ HARD_ROOT/
 │   └── github.com/
 │       └── <owner>/
 │           └── <repository>/
+├── fetch/
+│   └── HARD_ENV/
+│       └── <absolute path without the leading slash>/
+│           └── file.cpp.hard-parse-cache.json
 └── env/
     └── HARD_ENV/
         ├── build/
@@ -1754,9 +1807,10 @@ HARD_ROOT/
         │       └── application.hard-test-cache.json
         └── library/
             └── github.com/<owner>/<repository>/<fingerprint>/
-                ├── build/
-                ├── install/
-                └── manifest.json
+                ├── manifest.json
+                └── generation-<id>/
+                    ├── build/
+                    └── install/
 ```
 
 An entry source or test source normally creates an extensionless internal

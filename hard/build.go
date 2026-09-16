@@ -631,6 +631,9 @@ func inspectBuildSourceWithCache(
 	cache *artifactCache,
 	libraryManager *libraryManager,
 ) buildResult {
+	if libraryManager != nil && !libraryManager.build {
+		return inspectFetchSourceWithCache(root, environment, githubResolver, cflags, job, workingDirectory, activity, cache, libraryManager)
+	}
 	result := buildResult{index: job.index, cflags: append([]string(nil), cflags...)}
 	var recordPath string
 	if cache != nil {

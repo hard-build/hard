@@ -127,6 +127,11 @@ func TestParseArguments(t *testing.T) {
 			want: arguments{command: "fetch", paths: []string{"."}},
 		},
 		{
+			name: "fetch accepts no-cache flag",
+			args: []string{"fetch", "--no-cache", "src"},
+			want: arguments{command: "fetch", paths: []string{"src"}, noCache: true},
+		},
+		{
 			name: "environment reports current configuration",
 			args: []string{"-v", "environment"},
 			want: arguments{command: "environment", verbose: true},
@@ -327,7 +332,6 @@ func TestParseArgumentsRejectsInvalidInput(t *testing.T) {
 		{name: "fetch rejects output flag", args: []string{"fetch", "--output=binary"}, wantErr: "unknown flag"},
 		{name: "test rejects output flag", args: []string{"test", "--output=binary"}, wantErr: "unknown flag"},
 		{name: "format rejects no-cache flag", args: []string{"format", "--no-cache"}, wantErr: "unknown flag"},
-		{name: "fetch rejects no-cache flag", args: []string{"fetch", "--no-cache"}, wantErr: "unknown flag"},
 		{
 			name:    "test rejects list with selector",
 			args:    []string{"test", "--list-tests", "--test=Suite.Case"},
@@ -575,7 +579,7 @@ func TestHelp(t *testing.T) {
 		{
 			name: "fetch",
 			args: []string{"fetch", "--help"},
-			want: []string{"hard fetch [path...]", "-j, --jobs", "--no-color", "-s, --silent", "-v, --verbose"},
+			want: []string{"hard fetch [path...]", "-j, --jobs", "--no-cache", "--no-color", "-s, --silent", "-v, --verbose"},
 		},
 		{
 			name: "run",
@@ -633,8 +637,8 @@ func TestHelp(t *testing.T) {
 			if tt.name != "build" && strings.Contains(help, "--output") {
 				t.Errorf("help contains build-only output flag:\n%s", help)
 			}
-			if tt.name != "build" && tt.name != "run" && tt.name != "test" && strings.Contains(help, "--no-cache") {
-				t.Errorf("help contains build/run/test-only no-cache flag:\n%s", help)
+			if tt.name != "build" && tt.name != "fetch" && tt.name != "run" && tt.name != "test" && strings.Contains(help, "--no-cache") {
+				t.Errorf("help contains build/fetch/run/test-only no-cache flag:\n%s", help)
 			}
 			if tt.name != "test" && (strings.Contains(help, "--list-tests") || strings.Contains(help, "--test")) {
 				t.Errorf("help contains test-only selection flag:\n%s", help)

@@ -131,7 +131,7 @@ Implemented:
   linking, atomic build delivery, and direct execution of internal binaries;
 - content-addressed object, link, delivery, and successful-test result caching
   with `--no-cache` rebuild and rerun support;
-- persistent semantic libclang result caching for build/run/test source
+- persistent semantic libclang result caching for build/fetch/run/test source
   analysis, including `(CACHED)` preparation output and `--no-cache` refresh;
 - hard-owned GoogleTest listing and repeated exact or `*`/`?` selector
   syntax with validation and internal GoogleTest-filter conversion;
@@ -257,6 +257,7 @@ cache entries and are not refreshed automatically.
 | `hard/github_test.go` | HTTP, extraction safety, aliases, caching, retries, and concurrency |
 | `hard/library.go` | Strict recipe parsing, vendor source/build preparation, package fingerprinting, manifests, and reachable static-library metadata |
 | `hard/library_test.go` | Recipe validation, CMake authority, fetch-only behavior, package reuse, and link-closure coverage |
+| `hard/library_cache_test.go` | Cross-project package reuse, concurrent builders, environment/recipe isolation, immutable generations, failed rebuilds, and manifest integrity |
 | `hard/forward.go` | Source-context forward extraction, validation, rendering, path mapping, and atomic writes |
 | `hard/forward_test.go` | Namespace/template output, translation-unit context, filtering, paths, and preservation |
 | `hard/entry.go` | Configured global entry-function definition detection |
@@ -271,6 +272,8 @@ cache entries and are not refreshed automatically.
 | `hard/run_test.go` | Run streams, arguments, exit status, internal-only artifacts, cache behavior, and entry validation |
 | `hard/fetch.go` | Dependency-only source closure and external snapshot fetching |
 | `hard/fetch_test.go` | Fetch progress, recursive repositories, caching, and absence of build artifacts |
+| `hard/fetch_cache.go` | Separate fetch analysis records, cached include-edge validation, and source-only recipe restoration |
+| `hard/fetch_cache_test.go` | Fetch hits/invalidation, no-cache, pinned recipes/updates, locked/checksum/conflict validation, and no build artifacts |
 | `hard/test.go` | GoogleTest listing, selector validation, plans, shared compilation, linking, caching, and execution |
 | `hard/test_test.go` | Tool and test discovery, wildcard selectors, parallel phases, output modes, failures, and artifacts |
 
@@ -747,7 +750,7 @@ The public command forms are:
     hard format [--format=<name>] [-s|--silent] [path...]
     hard build  [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
     hard fetch  [--lock | --locked | --update=<repository>@<ref>...]
-                [-s|--silent] [path...]
+                [--no-cache] [-s|--silent] [path...]
     hard run    [--locked] [--no-cache] [-s|--silent] [path...]
                 [-- program-argument...]
     hard test   [--list-tests] [--test=<selector>]...
@@ -779,7 +782,7 @@ Command-local flags:
 - `format`: `--format=<name>`, default `format.v1`;
 - every source-processing command: `-s`, `--silent`;
 - `build`: `-o <path>`, `--output=<path>`;
-- `build`, `run`, and `test`: `--no-cache`;
+- `build`, `fetch`, `run`, and `test`: `--no-cache`;
 - `test`: `--list-tests` or repeatable `--test=<selector>`, which are
   mutually exclusive;
 - `fetch`, `run`, and `test` do not accept `--format` or `--output`.
@@ -815,7 +818,7 @@ Other CLI decisions:
 The parsed `arguments` value contains `command`, `paths`, `programArguments`,
 `verbose`, `silent`, `noColor`, `noCache`, `listTests`, `testSelectors`,
 `jobs`, `format`, and `output`. Only `build` populates `output`; only `run`
-populates `programArguments`; only `build`, `run`, and `test` can set
+populates `programArguments`; only `build`, `fetch`, `run`, and `test` can set
 `noCache`; only `test` populates listing or selectors. The raw output
 spelling preserves a trailing path separator because that separator declares
 directory intent.
@@ -861,7 +864,7 @@ characters.
   content-hashed by parse or object caches;
 - does not select an executable suffix or runner;
 - artifact path construction rejects values escaping `HARD_ROOT/env`, such as
-  `../outside`.
+  `../outside`; fetch analysis similarly rejects escapes from `HARD_ROOT/fetch`.
 
 ### `HARD_CC`
 
@@ -1257,8 +1260,8 @@ The stored forward is atomically restored when its output is missing.
 
 `--no-cache` bypasses reads, invalidates each old parse record before real
 analysis, and refreshes it after success. Failed analysis never writes a
-record. `fetch` deliberately receives no parse cache and therefore still
-creates no environment build tree.
+record. `fetch` uses separate dependency-only records described below and
+still creates no environment build tree.
 
 No record is stored when the literal token `__has_include` occurs in the
 input itself or the analysis argument vector. Dependencies containing the
@@ -1455,7 +1458,8 @@ management command:
   Corporate configuration requires pinning and cannot fall through to the
   legacy downloader. Format, version, environment, help and completion never
   fetch or update repository records.
-- `--no-cache` forces artifact work; it neither updates repository revisions
+- `--no-cache` forces analysis in fetch and analysis/artifact work in build
+  commands; it neither updates repository revisions
   nor authorizes dependency-record changes forbidden by `--locked`.
 
 New entries and explicit updates are written atomically after successful
@@ -1473,11 +1477,13 @@ commit. A selected dependency set gets its own source/include view, including
 the well-known aliases. Do not switch one global mutable symlink when two
 projects need different revisions.
 
-The selected dependency set participates in parse, object, and library cache
-identity. Artifact locations must also isolate concurrently used dependency
-sets where a shared output path would otherwise collide. Existing unversioned
-cache directories cannot be assigned an inferred commit: pinned mode must
-obtain and verify a snapshot for the recorded revision.
+The selected dependency set participates in parse and object cache identity.
+Library cache identity covers each package's own selected source snapshot,
+recipe contents and build tools, not the whole consuming project's selection.
+Artifact locations must also isolate concurrently used dependency sets where
+a shared output path would otherwise collide. Existing unversioned cache
+directories cannot be assigned an inferred commit: pinned mode must obtain
+and verify a snapshot for the recorded revision.
 
 Snapshots live at `HARD_ROOT/snapshot/<sha256(source)>/<commit>` with a sibling
 `.checksum` file. The normalized SHA-256 hashes a versioned JSON record stream
@@ -1488,7 +1494,8 @@ Integrity is trust on first use, not a publisher signature.
 
 Each `HARD_ROOT/project/<selection-digest>` contains a `source` view with
 relative logical-repository and well-known aliases, plus its own
-`env/HARD_ENV/build` and `env/HARD_ENV/library`. Identity includes the project
+`fetch/HARD_ENV` and `env/HARD_ENV/build`. Compiled libraries remain shared at
+`HARD_ROOT/env/HARD_ENV/library`. Source-view identity includes the project
 filename, complete pins, corporate replacement rules, compiler, flags and entry
 names. Different replacement configurations keep separate source views, even
 when their recorded pins match. A newly discovered
@@ -1686,8 +1693,8 @@ inherited pin after a parent update, cold locked fetches, recorded and cached
 checksum failures, same-revision update integrity, and a real CMake library
 whose changed function result proves the new revision was linked. The first
 run after a vendor update must miss parse/package/object/link caches and the
-next run must reuse them. Fetch parse caching remains separate pending work;
-this override change does not implement it.
+next run must reuse them. Fetch parse caching was still separate pending work
+at this point; it is implemented by the later fetch-cache change below.
 
 Verification passed the complete `make check` and ten repeated race runs of
 selection, provisional-default, parent-update, and override-integrity tests.
@@ -1725,8 +1732,8 @@ Locked execution built and ran the project; a repeat reused package, parse,
 compile and link caches. An XML smoke program printed
 `tinyxml2=10.0.0 answer=42`. A following locked fetch left the new YAML
 byte-identical. The original project sources, binary and YAML, installed
-runtime, and tags were untouched. Fetch parse caching is still separate pending
-work and is not part of this provider fix.
+runtime, and tags were untouched. Fetch parse caching remained separate pending
+work at this point and is implemented by the later fetch-cache change below.
 
 ## Forward declarations
 
@@ -2051,9 +2058,8 @@ status 1. Process-start failures and all build failures use the ordinary
 
 ## `hard fetch`
 
-Fetch never reads or writes the environment-backed persistent parse-result
-cache; its parsing behavior and absence of `HARD_ROOT/env` artifacts remain
-unchanged.
+Fetch uses a separate persistent dependency-analysis cache, never the build
+parse records. It still creates no `HARD_ROOT/env` artifacts.
 Fetch selects all supported translation units, including `*.test.*` and
 legacy `*_test.*`, then uses the same backend-effective base compiler flags,
 libclang analysis, recursive same-stem source closure, GitHub recovery, well-known mapping, cache, and worker
@@ -2082,7 +2088,49 @@ Search, parsing, and actual downloads share its single live preparation step:
 Later transitive repositories reuse the same step. Normal mode rewrites one
 line and terminates it; verbose mode emits permanent activity lines; silent
 mode emits no successful progress; no-color removes ANSI colors. A cached
-fetch still reports search and parsing but no Downloading activity.
+fetch still reports search and `Parsing <source> (CACHED)` but no Downloading
+activity when all snapshots are present.
+
+### Fetch analysis cache
+
+The user approved this implementation after observing repeated libclang parsing
+in `fetch --lock -v`. Records live at
+`HARD_ROOT/fetch/HARD_ENV/<absolute-source-without-leading-slash>.hard-parse-cache.json`,
+or below `HARD_ROOT/project/<selection-digest>/fetch/HARD_ENV` in pinned mode.
+The existing closure/worker machinery dispatches fetch-only library managers
+to dependency-only analysis, without entry detection, source forwards, CMake,
+compiler, linker or environment build artifacts.
+
+The shared artifact-cache machinery stores kind `fetch-parse`, managed headers,
+active recipe header paths, and non-system include edges (parent, target and
+expanded spelling). Include edges participate in the semantic-result checksum.
+The action key hashes the source and known non-system headers, executable,
+libclang version and base analysis flags; cwd participates for relative/opaque
+arguments. Environment paths isolate toolchains, and immutable project views
+isolate pins and replacements. System-header and include-topology limitations,
+including the direct-input/argument `__has_include` guard, match build analysis.
+
+A hit skips libclang but replays inherited include requirements and prepares
+recipe vendors in source-only mode. Base flags allow input validation before
+any cached recipe restoration, so removing a recipe from a source cannot cause
+stale resolution. Same-stem implementation discovery still runs on cached
+dependency lists. Configuration loading, locked checks, snapshot checksums, and
+dependency-session commit remain mandatory. `fetch --no-cache` bypasses reads,
+invalidates old records before parsing, and refreshes successful records; it
+does not update revisions or redownload valid snapshots.
+
+Verification on 2026-09-16 passed the complete `make check`, ten uncached race
+runs of all fetch tests, and local documentation link/anchor checks. A fresh
+backend and copy of `test_recipe` under `/tmp/hard-fetch-cache.XQuAPQ` downloaded
+the recorded recipe and TinyXML2 `11.0.0` snapshots. The repeat reported cached
+`main.cpp` and `github.com/leethomason/tinyxml2/tinyxml2.cpp`; `--no-cache`
+reparsed both without downloads and the following run hit both records again.
+The YAML remained byte-identical throughout those runs. Changing only the local
+source missed only its analysis. Updating TinyXML2 to `10.0.0` at
+`321ea883b7190d4e85cae5512a12e5eaa8f8731f` missed both analyses, and the next
+locked run reused both. Four records existed across the two selected views,
+with no `env` directories. Original project sources, YAML and binary retained
+their checksums; the installed runtime and release tags were untouched.
 
 ## `hard test`
 
@@ -2254,6 +2302,10 @@ The implemented installed host layout is:
     │   └── github.com/
     │       └── <owner>/
     │           └── <repository>/
+    ├── fetch/
+    │   └── HARD_ENV/
+    │       └── <absolute path without leading slash>/
+    │           └── file.cpp.hard-parse-cache.json
     └── env/
         └── HARD_ENV/
             ├── build/
@@ -2267,9 +2319,10 @@ The implemented installed host layout is:
             │       └── file.cpp.o.hard-cache.json
             └── library/
                 └── github.com/<owner>/<repository>/<fingerprint>/
-                    ├── build/
-                    ├── install/
-                    └── manifest.json
+                    ├── manifest.json
+                    └── generation-<id>/
+                        ├── build/
+                        └── install/
 
 External repository snapshots are shared by all environments below one
 `HARD_ROOT`. Environment build artifacts are isolated by `HARD_ENV`.
@@ -2540,7 +2593,7 @@ to leave the library unchanged for now.
   higher-priority header can shadow an existing include without invalidating
   that set. A dependency can also test the availability of an optional header
   through `__has_include` without that unavailable header entering the known
-  set. Run build, run, or test with `--no-cache` after such topology changes.
+  set. Run build, fetch, run, or test with `--no-cache` after such topology changes.
 - Unreferenced stale generated artifacts are not removed automatically.
 - Test-result keys cannot infer undeclared runtime files, services, network
   responses, or time; callers use `hard test --no-cache` when these matter.
@@ -2622,6 +2675,11 @@ to leave the library unchanged for now.
   authoritative CMake compiler and install prefix, cleared `CXXFLAGS`, package
   manifest reuse across invocation directories, stable vendor-source CMake
   working directory, fetch-only source includes, and reachable archive selection.
+- `hard/library_cache_test.go`: reuse between pinned projects with identical
+  local recipes, concurrent builders sharing one generation, environment and
+  recipe separation, no-cache publication, continued linking against old
+  generations, failed-build invalidation and cleanup, damaged installed files,
+  and generation path/symlink validation.
 - `hard/forward_test.go`: physical-file extraction, namespace and template
   rendering, macro and inline namespaces, safe candidate filtering, exclusions,
   invalid syntax, source-context paths, translation-unit conditional isolation,
@@ -2653,6 +2711,12 @@ to leave the library unchanged for now.
 - `hard/fetch_test.go`: empty no-op, search/parse progress, recursive repository
   downloads, shared progress step, install order, cached reuse, absence of
   environment build artifacts and compiler arguments, and invalid job counts.
+- `hard/fetch_cache_test.go`: repeated source/implementation hits; source/header,
+  flag/environment/revision invalidation; newly added implementations; malformed,
+  wrong-kind/version and include-edge-corrupted records; failed analysis and
+  direct `__has_include`; forced refresh without requests or pin changes;
+  recipe/vendor cache reuse without CMake or environment artifacts; project
+  overrides; locked/checksum failures and inherited conflict replay on valid hits.
 - `hard/test_test.go`: empty no-op, pkg-config success/failure and parsing,
   production objects, support-header exception, internal test binaries, common
   progress, shared-object compilation, global worker limits, grouped verbose
@@ -2799,8 +2863,11 @@ static package link and output, and repeat it with cache reads enabled.
 
 For fetch changes, use a fresh root and an external example. The first run must
 show search, parsing, and downloads and must not create an environment build
-tree. A second run must show search/parsing, omit Downloading, and preserve the
-cache. Use a separate fresh root for subsequent build verification.
+tree. A second run must show search and cached parsing, omit Downloading, and
+preserve the project record. Check `--no-cache` reparses without downloads or
+revision changes, then caches the next run. Check source/header and explicit
+revision changes invalidate analysis, plus locked/checksum/conflict validation
+with warm caches. Use a separate fresh root for subsequent build verification.
 
 For test changes, run a real GoogleTest under an isolated root and a pair with
 one passing and one failing executable. Confirm both run and aggregate status
@@ -3128,10 +3195,11 @@ not depend on the directory from which `hard` was invoked.
 
 Packages use the content-addressed layout
 `HARD_ROOT/env/HARD_ENV/library/github.com/<owner>/<repository>/<fingerprint>`
-with `build`, `install`, and `manifest.json`. The fingerprint covers the hard
-executable, complete recipe header and contents, full downloaded source tree,
-CMake tool, resolved compiler tool, and recipe configuration. The manifest
-verifies the complete installed regular-file tree. Parse-cache records retain
+with `manifest.json` selecting a `generation-<id>` containing `build` and
+`install`. The fingerprint covers the hard executable, complete recipe header
+contents (not its filename), full downloaded source tree, CMake tool, resolved
+compiler tool, and recipe configuration. The manifest verifies the complete
+installed regular-file tree. Parse-cache records retain
 active recipe header paths. After validating the semantic-result checksum, a
 prospective hit restores the package and compiler flags before validating its
 action fingerprint against current inputs. If that preliminary restoration
@@ -3140,7 +3208,58 @@ authoritative; this permits a removed recipe header to invalidate cleanly.
 `--no-cache` rebuilds packages but does not refresh downloaded GitHub snapshots.
 The invocation working directory is absent from the package key, so the same
 recipe and source snapshot reuse one package when a consuming source is
-selected from a parent directory or its own directory.
+selected from a parent directory or its own directory, or by another project.
+
+### Shared compiled-library cache (2026-09-16)
+
+Pinned builds formerly placed packages below their project-specific source
+view. Because the view identity includes the project filename, identical
+TinyXML2 inputs in `test_recipe` and `test_recipe_2` still built twice.
+`libraryManager` now uses the dependency session's original `HARD_ROOT` for
+package storage while keeping its project source view for dependency
+resolution. Project source views, fetch/parse records, forwards, objects and
+application binaries remain isolated. Different `HARD_ENV` values and package
+inputs remain isolated as well; unrelated project pins do not affect the
+package key.
+
+The package fingerprint kind is `library-cmake-v2`. Recipe header bytes still
+participate, but its filename does not: local copies of identical recipes can
+share packages, and CMake works from the canonical vendor source directory.
+Source tree paths/bytes, compiler and CMake tools, hard executable, recipe
+configuration and vendor working directory remain inputs.
+
+Each package directory uses an exclusive directory-inode advisory lock for
+manifest validation, CMake work and publication. Manifest version 2 identifies
+the selected generation and installed file digests. A build creates a fresh
+`generation-<id>` with private build/install directories, validates its
+artifacts and atomically publishes the manifest after success. Locks are
+released before application compilation/linking; consumers keep immutable
+generation paths, so `--no-cache` cannot delete files already in use by another
+process. A failed rebuild removes its own unpublished generation and leaves
+no eligible manifest, preserving all previously published files. A subsequent
+ordinary build retries. Generation paths reject traversal and symlink roots.
+
+Old generations and former project-local library caches are neither migrated
+nor garbage-collected. The first build with the new layout compiles once;
+subsequent compatible projects reuse that shared package. Existing snapshots,
+source views and caches are not deleted by this change.
+
+Verification passed the complete `make check` and ten uncached race runs of
+the new shared-package tests. A fresh backend and copies of `test_recipe` and
+`test_recipe_2` under `/tmp/hard-shared-library.lc5if1` used one shared TinyXML2
+archive: the first build configured/built/installed it, and the second reported
+`Building github.com/leethomason/tinyxml2 (CACHED)`. Two independent backend
+processes in a fresh `parallel-smoke` environment produced exactly one package
+generation and both linked that same archive. A host `--no-cache` build
+published a second generation, retained the first archive, and the other
+project then reused the new generation. No project-local library cache was
+created. Tests additionally linked and ran an existing consumer after a
+forced rebuild, rejected corrupted packages, and checked failed-build cleanup.
+The original projects' sources, YAML and binaries retained their checksums;
+the installed runtime and release tags were untouched. Local documentation
+links/anchors and changed implementation paths were validated.
+
+### Original compiled-library integration
 
 At the same time, `-I<HARD_ROOT>/source` and
 `-include <runtime-root>/hard.h` moved out of configured `HARD_CFLAGS` into the

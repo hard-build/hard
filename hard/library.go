@@ -18,7 +18,7 @@ import (
 
 const (
 	libraryRecipeMarker    = "hard.recipe.v1"
-	libraryManifestVersion = 1
+	libraryManifestVersion = 2
 )
 
 type libraryRecipe struct {
@@ -39,9 +39,10 @@ type libraryArtifact struct {
 }
 
 type libraryManifest struct {
-	Version int         `json:"version"`
-	Input   string      `json:"input"`
-	Files   []cacheFile `json:"files"`
+	Version   int         `json:"version"`
+	Input     string      `json:"input"`
+	Directory string      `json:"directory"`
+	Files     []cacheFile `json:"files"`
 }
 
 type libraryManager struct {
@@ -223,7 +224,8 @@ func (manager *libraryManager) buildRecipe(
 	if err != nil {
 		return libraryArtifact{}, err
 	}
-	inputs = append(inputs, header)
+	// Recipe bytes already participate below. Their project-local filename
+	// does not affect CMake, whose working directory is the vendor snapshot.
 	arguments := []string{
 		"recipe:" + string(headerContents),
 		"compiler-path:" + compilerFingerprint.Path,
@@ -241,7 +243,7 @@ func (manager *libraryManager) buildRecipe(
 		arguments = append(arguments, "archive:"+library)
 	}
 	input, err := manager.cache.actionFingerprintWithWorkingDirectory(
-		"library-cmake-v1",
+		"library-cmake-v2",
 		cmake,
 		arguments,
 		inputs,
@@ -251,14 +253,32 @@ func (manager *libraryManager) buildRecipe(
 	if err != nil {
 		return libraryArtifact{}, fmt.Errorf("fingerprint library %s: %w", recipe.Source, err)
 	}
-	packageRoot, err := libraryPackageRoot(manager.root, manager.environment, recipe.Source, input)
+	cacheRoot := manager.root
+	if manager.githubResolver != nil && manager.githubResolver.session != nil {
+		cacheRoot = manager.githubResolver.session.root
+	}
+	packageRoot, err := libraryPackageRoot(cacheRoot, manager.environment, recipe.Source, input)
 	if err != nil {
 		return libraryArtifact{}, err
 	}
-	installDirectory := filepath.Join(packageRoot, "install")
+	if err := os.MkdirAll(packageRoot, 0o755); err != nil {
+		return libraryArtifact{}, fmt.Errorf("create library cache directory %s: %w", packageRoot, err)
+	}
+	info, err := os.Lstat(packageRoot)
+	if err != nil {
+		return libraryArtifact{}, err
+	}
+	if !info.IsDir() {
+		return libraryArtifact{}, fmt.Errorf("library cache is not a directory: %s", packageRoot)
+	}
 	manifestPath := filepath.Join(packageRoot, "manifest.json")
+	lock, err := lockProjectDirectory(manifestPath)
+	if err != nil {
+		return libraryArtifact{}, fmt.Errorf("lock library cache %s: %w", packageRoot, err)
+	}
+	defer lock.Close()
 	if !manager.noCache {
-		cached, err := libraryManifestHit(manifestPath, installDirectory, input)
+		installDirectory, cached, err := libraryManifestHit(manifestPath, packageRoot, input)
 		if err != nil {
 			return libraryArtifact{}, err
 		}
@@ -269,10 +289,23 @@ func (manager *libraryManager) buildRecipe(
 			return libraryInstalledArtifact(header, recipe, installDirectory, input)
 		}
 	}
-	if err := os.RemoveAll(packageRoot); err != nil {
-		return libraryArtifact{}, fmt.Errorf("remove stale library package %s: %w", packageRoot, err)
+	if err := os.Remove(manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return libraryArtifact{}, fmt.Errorf("invalidate library manifest %s: %w", manifestPath, err)
 	}
-	buildDirectory := filepath.Join(packageRoot, "build")
+	// Never rebuild in place: another process may already be compiling or
+	// linking against an older generation after releasing this package lock.
+	generation, err := os.MkdirTemp(packageRoot, "generation-")
+	if err != nil {
+		return libraryArtifact{}, fmt.Errorf("create library generation: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(generation)
+		}
+	}()
+	installDirectory := filepath.Join(generation, "install")
+	buildDirectory := filepath.Join(generation, "build")
 	if err := os.MkdirAll(buildDirectory, 0o755); err != nil {
 		return libraryArtifact{}, fmt.Errorf("create library build directory %s: %w", buildDirectory, err)
 	}
@@ -316,7 +349,7 @@ func (manager *libraryManager) buildRecipe(
 	if err != nil {
 		return libraryArtifact{}, err
 	}
-	manifest := libraryManifest{Version: libraryManifestVersion, Input: input, Files: files}
+	manifest := libraryManifest{Version: libraryManifestVersion, Input: input, Directory: filepath.Base(generation), Files: files}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		return libraryArtifact{}, fmt.Errorf("encode library manifest %s: %w", manifestPath, err)
@@ -324,6 +357,7 @@ func (manager *libraryManager) buildRecipe(
 	if err := writeCacheRecord(manifestPath, append(encoded, '\n')); err != nil {
 		return libraryArtifact{}, fmt.Errorf("write library manifest %s: %w", manifestPath, err)
 	}
+	published = true
 	return artifact, nil
 }
 
@@ -636,35 +670,49 @@ func libraryInstalledArtifact(
 	return artifact, nil
 }
 
-func libraryManifestHit(manifestPath, installDirectory, input string) (bool, error) {
-	contents, err := os.ReadFile(manifestPath)
+func libraryManifestHit(manifestPath, packageRoot, input string) (string, bool, error) {
+	contents, err := readRegularProjectFile(manifestPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read library manifest %s: %w", manifestPath, err)
+		return "", false, fmt.Errorf("read library manifest %s: %w", manifestPath, err)
 	}
 	var manifest libraryManifest
 	if err := json.Unmarshal(contents, &manifest); err != nil ||
-		manifest.Version != libraryManifestVersion || manifest.Input != input {
-		return false, nil
+		manifest.Version != libraryManifestVersion || manifest.Input != input ||
+		!strings.HasPrefix(manifest.Directory, "generation-") ||
+		strings.ContainsAny(manifest.Directory, "/\\") {
+		return "", false, nil
 	}
+	generation := filepath.Join(packageRoot, manifest.Directory)
+	info, err := os.Lstat(generation)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("inspect library generation %s: %w", generation, err)
+	}
+	if !info.IsDir() {
+		return "", false, fmt.Errorf("library generation is not a directory: %s", generation)
+	}
+	installDirectory := filepath.Join(generation, "install")
 	files, err := libraryInstallManifestFiles(installDirectory)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return "", false, nil
 		}
-		return false, err
+		return "", false, err
 	}
 	if len(files) != len(manifest.Files) {
-		return false, nil
+		return "", false, nil
 	}
 	for index := range files {
 		if files[index] != manifest.Files[index] {
-			return false, nil
+			return "", false, nil
 		}
 	}
-	return true, nil
+	return installDirectory, true, nil
 }
 
 func libraryInstallManifestFiles(root string) ([]cacheFile, error) {

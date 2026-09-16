@@ -147,7 +147,7 @@ hard environment
 hard format [--format=<name>] [-s|--silent] [path...]
 hard build  [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
 hard fetch  [--lock | --locked | --update=<repository>@<ref>...]
-            [-s|--silent] [path...]
+            [--no-cache] [-s|--silent] [path...]
 hard run    [--locked] [--no-cache] [-s|--silent] [path...]
             [-- program-argument...]
 hard test   [--list-tests] [--test=<selector>]...
@@ -233,6 +233,16 @@ hard fetch -j src tests
 
 `fetch` performs dependency analysis but does not compile, link, run CMake,
 create environment artifacts, or execute tests. Existing snapshots are reused.
+Successful analysis is cached separately from build artifacts. Repeating an
+unchanged invocation reports `Parsing <source> (CACHED)`, including discovered
+library implementations. Source/header changes, analysis flags, `HARD_ENV`,
+and selected dependency revisions determine reuse. Pinned snapshots and
+inherited dependency requirements are still validated on cache hits.
+
+Use `hard fetch --no-cache` to force analysis and refresh its cache without
+updating recorded revisions or redownloading valid snapshots. As with build
+analysis, use this flag after include-path topology changes, such as adding a
+higher-priority header that shadows a previously resolved include.
 
 ### `hard run`
 
@@ -297,6 +307,12 @@ A project can also keep its own `*.hard.h` recipe beside its sources. The full
 `hard.recipe.v1` YAML schema, validation rules, package layout, and cache
 behavior are documented in the
 [compiled-library recipe reference](docs/reference.md#compiled-library-recipes).
+
+Compiled libraries are shared between projects under
+`HARD_ROOT/env/HARD_ENV/library`. Identical recipe contents, vendor sources and
+build tools reuse one package; a different environment or package input keeps
+its own cache. `--no-cache` builds a new package generation without removing
+files that another running build may still use.
 
 Downloaded repository directories are persistent snapshots and are not
 refreshed automatically. Enable exact revisions with `hard fetch --lock`;
@@ -566,6 +582,8 @@ HARD_ROOT/
 │   ├── github.com/
 │   ├── hard -> github.com/hard-build/library
 │   └── recipe -> github.com/hard-build/recipe
+├── fetch/
+│   └── HARD_ENV/          dependency-analysis records, mirrored source paths
 └── env/
     ├── host/
     ├── linux64:v4.0-glibc.2.35/
@@ -574,19 +592,22 @@ HARD_ROOT/
 ```
 
 Generated forwards, objects, internal binaries, package installations, and
-cache records remain below the selected environment. Build binaries are copied
+build cache records remain below `env/HARD_ENV`; fetch-only analysis records
+remain below `fetch/HARD_ENV`. Build binaries are copied
 according to `-o` or beside their entry sources; run and test binaries remain
 internal. Executable suffixes and runners come from the corresponding generic
 configuration variables, not from `HARD_ENV`.
 
 Pinned projects instead use shared `snapshot/` directories and isolated
-`project/<selection-digest>/` source views and artifact trees; see the
+`project/<selection-digest>/` source views, analysis records and application
+artifacts. Compiled libraries still use the shared
+`HARD_ROOT/env/HARD_ENV/library` cache; see the
 [pinned cache layout](docs/reference.md#pinned-source-and-artifact-layout).
 For pinned dependencies, `Parsing` and `Compiling` progress labels still use
 logical repository paths such as `github.com/leethomason/tinyxml2/tinyxml2.cpp`,
 not internal snapshot paths. Verbose compiler commands retain the real paths.
-Stale generated artifacts and downloaded snapshots are not removed
-automatically.
+Stale generated artifacts, old library generations and downloaded snapshots
+are not removed automatically.
 
 ## Building Hard from Source
 

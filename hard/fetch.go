@@ -34,14 +34,35 @@ func fetchSourcesWithProgress(
 	stderr io.Writer,
 	resolvers ...*githubSnapshotResolver,
 ) error {
+	return fetchSourcesWithCache(root, "", cflags, sources, jobs, progress, stderr, false, resolvers...)
+}
+
+func fetchSourcesWithCache(
+	root string,
+	environment string,
+	cflags []string,
+	sources []string,
+	jobs int,
+	progress *progressBar,
+	stderr io.Writer,
+	noCache bool,
+	resolvers ...*githubSnapshotResolver,
+) error {
 	resolver := invocationRepositoryResolver(root, progress, resolvers)
 	if len(sources) == 0 {
 		progress.setTotal(1)
 		return errors.Join(resolver.commitDependencies(), progress.finish())
 	}
+	if jobs < 1 {
+		return errors.Join(fmt.Errorf("jobs must be positive: %d", jobs), progress.finish())
+	}
 	workingDirectory, err := os.Getwd()
 	if err != nil {
 		return errors.Join(fmt.Errorf("determine working directory: %w", err), progress.finish())
+	}
+	cache, err := newArtifactCache(!noCache)
+	if err != nil {
+		return errors.Join(err, progress.finish())
 	}
 	libraryManager := newLibraryManager(
 		root,
@@ -56,19 +77,29 @@ func fetchSourcesWithProgress(
 		progress,
 		stderr,
 	)
-	activity := func(path string) {
-		progress.updateStep("Parsing " + buildParsingDisplayPath(root, path, workingDirectory))
+	activity := func(path string, cached bool) {
+		message := "Parsing " + buildParsingDisplayPath(root, path, workingDirectory)
+		if cached {
+			message += " (CACHED)"
+		}
+		progress.updateStep(message)
 	}
-	err = fetchSourceDependenciesWithLibraries(
+	_, _, _, _, _, _, failures, err := discoverBuildSourceClosureWithLibraries(
+		root,
+		environment,
+		"",
 		resolver,
 		cflags,
+		nil,
 		sources,
 		jobs,
 		workingDirectory,
 		stderr,
 		activity,
+		cache,
 		libraryManager,
 	)
+	err = errors.Join(err, errors.Join(failures...))
 	progress.setTotal(1)
 	if err == nil {
 		err = resolver.commitDependencies()

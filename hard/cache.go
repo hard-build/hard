@@ -46,15 +46,22 @@ type cacheRecord struct {
 }
 
 type parseCacheRecord struct {
-	Version             int      `json:"version"`
-	Kind                string   `json:"kind"`
-	Input               string   `json:"input"`
-	Result              string   `json:"result"`
-	Dependencies        []string `json:"dependencies"`
-	ManagedDependencies []string `json:"managed_dependencies,omitempty"`
-	LibraryHeaders      []string `json:"library_headers,omitempty"`
-	EntryPoint          string   `json:"entry_point,omitempty"`
-	Forward             string   `json:"forward,omitempty"`
+	Version             int                 `json:"version"`
+	Kind                string              `json:"kind"`
+	Input               string              `json:"input"`
+	Result              string              `json:"result"`
+	Dependencies        []string            `json:"dependencies"`
+	ManagedDependencies []string            `json:"managed_dependencies,omitempty"`
+	LibraryHeaders      []string            `json:"library_headers,omitempty"`
+	Includes            []parseCacheInclude `json:"includes,omitempty"`
+	EntryPoint          string              `json:"entry_point,omitempty"`
+	Forward             string              `json:"forward,omitempty"`
+}
+
+type parseCacheInclude struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Spelling string `json:"spelling"`
 }
 
 type digestResult struct {
@@ -554,17 +561,19 @@ func parseCacheInputContainsHasInclude(
 
 func parseResultFingerprint(record parseCacheRecord) (string, error) {
 	result := struct {
-		Kind                string   `json:"kind"`
-		Dependencies        []string `json:"dependencies"`
-		ManagedDependencies []string `json:"managed_dependencies,omitempty"`
-		LibraryHeaders      []string `json:"library_headers,omitempty"`
-		EntryPoint          string   `json:"entry_point,omitempty"`
-		Forward             string   `json:"forward,omitempty"`
+		Kind                string              `json:"kind"`
+		Dependencies        []string            `json:"dependencies"`
+		ManagedDependencies []string            `json:"managed_dependencies,omitempty"`
+		LibraryHeaders      []string            `json:"library_headers,omitempty"`
+		Includes            []parseCacheInclude `json:"includes,omitempty"`
+		EntryPoint          string              `json:"entry_point,omitempty"`
+		Forward             string              `json:"forward,omitempty"`
 	}{
 		Kind:                record.Kind,
 		Dependencies:        record.Dependencies,
 		ManagedDependencies: record.ManagedDependencies,
 		LibraryHeaders:      record.LibraryHeaders,
+		Includes:            record.Includes,
 		EntryPoint:          record.EntryPoint,
 		Forward:             record.Forward,
 	}

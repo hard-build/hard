@@ -161,12 +161,13 @@ Wrapper options:
 		nil,
 		&silent,
 		nil,
-		nil,
+		&noCache,
 		nil,
 		nil,
 		parsed,
 	)
 	fetchCommand.Flags().BoolVarP(&silent, "silent", "s", false, "only print errors")
+	fetchCommand.Flags().BoolVar(&noCache, "no-cache", false, "reparse dependencies without using cached results")
 	runCommand := newRunCommand(
 		&verbose,
 		&noColor,

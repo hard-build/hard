@@ -111,7 +111,7 @@ func executeSourceCommand(parsed arguments, configuration configuration, sources
 			parsed.verbose, parsed.silent, parsed.noColor, progress, stdout, stderr,
 		)
 	case "fetch":
-		return fetchSourcesWithProgress(configuration.root, cflags, sources, parsed.jobs, progress, stderr, resolver)
+		return fetchSourcesWithCache(configuration.root, configuration.env, cflags, sources, parsed.jobs, progress, stderr, parsed.noCache, resolver)
 	case "test":
 		return testSourcesWithProgressSelectionExecutable(
 			configuration.root, configuration.runtimeRoot, configuration.env,
