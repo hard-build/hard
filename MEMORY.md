@@ -231,6 +231,7 @@ cache entries and are not refreshed automatically.
 | `hard/cli_test.go` | CLI defaults, validation, help, completion, interspersed flags, test selection, and job forms |
 | `hard/version.go` | Embedded version components, formatting, and output |
 | `hard/version_test.go` | Development and release version rendering and output failures |
+| `hard/release_workflow_test.go` | Release workflow Bash syntax and publication recovery using an isolated GitHub CLI stub |
 | `hard/install_test.go` | Isolated portable installation, shell startup and completion files, idempotence, rollback, and failures |
 | `hard/config.go` | `HARD_*` configuration and default compiler/linker flag vectors |
 | `hard/config_test.go` | Configuration defaults, overrides, parsing, and failures |
@@ -2797,9 +2798,31 @@ verify job succeeds. After the portable archive passes its compatibility matrix
 and is published, the workflow calls the container publication workflow with
 the same tag and revision; a container failure does not replace the already
 published host assets and can be retried through guarded manual recovery.
-Release publication is idempotent but immutable: an absent release is created,
-absent assets are uploaded without replacement, byte-identical assets are
-accepted, and an existing asset with different contents fails the workflow.
+Release publication is idempotent but immutable. Publication jobs for the same
+tag are serialized without cancelling the active job. An absent release is
+created explicitly as a draft without assets, requiring an existing tag.
+Only the CLI's explicit `release not found` result permits creation; other
+lookup failures remain errors. A failed create request is followed by another
+lookup in case the server created the draft before the response was lost.
+Existing assets are downloaded and compared before uploading missing files.
+Missing assets are uploaded individually without replacement, then downloaded
+and compared even when the upload command reports an error such as HTTP 422.
+Downloads have three attempts, with two seconds between attempts, to tolerate
+temporary unavailability. Different contents or an unavailable asset fail the
+job and retain the draft for recovery. After both assets match, a draft is
+published; an already published release retains its state.
+
+`hard/release_workflow_test.go` parses the actual workflow, checks all inline
+scripts with `bash -n`, and runs the publication step with an isolated `gh`
+stub. It covers new, partial, complete, and already published releases;
+accepted uploads followed by HTTP 422 or a lost response; delayed downloads;
+conflicting contents; failed uploads followed by a successful rerun; and lookup,
+creation, and download failures. Tests never publish to GitHub.
+Verification on 2026-09-24 passed all 17 publication scenarios and the complete
+`make check`, including race tests. YAML and inline Bash syntax were validated;
+the build, smoke, and container jobs, pinned inputs, and permissions were
+compared against the previous workflow and are unchanged. Actual publication
+with this recovery logic has not yet been exercised on GitHub.
 
 For check-workflow changes, parse the workflow as YAML, verify the two event
 triggers, read-only contents permission, runner, action versions, Go version,

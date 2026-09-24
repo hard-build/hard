@@ -339,6 +339,9 @@ jobs:
       - build
       - smoke
     runs-on: ubuntu-24.04
+    concurrency:
+      group: publish-host-${{ github.ref_name }}
+      cancel-in-progress: false
     steps:
       - name: Download workflow artifact
         uses: actions/download-artifact@v4
@@ -357,42 +360,76 @@ jobs:
             "$RUNNER_TEMP/release/$CHECKSUM_NAME"
           )
 
-          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --generate-notes \
-              --title "$RELEASE_TAG" \
-              "${assets[@]}"
-            exit 0
+          download_dir=$(mktemp -d)
+          trap 'rm -rf "$download_dir"' EXIT
+
+          if ! is_draft=$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' \
+            2>"$download_dir/view-error"); then
+            if ! grep -Fxq 'release not found' "$download_dir/view-error"; then
+              cat "$download_dir/view-error" >&2
+              exit 1
+            fi
+            if ! gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --generate-notes --title "$RELEASE_TAG" \
+              2>"$download_dir/create-error"; then
+              # A lost response may leave a usable draft on the server.
+              cat "$download_dir/create-error" >&2
+            fi
+            is_draft=$(gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
           fi
+
+          verify_asset() {
+            local asset=$1 asset_name attempt verify_dir
+            asset_name=$(basename "$asset")
+            for attempt in 1 2 3; do
+              verify_dir=$(mktemp -d "$download_dir/asset.XXXXXX")
+              if gh release download "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" --pattern "$asset_name" \
+                --dir "$verify_dir" 2>"$download_dir/download-error"; then
+                if ! cmp -s "$asset" "$verify_dir/$asset_name"; then
+                  echo "release asset already exists with different contents: $asset_name" >&2
+                  return 1
+                fi
+                return 0
+              fi
+              if [[ $attempt -lt 3 ]]; then
+                sleep 2
+              fi
+            done
+            cat "$download_dir/download-error" >&2
+            return 1
+          }
 
           existing_assets=$(gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --json assets \
             --jq '.assets[].name')
-          download_dir=$(mktemp -d)
-          trap 'rm -rf "$download_dir"' EXIT
           missing_assets=()
 
           for asset in "${assets[@]}"; do
             asset_name=$(basename "$asset")
             if grep -Fqx -- "$asset_name" <<<"$existing_assets"; then
-              gh release download "$RELEASE_TAG" \
-                --repo "$GITHUB_REPOSITORY" \
-                --pattern "$asset_name" \
-                --dir "$download_dir"
-              if ! cmp -s "$asset" "$download_dir/$asset_name"; then
-                echo "release asset already exists with different contents: $asset_name" >&2
-                exit 1
-              fi
+              verify_asset "$asset"
             else
               missing_assets+=("$asset")
             fi
           done
 
-          if [[ ${#missing_assets[@]} -gt 0 ]]; then
-            gh release upload "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              "${missing_assets[@]}"
+          for asset in "${missing_assets[@]}"; do
+            if ! gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              "$asset" 2>"$download_dir/upload-error"; then
+              # The server may have accepted the upload before the request failed.
+              cat "$download_dir/upload-error" >&2
+              echo "Checking uploaded asset: $(basename "$asset")" >&2
+            fi
+            verify_asset "$asset"
+          done
+
+          if [[ $is_draft == true ]]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft=false --verify-tag
           fi
 
   containers:
