@@ -80,7 +80,9 @@ func runConfiguredCommand(parsed arguments, options projectOptions, configuratio
 		err = executeSourceCommand(parsed, current, sources, progress, resolver, stdin, stdout, diagnostics)
 		if session != nil && session.changed {
 			// Refresh the locked include view; no binary was executed.
+			analyses := progress.analyses
 			progress = newProgressBar(stdout, -1, parsed.verbose, parsed.silent, parsed.noColor)
+			progress.analyses = analyses
 			continue
 		}
 		if staged != nil {

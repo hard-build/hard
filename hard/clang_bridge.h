@@ -8,6 +8,7 @@ extern "C"
 #endif
 
 	const char* hard_clang_version();
+	unsigned long long hard_clang_parse_count();
 
 	typedef struct hard_clang_analysis hard_clang_analysis;
 
@@ -33,6 +34,12 @@ extern "C"
 	const char* hard_clang_declaration_file(const hard_clang_analysis* analysis, size_t index);
 	const char* hard_clang_declaration_name(const hard_clang_analysis* analysis, size_t index);
 	const char* hard_clang_declaration_kind(const hard_clang_analysis* analysis, size_t index);
+	const char* hard_clang_declaration_identity(const hard_clang_analysis* analysis, size_t index);
+	const char* hard_clang_declaration_enum_base(const hard_clang_analysis* analysis, size_t index);
+	const char* hard_clang_declaration_constraint(const hard_clang_analysis* analysis, size_t index);
+	const char* hard_clang_declaration_unsupported(const hard_clang_analysis* analysis, size_t index);
+	size_t hard_clang_declaration_requirement_count(const hard_clang_analysis* analysis, size_t index);
+	const char* hard_clang_declaration_requirement(const hard_clang_analysis* analysis, size_t index, size_t requirement_index);
 	int hard_clang_declaration_is_definition(const hard_clang_analysis* analysis, size_t index);
 	int hard_clang_declaration_is_specialization(const hard_clang_analysis* analysis, size_t index);
 	unsigned hard_clang_declaration_offset(const hard_clang_analysis* analysis, size_t index);

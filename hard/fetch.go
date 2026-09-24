@@ -163,6 +163,14 @@ func fetchSourceDependenciesWithLibraries(
 	if jobs < 1 {
 		return fmt.Errorf("jobs must be positive: %d", jobs)
 	}
+	if libraryManager == nil {
+		var root string
+		var progress *progressBar
+		if resolver != nil {
+			root, progress = resolver.root, resolver.progress
+		}
+		libraryManager = newLibraryManager(root, "", "", jobs, false, false, workingDirectory, resolver, nil, progress, stderr)
+	}
 	var parsingActivity func(string, bool)
 	if activity != nil {
 		parsingActivity = func(path string, _ bool) {

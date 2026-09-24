@@ -531,9 +531,18 @@ is required.
 hard build [--locked] [--no-cache] [-s|--silent] [-o <path>] [path...]
 ```
 
-The implemented build pipeline currently discovers dependencies, generates one
-source-context forward per translation unit, compiles objects, detects
-configured entry functions, links reachable objects, and delivers binaries.
+The build pipeline prepares dependencies, analyzes each source, generates one
+source-context forward per translation unit, compiles objects, links reachable
+objects for configured entry functions, and delivers binaries.
+
+Build, run, and test share one full libclang AST per source analysis attempt:
+it supplies dependencies, declarations, and entry functions. A cache hit makes
+zero libclang calls. A miss with prepared dependencies and package flags makes
+one call; neither entry detection nor forward generation reparses the source
+or the generated header. Package flags recovered from the previous parse
+record are used on the first attempt even when source contents changed.
+The new active graph still determines the final packages and flags, so removing
+a recipe removes its flags and can require another analysis.
 
 Every root or automatically discovered translation unit is analyzed through
 libclang 18. `hard` passes the effective compiler flags: configured
@@ -728,7 +737,8 @@ source-context forward file from the declarations visible in its final
 libclang analysis. Only declarations physically originating in active managed
 non-system dependencies can enter the output; declarations from the source
 file itself and from system headers are excluded. `hard` emits named classes,
-structs, and class templates declared directly at global or namespace scope.
+structs, supported class templates, scoped enums, and unscoped enums with an
+explicit underlying type, declared directly at global or namespace scope.
 It preserves ordinary and inline namespace nesting, removes template defaults,
 skips class template specializations, and excludes local, nested, and
 anonymous-namespace types.
@@ -740,11 +750,27 @@ and linked through the same dependency graph. Well-known paths are
 canonicalized through their aliases before dependency and object paths are
 derived.
 
-Each candidate declaration is validated by reparsing the cumulative generated
-forward file with libclang. A candidate that makes it invalid is omitted,
-allowing valid declarations from macro-heavy amalgamated headers to remain
-usable. Since extraction uses the translation-unit AST, conditional and
-macro-dependent declarations remain specific to that source and flag context.
+All supported declarations are emitted, including unused enums. The bridge
+obtains enum types, template parameters, and references from libclang; hard
+serializes the complete forward without additional libclang validation.
+Opaque enums precede templates across namespace groups. Underlying enum types
+are preserved using their canonical spelling. Builtin typedefs in non-type
+template parameters can also use their canonical type, such as `size_t` as
+`unsigned long` on a platform where those are equivalent.
+
+Template constraints retain their original tokens and order. Signatures that
+depend on unavailable aliases, concepts, values, macros, or unsupported header
+context are omitted as a whole, with a reason in verbose output; hard does not
+silently remove a `requires` clause. Ordinary enums without a fixed underlying
+type cannot be forward-declared and are omitted. Templates requiring such an
+enum are omitted too. These are conservative supported forms, not a promise
+to synthesize every C++ declaration. Conditional and macro-expanded class and
+namespace names still come from the source's active AST.
+
+The ordinary compiler checks the generated header together with the original
+definitions. There is no separate forward-validation pass. A parse-cache record
+does not assert that object compilation succeeded; an object-cache success is
+written only after the compiler succeeds.
 
 The forward path preserves the owner-relative source path below
 `<owner>/build/<build-key>` and appends `.fwd.h` to the complete source name:
@@ -763,7 +789,7 @@ A successful translation-unit analysis is persisted as a versioned
 directory, preserving the source-relative path. The record
 stores its managed dependency list, complete active non-system dependency
 snapshot, active library recipe headers, detected entry point, and final
-validated source-forward text. Records include a checksum of that semantic
+generated source-forward text. Records include a checksum of that semantic
 result and the selected snapshot key. After the checksum is validated, a
 prospective hit restores the packages and package include flags named by those
 headers before its action fingerprint is validated against current inputs.
@@ -865,8 +891,8 @@ main _start
 The value is parsed as shell-style words. An explicitly empty value disables
 entry-point detection. Declarations without a body, class methods, namespace
 functions, local functions, and lambdas are not entry points. Defining more
-than one configured entry-point name in one source is an error. Detection uses
-a full libclang translation unit with the effective compiler flags. Only the
+than one configured entry-point name in one source is an error. Detection reuses
+the final full libclang AST with the effective compiler flags. Only the
 active preprocessor branch participates, and a function definition produced
 by a macro is detected.
 
@@ -996,6 +1022,13 @@ lines, and silent mode hides the complete progress stream. All entries follow
   immediately follows its `Compiling` or `Linking` entry. Every argument is
   POSIX-shell escaped, so the command can be copied and run manually. Copying
   is internal Go code and has no command line.
+- Verbose analysis details identify their source and show cache hit/miss
+  reasons, each actual libclang attempt and duration, missing dependencies
+  and their including file, and why another attempt is required. Forward
+  generation reports emitted/skipped counts, reasons for unsupported
+  declarations, and elapsed time. Compile/link and CMake work report timings.
+  Attempt numbers continue across dependency-view refreshes. Parallel detail
+  lines are serialized and always carry their owner.
 - Build does not print a preliminary header list. Preparation progress may show
   `Parsing <source>` while libclang analysis is running.
 - `-s` suppresses progress and successful compiler output; compiler, linker,
@@ -1009,6 +1042,14 @@ aliases use the same canonical label. Replacements retain their
 logical repository names. Cached progress entries use the same labels. This
 affects only progress output: verbose compiler commands, diagnostics, object
 paths, and other artifacts continue to use the actual source path.
+
+For an initially unknown chain `main.cpp` → `libA1/a.h` → `libB2/b.h`, with
+ordinary headers available directly in each snapshot, main is analyzed three
+times: discover A, discover B, then analyze the complete include context.
+The forward is generated once, from the last AST. Known recorded dependencies
+are prepared before analysis and can eliminate those discovery attempts.
+Recipe builds can require another attempt after their package flags change;
+newly discovered implementation sources each have their own analysis.
 
 Root translation units without a configured entry point remain object files.
 Automatically discovered implementation sources are dependency-only even when
@@ -1085,8 +1126,8 @@ recursive selection includes ordinary, `*.test.*`, and legacy `*_test.*`
 translation units. Explicit files and directories use the common path-selection
 rules.
 
-Dependency analysis uses libclang 18 with the effective compiler flags,
-follows active project headers, and recursively discovers same-stem
+Dependency analysis uses libclang 18 with skipped function bodies and the
+effective compiler flags, follows active project headers, and recursively discovers same-stem
 implementation sources. It then downloads the complete transitive closure of
 expanded `github.com/<owner>/<repository>/...` and well-known includes.
 `HARD_CC` is not started by `fetch`. The persistent cache and archive-safety

@@ -1,6 +1,7 @@
 #include "clang_bridge.h"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,6 +10,8 @@
 
 namespace
 {
+
+std::atomic<unsigned long long> parse_count{0};
 
 struct hard_namespace
 {
@@ -34,6 +37,11 @@ struct hard_declaration
 	unsigned offset = 0;
 	std::vector<hard_namespace> namespaces;
 	std::vector<std::string> template_parameters;
+	std::string identity;
+	std::string enum_base;
+	std::string constraint;
+	std::string unsupported;
+	std::vector<std::string> requirements;
 };
 
 struct hard_function
@@ -143,72 +151,240 @@ bool is_global_function(CXCursor cursor)
 	return false;
 }
 
-std::vector<std::string> template_parameters(CXTranslationUnit unit, CXCursor cursor)
+struct signature_token
+{
+	std::string text;
+	CXTokenKind kind;
+	CXCursor cursor;
+};
+
+std::vector<signature_token> signature_tokens(CXTranslationUnit unit, CXSourceRange range)
 {
 	CXToken* tokens = nullptr;
 	unsigned token_count = 0;
-	clang_tokenize(unit, clang_getCursorExtent(cursor), &tokens, &token_count);
-	std::vector<std::string> parameters;
-	std::string parameter;
-	unsigned depth = 0;
-	bool started = false;
+	clang_tokenize(unit, range, &tokens, &token_count);
+	std::vector<CXCursor> cursors(token_count);
+	clang_annotateTokens(unit, tokens, token_count, cursors.data());
+	std::vector<signature_token> result;
 	for (unsigned index = 0; index < token_count; ++index)
 	{
-		std::string token = to_string(clang_getTokenSpelling(unit, tokens[index]));
-		bool finished = false;
-		if (!started)
-		{
-			if (token == "<")
-			{
-				started = true;
-				depth = 1;
-			}
+		if (clang_getTokenKind(tokens[index]) == CXToken_Comment)
 			continue;
-		}
-		if (token == "<")
-		{
-			++depth;
-		}
-		else if (!token.empty() && token.find_first_not_of('>') == std::string::npos)
-		{
-			std::string retained;
-			for (char character : token)
-			{
-				(void)character;
-				if (--depth == 0)
-				{
-					finished = true;
-					break;
-				}
-				retained += '>';
-			}
-			token = std::move(retained);
-		}
-		else if (token == "," && depth == 1)
-		{
-			if (!parameter.empty())
-			{
-				parameters.push_back(std::move(parameter));
-				parameter.clear();
-			}
-			continue;
-		}
-		if (!token.empty() && !parameter.empty())
-		{
-			parameter += ' ';
-		}
-		parameter += token;
-		if (finished)
-		{
-			if (!parameter.empty())
-			{
-				parameters.push_back(std::move(parameter));
-			}
-			break;
-		}
+		CXCursor cursor = clang_getCursor(unit, clang_getTokenLocation(unit, tokens[index]));
+		if (clang_getCursorKind(cursor) != CXCursor_MacroExpansion)
+			cursor = cursors[index];
+		result.push_back({to_string(clang_getTokenSpelling(unit, tokens[index])), clang_getTokenKind(tokens[index]), cursor});
 	}
 	clang_disposeTokens(unit, tokens, token_count);
-	return parameters;
+	return result;
+}
+
+bool template_parameter_kind(CXCursorKind kind)
+{
+	return kind == CXCursor_TemplateTypeParameter || kind == CXCursor_NonTypeTemplateParameter ||
+	       kind == CXCursor_TemplateTemplateParameter;
+}
+
+// References come from libclang, not identifier guessing. Only opaque enums
+// can supply an external value-parameter type without needing a definition.
+// Aliases, concepts, values, and other header-local context are not moved.
+void inspect_signature_token(const signature_token& token, hard_declaration& value)
+{
+	if (token.kind != CXToken_Identifier)
+		return;
+	CXCursorKind kind = clang_getCursorKind(token.cursor);
+	if (kind == CXCursor_MacroExpansion)
+	{
+		value.unsupported = "macro in template signature: " + token.text;
+		return;
+	}
+	CXCursor reference = clang_getCursorReferenced(token.cursor);
+	CXCursorKind reference_kind = clang_getCursorKind(reference);
+	if (template_parameter_kind(kind) || template_parameter_kind(reference_kind) ||
+	    reference_kind == CXCursor_Namespace)
+		return;
+	if (reference_kind == CXCursor_EnumDecl)
+	{
+		value.requirements.push_back(to_string(clang_getCursorUSR(reference)));
+		return;
+	}
+	value.unsupported = "template signature needs header context: " + token.text;
+}
+
+std::string render_signature(const std::vector<signature_token>& tokens, hard_declaration& value)
+{
+	std::string result;
+	for (const auto& token : tokens)
+	{
+		inspect_signature_token(token, value);
+		if (!result.empty())
+			result += ' ';
+		result += token.text;
+	}
+	return result;
+}
+
+// A value parameter's typedef can be written as its canonical builtin type
+// (e.g. size_t -> unsigned long) without importing the typedef's header. Do
+// not do this in constraints: their original token identity must be retained.
+bool canonicalize_parameter_types(std::vector<signature_token>& tokens)
+{
+	bool changed = false;
+	for (size_t index = 0; index < tokens.size(); ++index)
+	{
+		if (clang_getCursorKind(tokens[index].cursor) != CXCursor_TypeRef)
+			continue;
+		CXCursor reference = clang_getCursorReferenced(tokens[index].cursor);
+		CXCursorKind kind = clang_getCursorKind(reference);
+		if (kind != CXCursor_TypedefDecl && kind != CXCursor_TypeAliasDecl)
+			continue;
+		CXType type = clang_getCanonicalType(clang_getTypedefDeclUnderlyingType(reference));
+		if (type.kind < CXType_Bool || type.kind > CXType_LongDouble)
+			continue;
+		size_t first = index;
+		while (first > 0 && tokens[first - 1].text == "::")
+		{
+			--first;
+			if (first > 0 && tokens[first - 1].kind == CXToken_Identifier)
+				--first;
+		}
+		tokens[index].text = to_string(clang_getTypeSpelling(type));
+		tokens[index].kind = CXToken_Keyword;
+		changed = true;
+		tokens.erase(tokens.begin() + first, tokens.begin() + index);
+		index = first;
+	}
+	return changed;
+}
+
+struct template_context
+{
+	CXTranslationUnit unit;
+	hard_declaration* value;
+	CXSourceLocation last_parameter;
+};
+
+CXChildVisitResult collect_template_parameter(CXCursor cursor, CXCursor, CXClientData data)
+{
+	auto& context = *static_cast<template_context*>(data);
+	if (!template_parameter_kind(clang_getCursorKind(cursor)))
+		return CXChildVisit_Continue;
+	CXSourceRange extent = clang_getCursorExtent(cursor);
+	context.last_parameter = clang_getRangeEnd(extent);
+	auto tokens = signature_tokens(context.unit, extent);
+	std::string original;
+	for (const auto& token : tokens)
+	{
+		if (!original.empty())
+			original += ' ';
+		original += token.text;
+	}
+	std::string name = to_string(clang_getCursorSpelling(cursor));
+	for (auto& token : tokens)
+	{
+		if (!name.empty() && token.text == name)
+			token.cursor = cursor;
+	}
+	int angles = 0, parentheses = 0, brackets = 0, braces = 0;
+	for (size_t index = 0; index < tokens.size(); ++index)
+	{
+		const auto& text = tokens[index].text;
+		if (text == "=" && angles == 0 && parentheses == 0 && brackets == 0 && braces == 0)
+		{
+			tokens.resize(index);
+			break;
+		}
+		if (text == "(")
+			++parentheses;
+		if (text == ")")
+			--parentheses;
+		if (text == "[")
+			++brackets;
+		if (text == "]")
+			--brackets;
+		if (text == "{")
+			++braces;
+		if (text == "}")
+			--braces;
+		if (parentheses == 0 && brackets == 0 && braces == 0)
+		{
+			if (text == "<")
+				++angles;
+			if (text == ">")
+				--angles;
+			if (text == ">>")
+				angles -= 2;
+		}
+	}
+	if (clang_getCursorKind(cursor) == CXCursor_NonTypeTemplateParameter)
+	{
+		bool canonical = canonicalize_parameter_types(tokens);
+		// Preserve raw defaults unless canonicalization changed the spelling.
+		std::string prefix = render_signature(tokens, *context.value);
+		context.value->template_parameters.push_back(canonical ? std::move(prefix) : std::move(original));
+	}
+	else
+	{
+		render_signature(tokens, *context.value);
+		context.value->template_parameters.push_back(std::move(original));
+	}
+	return CXChildVisit_Continue;
+}
+
+void template_metadata(CXTranslationUnit unit, CXCursor cursor, hard_declaration& value)
+{
+	template_context context{unit, &value, clang_getNullLocation()};
+	clang_visitChildren(cursor, collect_template_parameter, &context);
+	if (value.template_parameters.empty())
+	{
+		value.unsupported = "template parameters unavailable";
+		return;
+	}
+	// The cursor location is the class name. This range includes the closing
+	// template bracket, optional requires-clause, and the class-key only.
+	auto suffix = signature_tokens(unit, clang_getRange(context.last_parameter, clang_getCursorLocation(cursor)));
+	if (!suffix.empty() && suffix.back().text == value.name)
+		suffix.pop_back();
+	while (!suffix.empty() && suffix.front().text == ">")
+		suffix.erase(suffix.begin());
+	if (suffix.empty() || (suffix.back().text != "class" && suffix.back().text != "struct"))
+	{
+		value.unsupported = "template class-key or attributes unavailable";
+		return;
+	}
+	suffix.pop_back();
+	if (!suffix.empty())
+	{
+		if (suffix.front().text != "requires")
+			value.unsupported = "unsupported template prefix";
+		else
+			value.constraint = render_signature(suffix, value);
+	}
+}
+
+void enum_metadata(CXTranslationUnit unit, CXCursor cursor, hard_declaration& value)
+{
+	bool scoped = clang_EnumDecl_isScoped(cursor) != 0;
+	value.kind = scoped ? "enum class" : "enum";
+	bool fixed = false;
+	// Stop at the opening brace: colons in enumerator expressions are unrelated.
+	for (const auto& token : signature_tokens(unit, clang_getCursorExtent(cursor)))
+	{
+		if (token.text == "{")
+			break;
+		if (token.text == ":")
+			fixed = true;
+	}
+	if (!scoped && !fixed)
+	{
+		value.unsupported = "unscoped enum has no explicit underlying type";
+		return;
+	}
+	CXType base = clang_getCanonicalType(clang_getEnumDeclIntegerType(cursor));
+	if (base.kind == CXType_Invalid)
+		value.unsupported = "enum underlying type unavailable";
+	else
+		value.enum_base = to_string(clang_getTypeSpelling(base));
 }
 
 } // namespace
@@ -257,11 +433,13 @@ CXChildVisitResult visit_cursor(CXCursor cursor, CXCursor, CXClientData client_d
 	}
 
 	bool declaration = cursor_kind == CXCursor_ClassDecl ||
+	                   cursor_kind == CXCursor_EnumDecl ||
 	                   cursor_kind == CXCursor_StructDecl ||
 	                   cursor_kind == CXCursor_ClassTemplate ||
 	                   cursor_kind == CXCursor_ClassTemplatePartialSpecialization;
 	if (declaration)
 	{
+		if (clang_Location_isInSystemHeader(clang_getCursorLocation(cursor))) return CXChildVisit_Continue;
 		hard_declaration value;
 		if (!is_direct_declaration(cursor) ||
 		    !declaration_namespaces(cursor, value.namespaces))
@@ -277,14 +455,16 @@ CXChildVisitResult visit_cursor(CXCursor cursor, CXCursor, CXClientData client_d
 		        &value.offset);
 		value.file = file_name(file);
 		value.name = to_string(clang_getCursorSpelling(cursor));
+		value.identity = to_string(clang_getCursorUSR(cursor));
 		CXCursorKind template_kind = cursor_kind;
 		if (cursor_kind == CXCursor_ClassTemplate ||
 		    cursor_kind == CXCursor_ClassTemplatePartialSpecialization)
 		{
 			template_kind = clang_getTemplateCursorKind(cursor);
-			value.template_parameters = template_parameters(analysis->unit, cursor);
+			template_metadata(analysis->unit, cursor, value);
 		}
 		value.kind = template_kind == CXCursor_StructDecl ? "struct" : "class";
+		if (cursor_kind == CXCursor_EnumDecl) enum_metadata(analysis->unit, cursor, value);
 		value.is_definition = clang_isCursorDefinition(cursor) != 0;
 		value.is_specialization = cursor_kind == CXCursor_ClassTemplatePartialSpecialization ||
 		                          !clang_Cursor_isNull(clang_getSpecializedCursorTemplate(cursor));
@@ -407,6 +587,7 @@ extern "C" hard_clang_analysis* hard_clang_analyze(
 	{
 		options |= CXTranslationUnit_SkipFunctionBodies;
 	}
+	++parse_count;
 	CXErrorCode code = clang_parseTranslationUnit2(
 	        analysis->index,
 	        source,
@@ -449,6 +630,11 @@ extern "C" void hard_clang_analysis_dispose(hard_clang_analysis* analysis)
 		clang_disposeIndex(analysis->index);
 	}
 	delete analysis;
+}
+
+extern "C" unsigned long long hard_clang_parse_count()
+{
+	return parse_count.load();
 }
 
 extern "C" const char* hard_clang_analysis_error(const hard_clang_analysis* analysis)
@@ -504,6 +690,36 @@ extern "C" const char* hard_clang_declaration_kind(const hard_clang_analysis* an
 extern "C" int hard_clang_declaration_is_definition(const hard_clang_analysis* analysis, size_t index)
 {
 	return analysis->declarations[index].is_definition;
+}
+
+extern "C" const char* hard_clang_declaration_identity(const hard_clang_analysis* analysis, size_t index)
+{
+	return analysis->declarations[index].identity.c_str();
+}
+
+extern "C" const char* hard_clang_declaration_enum_base(const hard_clang_analysis* analysis, size_t index)
+{
+	return analysis->declarations[index].enum_base.c_str();
+}
+
+extern "C" const char* hard_clang_declaration_constraint(const hard_clang_analysis* analysis, size_t index)
+{
+	return analysis->declarations[index].constraint.c_str();
+}
+
+extern "C" const char* hard_clang_declaration_unsupported(const hard_clang_analysis* analysis, size_t index)
+{
+	return analysis->declarations[index].unsupported.c_str();
+}
+
+extern "C" size_t hard_clang_declaration_requirement_count(const hard_clang_analysis* analysis, size_t index)
+{
+	return analysis->declarations[index].requirements.size();
+}
+
+extern "C" const char* hard_clang_declaration_requirement(const hard_clang_analysis* analysis, size_t index, size_t requirement_index)
+{
+	return analysis->declarations[index].requirements[requirement_index].c_str();
 }
 
 extern "C" int hard_clang_declaration_is_specialization(const hard_clang_analysis* analysis, size_t index)

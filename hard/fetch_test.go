@@ -59,8 +59,11 @@ func TestFetchSourcesContinuesSearchProgressThroughParsing(t *testing.T) {
 		"[1/?] Parsing source.cpp",
 		"",
 	}, "\n")
-	if got := stdout.String(); got != want {
+	if got := preparationProgressLines(stdout.String()); got != want {
 		t.Fatalf("fetch progress = %q, want %q", got, want)
+	}
+	if !strings.Contains(stdout.String(), "libclang #1 started (dependencies only)") || strings.Contains(stdout.String(), "forward generated") {
+		t.Fatalf("fetch analysis details: %s", stdout.String())
 	}
 }
 
@@ -161,7 +164,7 @@ func TestFetchSourceDependenciesDownloadsWithoutCompiling(t *testing.T) {
 		"[1/?] Downloading github.com/owner/second",
 		"",
 	}, "\n")
-	if got := output.String(); got != wantOutput {
+	if got := preparationProgressLines(output.String()); got != wantOutput {
 		t.Fatalf("fetch progress = %q, want %q", got, wantOutput)
 	}
 	if got := requests.Load(); got != 2 {
@@ -211,12 +214,22 @@ func TestFetchSourceDependenciesDownloadsWithoutCompiling(t *testing.T) {
 		"[1/?] Parsing source.cpp",
 		"",
 	}, "\n")
-	if got := cachedOutput.String(); got != wantCachedOutput {
+	if got := preparationProgressLines(cachedOutput.String()); got != wantCachedOutput {
 		t.Fatalf("cached fetch progress = %q, want %q", got, wantCachedOutput)
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("cached request count = %d, want 2", got)
 	}
+}
+
+func preparationProgressLines(output string) string {
+	var result strings.Builder
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "[") {
+			result.WriteString(line + "\n")
+		}
+	}
+	return result.String()
 }
 
 func TestFetchSourceDependenciesRejectsInvalidJobs(t *testing.T) {

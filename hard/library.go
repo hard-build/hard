@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -75,6 +76,12 @@ func newLibraryManager(
 	progress *progressBar,
 	stderr io.Writer,
 ) *libraryManager {
+	if progress != nil {
+		progress.displayPath = func(path string) string { return buildParsingDisplayPath(root, path, workingDirectory) }
+	}
+	if cache != nil {
+		cache.progress = progress
+	}
 	return &libraryManager{
 		root:             root,
 		environment:      environment,
@@ -379,6 +386,10 @@ func (manager *libraryManager) runCMake(
 	arguments []string,
 	workingDirectory string,
 ) error {
+	started := time.Now()
+	defer func() {
+		manager.progress.detail(step, "cmake finished in %s", time.Since(started).Round(time.Millisecond))
+	}()
 	if manager.progress != nil {
 		manager.progress.updateStep(step)
 	}

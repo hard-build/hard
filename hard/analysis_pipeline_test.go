@@ -1,0 +1,188 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestForwardSignaturesCompileWithOriginalDefinitions(t *testing.T) {
+	for _, test := range []struct{ name, header, want, skipped string }{
+		{"parameters", "template<typename T = int, class A = int> class Collection {};", "template <typename T, class A>", ""},
+		{"enum", "namespace demo { enum class Mode { Fast }; template<Mode M> class Parser {}; enum class Unused : unsigned char { X }; }", "template <Mode M>", ""},
+		{"enum_base", "using Integer = unsigned long; enum Flags : Integer { First = 1 }; template<Flags F> class Options {};", "enum Flags : unsigned long;", ""},
+		{"requires", "template<class T> requires (sizeof(T) > 1) class Box {};", "requires ( sizeof ( T ) > 1 )", ""},
+		{"concept", "template<class T> concept Good = sizeof(T)>1; template<Good T> class Box {};", "#pragma once", "Box"},
+		{"unscoped", "enum Unfixed { X }; template<Unfixed F> class Box {};", "#pragma once", "Box"},
+		{"macro", "#define LIMIT 1\ntemplate<class T> requires (sizeof(T)>LIMIT) class Box {};", "#pragma once", "Box"},
+		{"comparison_default", "template<int N = (1 < 2 ? 3 : 4)> class Count {};", "template <int N>", ""},
+		{"builtin_alias", "#include <cstddef>\ntemplate<std::size_t N> class Array {};", "class Array;", ""},
+		{"nested_template", "template<template<class U = int> class C> class Nested {};", "class Nested;", ""},
+		{"nested_default", "template<class> class Inner {}; template<class T = Inner<int>> class Outer {};", "class Outer;", ""},
+		{"unused_enum", "namespace demo { enum class Unused : unsigned char { X }; }", "enum class Unused : unsigned char;", ""},
+		{"enum_constant_constraint", "enum class Mode { Fast }; template<Mode M> requires (M == Mode::Fast) class Box {};", "enum class Mode : int;", "Box"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := t.TempDir()
+			header := filepath.Join(project, "types.h")
+			writeBuildFile(t, project, "types.h", test.header+"\n")
+			writeBuildFile(t, project, "main.cpp", "#include \"types.h\"\nint main() { return 0; }\n")
+			analysis, err := analyzeClangFile(filepath.Join(project, "main.cpp"), nil, []string{"-std=c++20"}, clangAnalysisOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			declarations, skipped := selectForwardDeclarations(analysis, []string{header}, project)
+			contents := renderForwardDeclarations(declarations)
+			if !strings.Contains(string(contents), test.want) {
+				t.Fatalf("missing %q:\n%s\nskipped %v\nmetadata %#v", test.want, contents, skipped, analysis.declarations)
+			}
+			if test.skipped != "" && (strings.Contains(string(contents), "class "+test.skipped) || !strings.Contains(strings.Join(skipped, "\n"), test.skipped)) {
+				t.Fatalf("unsafe declaration retained or unreported: %s; %v", contents, skipped)
+			}
+			forward := filepath.Join(project, "main.fwd.h")
+			if err := os.WriteFile(forward, contents, 0600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("c++", "-std=c++20", "-include", forward, "-fsyntax-only", filepath.Join(project, "main.cpp"))
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("compiler: %v\n%s\nforward:\n%s\nskipped: %v", err, output, contents, skipped)
+			}
+		})
+	}
+}
+
+func TestForwardTemplateRecoveredAfterSemanticError(t *testing.T) {
+	project := t.TempDir()
+	header := filepath.Join(project, "types.h")
+	analysis, err := analyzeClangFile(header, []byte("template<typename type = int, class allocator> class collection {};"), []string{"-std=c++20", "-x", "c++-header"}, clangAnalysisOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	declarations, skipped := selectForwardDeclarations(analysis, []string{header}, project)
+	if len(declarations) != 1 {
+		t.Fatalf("%#v; skipped %v", analysis.declarations, skipped)
+	}
+}
+
+func TestBuildAnalysisUsesOneASTAndRestoresForward(t *testing.T) {
+	project, root := t.TempDir(), t.TempDir()
+	var header strings.Builder
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&header, "class Type%d {};\n", i)
+	}
+	writeBuildFile(t, project, "types.h", header.String())
+	writeBuildFile(t, project, "main.cpp", "#include \"types.h\"\nint main() { return 0; }\n")
+	var output bytes.Buffer
+	progress := newProgressBar(&output, -1, true, false, true)
+	source := filepath.Join(project, "main.cpp")
+	inspect := func(read bool) buildResult {
+		cache, err := newArtifactCache(read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := newLibraryManager(root, "host", "c++", 1, true, !read, project, nil, cache, progress, io.Discard)
+		return inspectBuildSourceWithCache(root, "host", "", nil, []string{"-std=c++20"}, []string{"main"}, buildJob{source: source}, project, nil, cache, manager)
+	}
+	before := clangParseCount()
+	first := inspect(true)
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if first.entrypoint != "main" || strings.Count(first.forward, "class Type") != 80 {
+		t.Fatalf("analysis = %+v", first)
+	}
+	if progress.analyses.calls[source] != 1 || clangParseCount()-before != 1 {
+		t.Fatalf("calls = %v\n%s", progress.analyses.calls, output.String())
+	}
+	forward, err := sourceForwardHeaderPath(root, "host", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(forward); err != nil {
+		t.Fatal(err)
+	}
+	second := inspect(true)
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	restored, err := os.ReadFile(forward)
+	if err != nil || string(restored) != first.forward || second.entrypoint != "main" {
+		t.Fatalf("restore: %v %+v", err, second)
+	}
+	if progress.analyses.calls[source] != 1 || clangParseCount()-before != 1 {
+		t.Fatalf("cache hit parsed again: %s", output.String())
+	}
+	third := inspect(false)
+	if third.err != nil {
+		t.Fatal(third.err)
+	}
+	if progress.analyses.calls[source] != 2 || clangParseCount()-before != 2 {
+		t.Fatalf("no-cache calls = %v", progress.analyses.calls)
+	}
+}
+
+func TestPreparedLibraryFlagsReachFirstAnalysis(t *testing.T) {
+	project, root, installed := t.TempDir(), t.TempDir(), t.TempDir()
+	writeBuildFile(t, installed, "library.h", "enum class Mode { Fast }; template<Mode M> class Parser {};\n")
+	header := filepath.Join(project, "library.hard.h")
+	writeBuildFile(t, project, "library.hard.h", "/* hard.recipe.v1\n"+validLibraryRecipeYAML()+"*/\n#include <library.h>\n")
+	source := filepath.Join(project, "main.cpp")
+	writeBuildFile(t, project, "main.cpp", "#include \"library.hard.h\"\nint main(){return 0;}\n")
+	var output bytes.Buffer
+	inspect := func() (buildResult, int) {
+		progress := newProgressBar(&output, -1, true, false, true)
+		cache := newTestArtifactCache(t, true)
+		manager := newLibraryManager(root, "host", "c++", 1, true, false, project, nil, cache, progress, io.Discard)
+		manager.results[header] = libraryArtifact{key: header, header: header, cflags: []string{"-I" + installed}}
+		before := clangParseCount()
+		result := inspectBuildSourceWithCache(root, "host", "", nil, []string{"-std=c++20"}, []string{"main"}, buildJob{source: source}, project, nil, cache, manager)
+		return result, int(clangParseCount() - before)
+	}
+	if result, count := inspect(); result.err != nil || count != 2 {
+		t.Fatalf("initial: %v, calls %d\n%s", result.err, count, output.String())
+	}
+	writeBuildFile(t, project, "main.cpp", "#include \"library.hard.h\"\nint main(){return 1;}\n")
+	if result, count := inspect(); result.err != nil || count != 1 || !strings.Contains(result.forward, "class Parser;") {
+		t.Fatalf("prepared: %+v, calls %d\n%s", result, count, output.String())
+	}
+	writeBuildFile(t, project, "main.cpp", "int main(){return 0;}\n")
+	if result, count := inspect(); result.err != nil || count != 2 || len(result.libraries) != 0 || len(result.cflags) != 1 {
+		t.Fatalf("removed: %+v, calls %d\n%s", result, count, output.String())
+	}
+}
+
+func TestColdTransitiveLibrariesAnalyzeThreeTimes(t *testing.T) {
+	proxy := newInheritanceTestProxy(t)
+	leaf, leafArchive := inheritedTestSnapshot(t, "github.com/demo/libB2", "main", firstCommit, map[string]string{"b.h": "#pragma once\nnamespace B { enum class Mode { Fast }; }\n"})
+	parent, parentArchive := inheritedTestSnapshot(t, "github.com/demo/libA1", "main", firstCommit, map[string]string{"a.h": "#pragma once\n#include <github.com/demo/libB2/b.h>\nnamespace A { template<B::Mode M> class Parser {}; }\n"})
+	proxy.add(leaf, leafArchive)
+	proxy.add(parent, parentArchive)
+	configuration := projectTestConfiguration(t)
+	project := t.TempDir()
+	withWorkingDirectory(t, project)
+	writeProjectTestFile(t, project, "hard.yaml", "version: 1\nrepositories: {}\n")
+	writeProjectTestFile(t, project, "main.cpp", "#include <github.com/demo/libA1/a.h>\nint main(){return 0;}\n")
+	before := clangParseCount()
+	out := runDiscoveryCommand(t, configuration, "build", "-v", "--no-color")
+	if clangParseCount()-before != 3 {
+		t.Fatalf("actual libclang calls: %d", clangParseCount()-before)
+	}
+	if strings.Count(out, "started (full AST)") != 3 || strings.Count(out, "forward generated:") != 1 || !strings.Contains(out, "libclang #3") {
+		t.Fatalf("cold analysis counts:\n%s", out)
+	}
+	if !strings.Contains(out, "a.h") || !strings.Contains(out, "requested by") {
+		t.Fatalf("missing dependency owner:\n%s", out)
+	}
+	out = runDiscoveryCommand(t, configuration, "build", "-v", "--no-color")
+	if clangParseCount()-before != 3 {
+		t.Fatal("cache hit called libclang")
+	}
+	if strings.Contains(out, "started (full AST)") || !strings.Contains(out, "analysis cache hit") {
+		t.Fatalf("warm analysis:\n%s", out)
+	}
+}

@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-const artifactCacheVersion = 3
+const artifactCacheVersion = 4
 
 const (
 	buildCacheSuffix      = ".hard-cache.json"
@@ -98,6 +98,7 @@ type artifactCache struct {
 	mu          sync.Mutex
 	fileDigests map[string]digestResult
 	toolDigests map[string]digestResult
+	progress    *progressBar
 }
 
 func newArtifactCache(read bool, resolvers ...*githubSnapshotResolver) (*artifactCache, error) {
@@ -111,12 +112,17 @@ func newArtifactCache(read bool, resolvers ...*githubSnapshotResolver) (*artifac
 	}
 	var layout *cacheLayout
 	var discovery *dependencyDiscovery
+	var progress *progressBar
+	if len(resolvers) != 0 && resolvers[0] != nil {
+		progress = resolvers[0].progress
+	}
 	if len(resolvers) != 0 && resolvers[0] != nil && resolvers[0].session != nil {
 		layout = resolvers[0].session.layout
 		discovery = resolvers[0].session.discovery
 	}
 	return &artifactCache{
 		layout:      layout,
+		progress:    progress,
 		discovery:   discovery,
 		read:        read,
 		hard:        hard,
@@ -505,14 +511,33 @@ func (cache *artifactCache) parseHit(
 	arguments []string,
 	workingDirectory string,
 	fingerprintWorkingDirectory string,
-) (parseCacheRecord, bool, error) {
+) (record parseCacheRecord, cached bool, resultError error) {
+	reason := "no valid record (missing or malformed)"
+	defer func() {
+		if resultError != nil {
+			return
+		}
+		if cached {
+			cache.progress.detail(source, "analysis cache hit; libclang calls: 0")
+		} else {
+			cache.progress.detail(source, "analysis cache miss: %s", reason)
+		}
+	}()
 	if !cache.read {
+		reason = "disabled by --no-cache"
 		return parseCacheRecord{}, false, nil
 	}
 	record, ok, err := readParseCacheRecord(path)
-	if err != nil || !ok || record.Version != artifactCacheVersion || record.Kind != kind ||
-		record.Selection != cache.parseSelection(kind) {
+	if err != nil || !ok {
 		return parseCacheRecord{}, false, err
+	}
+	if record.Version != artifactCacheVersion || record.Kind != kind {
+		reason = "analysis format changed"
+		return parseCacheRecord{}, false, nil
+	}
+	if record.Selection != cache.parseSelection(kind) {
+		reason = "dependency selection changed"
+		return parseCacheRecord{}, false, nil
 	}
 	inputs := append([]string{source}, record.Dependencies...)
 	input, err := cache.actionFingerprintWithWorkingDirectory(
@@ -524,10 +549,12 @@ func (cache *artifactCache) parseHit(
 		fingerprintWorkingDirectory,
 	)
 	if err != nil || input != record.Input {
+		reason = "source, headers, flags or hard executable changed/unavailable"
 		return parseCacheRecord{}, false, nil
 	}
 	result, err := parseResultFingerprint(record)
 	if err != nil || result != record.Result {
+		reason = "analysis result checksum mismatch"
 		return parseCacheRecord{}, false, nil
 	}
 	if err := cache.discovery.observe(cache, inputs, workingDirectory); err != nil {

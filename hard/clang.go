@@ -23,6 +23,8 @@ func clangVersion() string {
 	return C.GoString(C.hard_clang_version())
 }
 
+func clangParseCount() uint64 { return uint64(C.hard_clang_parse_count()) }
+
 const (
 	clangDiagnosticIgnored = iota
 	clangDiagnosticNote
@@ -47,6 +49,11 @@ type clangDeclaration struct {
 	offset         uint
 	namespaces     []forwardNamespace
 	templates      []string
+	identity       string
+	enumBase       string
+	constraint     string
+	unsupported    string
+	requirements   []string
 }
 
 type clangFunction struct {
@@ -74,6 +81,7 @@ type clangAnalysis struct {
 
 type clangAnalysisOptions struct {
 	skipFunctionBodies bool
+	progress           *progressBar
 }
 
 type clangDependencySet struct {
@@ -115,6 +123,8 @@ func analyzeClangFile(
 	}
 
 	var errorCode C.int
+	finished := options.progress.beginAnalysis(source, options.skipFunctionBodies)
+	defer finished()
 	analysis := C.hard_clang_analyze(
 		cSource,
 		cContents,
@@ -370,11 +380,27 @@ func sourceAnalysisWithLibraries(
 	baseCFlags []string,
 	source string,
 	workingDirectory string,
+	initialFlags ...[]string,
 ) (bool, clangDependencySet, clangAnalysis, []string, []libraryArtifact, []string, []byte, error) {
 	attemptedRepositories := make(map[string]struct{})
 	cflags := append([]string(nil), baseCFlags...)
+	if len(initialFlags) != 0 {
+		cflags = append([]string(nil), initialFlags[0]...)
+	}
+	var progress *progressBar
+	if libraryManager != nil {
+		progress = libraryManager.progress
+	}
+	if progress == nil && githubResolver != nil {
+		progress = githubResolver.progress
+	}
+	skipBodies := libraryManager != nil && !libraryManager.build
+	absoluteSource, pathError := lexicalAbsolutePath(source, workingDirectory)
+	if pathError != nil {
+		return true, clangDependencySet{}, clangAnalysis{}, cflags, nil, nil, nil, pathError
+	}
 	for {
-		analysis, err := analyzeClangDependencies(source, workingDirectory, cflags)
+		analysis, err := analyzeClangFile(absoluteSource, nil, clangSourceArguments(cflags, workingDirectory), clangAnalysisOptions{skipFunctionBodies: skipBodies, progress: progress})
 		if err != nil {
 			return true, clangDependencySet{}, clangAnalysis{}, cflags, nil, nil, nil, err
 		}
@@ -382,7 +408,17 @@ func sourceAnalysisWithLibraries(
 		if err != nil {
 			return true, clangDependencySet{}, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
+		for _, edge := range analysis.includes {
+			if edge.target == "" {
+				if _, managed := githubRepositoryFromDependency(filepath.ToSlash(edge.spelling)); managed {
+					progress.detail(source, "dependency %s requested by %s", edge.spelling, progress.path(edge.source))
+				}
+			}
+		}
 		if err := githubResolver.prepareInheritedIncludes(analysis, workingDirectory); err != nil {
+			if errors.Is(err, errDependencySetChanged) {
+				progress.detail(source, "retry required: inherited dependency selection changed")
+			}
 			return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
 		var artifacts []libraryArtifact
@@ -390,10 +426,14 @@ func sourceAnalysisWithLibraries(
 		if libraryManager != nil {
 			artifacts, libraryHeaders, err = libraryManager.prepareDependencies(dependencies.managed)
 			if err != nil {
+				if errors.Is(err, errDependencySetChanged) {
+					progress.detail(source, "retry required: recipe dependency selection changed")
+				}
 				return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 			}
 			updatedCFlags := libraryCFlags(baseCFlags, artifacts)
 			if !equalStringSlices(updatedCFlags, cflags) {
+				progress.detail(source, "retry required: library compiler flags changed")
 				cflags = updatedCFlags
 				continue
 			}
@@ -425,6 +465,9 @@ func sourceAnalysisWithLibraries(
 				continue
 			}
 			if err := githubResolver.ensure(repository); err != nil {
+				if errors.Is(err, errDependencySetChanged) {
+					progress.detail(source, "retry required: dependency %s became available", include)
+				}
 				downloadErrors = append(downloadErrors, err)
 			}
 		}
@@ -432,6 +475,7 @@ func sourceAnalysisWithLibraries(
 			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, clangErrorDiagnostics(analysis), err
 		}
 		if newRepository {
+			progress.detail(source, "retry required: downloaded missing includes")
 			continue
 		}
 
@@ -476,9 +520,16 @@ func copyClangAnalysis(source *C.hard_clang_analysis) clangAnalysis {
 			file:           C.GoString(C.hard_clang_declaration_file(source, cIndex)),
 			name:           C.GoString(C.hard_clang_declaration_name(source, cIndex)),
 			kind:           C.GoString(C.hard_clang_declaration_kind(source, cIndex)),
+			identity:       C.GoString(C.hard_clang_declaration_identity(source, cIndex)),
+			enumBase:       C.GoString(C.hard_clang_declaration_enum_base(source, cIndex)),
+			constraint:     C.GoString(C.hard_clang_declaration_constraint(source, cIndex)),
+			unsupported:    C.GoString(C.hard_clang_declaration_unsupported(source, cIndex)),
 			definition:     C.hard_clang_declaration_is_definition(source, cIndex) != 0,
 			specialization: C.hard_clang_declaration_is_specialization(source, cIndex) != 0,
 			offset:         uint(C.hard_clang_declaration_offset(source, cIndex)),
+		}
+		for requirement := C.size_t(0); requirement < C.hard_clang_declaration_requirement_count(source, cIndex); requirement++ {
+			declaration.requirements = append(declaration.requirements, C.GoString(C.hard_clang_declaration_requirement(source, cIndex, requirement)))
 		}
 		namespaceCount := int(C.hard_clang_declaration_namespace_count(source, cIndex))
 		declaration.namespaces = make([]forwardNamespace, 0, namespaceCount)

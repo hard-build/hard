@@ -1205,12 +1205,12 @@ Dependency discovery, forward-declaration extraction, and entry-point
 detection use one libclang 18 bridge rather than the former parser or several
 unrelated textual scanners. The user explicitly selected this unified design
 after considering using libclang only for forward declarations. Build, run,
-and test reuse the final dependency-analysis AST for source-context forward
-extraction.
+and test reuse the final full dependency-analysis AST for source-context forward
+extraction and entry-point detection, without any additional validation parse.
 
-Dependency translation units use detailed preprocessing records, keep-going,
-and skipped function bodies. They receive the source absolute path, the
-effective compiler flags, `-working-directory`, and C++ mode unless the
+Translation units use detailed preprocessing records and keep-going. Build,
+run, and test retain function bodies; fetch skips them. They receive the source
+absolute path, effective compiler flags, `-working-directory`, and C++ mode unless the
 configured flags already contain `-x`. Active package include directories
 participate after recipe discovery.
 
@@ -1240,7 +1240,7 @@ Successful source analysis in `build`, `run`, and `test` writes a versioned
 `<source>.hard-parse-cache.json` record below the mirrored
 `HARD_ROOT/env/HARD_ENV/build` path. Each record contains the managed
 dependency list, complete active non-system dependency snapshot, active library
-recipe header paths, detected entry point, and final validated source-forward
+recipe header paths, detected entry point, and final generated source-forward
 text. A separate result digest protects these semantic fields from valid-JSON
 corruption. After that checksum is validated, a prospective hit restores the
 packages and per-source package include flags before its action fingerprint is
@@ -1762,6 +1762,7 @@ Eligible declarations:
 - named classes and structs directly declared at global scope;
 - named classes and structs directly declared in namespaces;
 - ordinary class templates and parameter packs;
+- scoped enums and unscoped enums with explicit fixed underlying types;
 - ordinary and inline namespace nesting;
 - macro-expanded namespace names through semantic parents.
 
@@ -1774,11 +1775,14 @@ Excluded declarations:
 - duplicates.
 
 Template default arguments are removed. Declarations are considered in source
-offset order after sorting by canonical physical file path and source offset.
-After each candidate, the cumulative source forward is reparsed with libclang.
-A candidate that introduces an error is skipped while earlier valid candidates
-remain. This safe filter is important for macro-heavy amalgamated headers such
-as nlohmann/json.
+offset order after sorting by canonical physical file path and source offset;
+opaque enums are emitted before templates across all namespace groups.
+The complete forward is rendered without reparsing any candidates. The bridge
+preserves constraints and uses libclang references to reject signatures that
+need unavailable header context (aliases, concepts, values, macros), reporting
+the omission in verbose output. Builtin typedefs in value-parameter types can
+be replaced with their canonical type; constraints are never weakened.
+Actual object compilation checks compatibility with original definitions.
 
 Forward outputs begin with `#pragma once`. Their path mirrors the lexical
 absolute source path below the selected environment build root and appends
@@ -1893,9 +1897,9 @@ before compilation, and stores a fresh record only after success.
 
 ### Entry-point detection
 
-Every root and automatically discovered source is separately parsed as a full
-translation unit, without skipped function bodies, using its effective compiler
-flags.
+Every root and automatically discovered source reuses its final full analysis
+AST with effective compiler flags. Entry-point detection performs no additional
+libclang parse.
 
 A source is an entry source only if it directly defines a global function whose
 exact name is in `HARD_ENTRYPOINTS`. Accepted definitions are directly under
@@ -4127,6 +4131,62 @@ snapshots in an isolated temporary root; the second build searched sources once,
 parsed all 13 translation units once with `(CACHED)`, and reused package,
 compile, link and copy caches. No dependencies.json or hard.yaml was created.
 The original project, installed runtime and user cache were not modified.
+
+## Single-AST analysis and complete forward generation (2026-09-24)
+
+The approved parser optimization is implemented in `hard/clang.go`,
+`clang_bridge.cc/.h`, `forward.go`, `entry.go`, and the shared build pipeline.
+Prepared dependencies and package flags require one full libclang call per
+source on a parse-cache miss; a valid hit requires none. The final AST supplies
+the include graph, entry point, and all supported forward declarations.
+Neither per-declaration nor whole-forward validation invokes libclang.
+Ordinary compilation checks the generated header with the definitions and
+alone authorizes a successful object-cache record. Fetch retains its separate
+dependency-only cache and skips function bodies.
+
+The first analysis now receives package flags restored from the prior semantic
+parse record even when the source fingerprint changed. Newly active dependencies
+or changed package flags still trigger another analysis; inactive recipe flags
+are removed based on the new graph. An initially unknown ordinary include chain
+main -> A -> B requires three analyses and one forward generation. Attempt
+numbers persist across the invocation's include-view refreshes.
+
+The bridge supplies scoped/fixed-base enums, canonical underlying types,
+template parameters, preserved requires tokens, and semantic references.
+All supported enums are emitted even when unused, before templates across
+namespace groups. Builtin typedefs in non-type parameters can be canonicalized
+without header context (TinyXML2's size_t parameters are supported). Unsupported
+signatures depending on unavailable aliases, concepts, values or macros are
+omitted whole with verbose reasons; constraints are never silently removed.
+Unscoped enums without explicit bases remain ineligible. This is conservative
+support, not a complete serializer for arbitrary C++ declarations.
+
+Verbose output reports cache decisions, numbered/timed libclang attempts,
+missing include origins, retry reasons, forward emitted/skipped counts and
+reasons, compile/link timings, and CMake durations. Details use serialized,
+owner-labelled lines and preserve silent/normal behavior. Cache schema is 4;
+old records are misses. Compiler command rendering remains unchanged.
+
+Verification passed: complete `make check` (ordinary and race suites, vet,
+formatting, out-of-tree build, module verification, shell syntax, target manifest
+and Git whitespace), all 12 declarative integration scenarios, and a copied
+nlohmann/json example built and run with copied snapshots. New regression tests
+in `hard/analysis_pipeline_test.go` count actual C API parses, test 80 declarations
+without extra parses, cache restoration/no-cache, prepared/removed recipe flags,
+the cold A/B chain, and compile enum/template/requires forwards with their original
+definitions. Existing cache-corruption and failed-compilation tests also pass.
+
+An isolated copy of `test_recipe_2` using copied source snapshots measured three
+changed-source builds with the installed baseline and the new backend. Baseline
+times were 3.803/3.662/3.687 s (median 3.687); new times were
+0.560/0.556/0.542 s (median 0.556), about 6.6x faster. Package preparation was
+warmed before measuring. The new verbose trace showed one ~205 ms full parse
+and ~475 us forward generation for all 17 TinyXML2 class/template declarations;
+two non-fixed enums were explicitly skipped. The final warm cache hit was
+0.089 s. These are local measurements, not a cross-machine performance guarantee.
+Runtime, fixtures, logs and benchmark records were kept under `/tmp`; the
+installed backend, original example projects and original user cache were not
+modified. `.agents` was mounted read-only, preventing the requested dialogue log.
 
 ## Resume checklist
 

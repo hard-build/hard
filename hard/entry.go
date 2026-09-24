@@ -70,6 +70,17 @@ func extractEntryPointFromFile(
 	if err != nil {
 		return "", err
 	}
+	return entryPointFromAnalysis(analysis, source, workingDirectory, entrypoints)
+}
+
+func entryPointFromAnalysis(analysis clangAnalysis, source, workingDirectory string, entrypoints []string) (string, error) {
+	if !filepath.IsAbs(source) {
+		source = filepath.Join(workingDirectory, source)
+	}
+	allowed := make(map[string]struct{}, len(entrypoints))
+	for _, entrypoint := range entrypoints {
+		allowed[entrypoint] = struct{}{}
+	}
 	found := make(map[string]struct{})
 	for _, function := range analysis.functions {
 		if !function.definition || !function.global || !sameClangFile(function.file, source) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type buildJob struct {
@@ -635,6 +636,10 @@ func inspectBuildSourceWithCache(
 		return inspectFetchSourceWithCache(root, environment, githubResolver, cflags, job, workingDirectory, activity, cache, libraryManager)
 	}
 	result := buildResult{index: job.index, cflags: append([]string(nil), cflags...)}
+	var progress *progressBar
+	if libraryManager != nil {
+		progress = libraryManager.progress
+	}
 	var recordPath string
 	if cache != nil {
 		cacheCandidateReady := true
@@ -655,6 +660,7 @@ func inspectBuildSourceWithCache(
 				resultError == nil && candidate.Result == candidateResult {
 				result.libraries, err = libraryManager.prepareHeaders(candidate.LibraryHeaders)
 				if err != nil {
+					progress.detail(job.source, "analysis cache miss: cached library context unavailable: %v", err)
 					cacheCandidateReady = false
 					result.libraries = nil
 					result.libraryHeaders = nil
@@ -722,6 +728,7 @@ func inspectBuildSourceWithCache(
 		cflags,
 		job.source,
 		workingDirectory,
+		result.cflags,
 	)
 	result.dependencies = dependencies.managed
 	result.cacheDependencies = dependencies.managed
@@ -732,10 +739,10 @@ func inspectBuildSourceWithCache(
 	result.fatal = fatal
 	var entryError error
 	if err == nil {
-		result.entrypoint, entryError = sourceEntryPointWithFlags(
+		result.entrypoint, entryError = entryPointFromAnalysis(
+			analysis,
 			job.source,
 			workingDirectory,
-			result.cflags,
 			configuredEntryPoints,
 		)
 	}
@@ -750,11 +757,12 @@ func inspectBuildSourceWithCache(
 				supportHeader,
 			)
 			contents, contentError := sourceForwardContents(
-				forward,
+				job.source,
 				analysis,
 				forwardDependencies,
 				result.cflags,
 				workingDirectory,
+				progress,
 			)
 			if contentError != nil {
 				forwardError = fmt.Errorf("generate forward header for %s: %w", job.source, contentError)
@@ -1096,6 +1104,7 @@ func compileSourceBatchWithConfiguration(
 					}
 
 					var diagnostics bytes.Buffer
+					started := time.Now()
 					fatal, cached, err := compileSourceWithCache(
 						cache,
 						compiler,
@@ -1125,6 +1134,7 @@ func compileSourceBatchWithConfiguration(
 						step += " (CACHED)"
 					}
 					progress.complete(step, command)
+					progress.detail(job.display, "compile finished in %s (cached: %t)", time.Since(started).Round(time.Millisecond), cached)
 					results <- compileResult{
 						index:       job.index,
 						diagnostics: append([]byte(nil), diagnostics.Bytes()...),
@@ -1461,6 +1471,7 @@ func linkSourcesWithLibrariesExecutable(
 					}
 
 					var diagnostics bytes.Buffer
+					started := time.Now()
 					fatal, cached, err := linkBinaryWithCache(
 						cache,
 						compiler,
@@ -1483,6 +1494,9 @@ func linkSourcesWithLibrariesExecutable(
 						linkStep += " (CACHED)"
 					}
 					progress.complete(linkStep, command)
+					if cache != nil {
+						progress.detail(job.display, "link finished in %s (cached: %t)", time.Since(started).Round(time.Millisecond), cached)
+					}
 					if err == nil {
 						copyCached := false
 						var copyError error

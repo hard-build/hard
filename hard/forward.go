@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type forwardNamespace struct {
@@ -20,6 +21,8 @@ type forwardDeclaration struct {
 	templates  []string
 	kind       string
 	name       string
+	enumBase   string
+	constraint string
 }
 
 type forwardGroup struct {
@@ -99,6 +102,11 @@ func forwardDeclarationsFromAnalysis(
 	files []string,
 	workingDirectory string,
 ) []forwardDeclaration {
+	declarations, _ := selectForwardDeclarations(analysis, files, workingDirectory)
+	return declarations
+}
+
+func selectForwardDeclarations(analysis clangAnalysis, files []string, workingDirectory string) ([]forwardDeclaration, []string) {
 	allowed := make(map[string]struct{}, len(files))
 	for _, file := range files {
 		if path, ok := comparableClangPath(file, workingDirectory); ok {
@@ -130,6 +138,14 @@ func forwardDeclarationsFromAnalysis(
 		return declarations[left].declaration.offset < declarations[right].declaration.offset
 	})
 	seen := make(map[string]struct{})
+	availableEnums := make(map[string]bool)
+	for _, owned := range declarations {
+		declaration := owned.declaration
+		if declaration.enumBase != "" && declaration.unsupported == "" {
+			availableEnums[declaration.identity] = true
+		}
+	}
+	var skipped []string
 	result := make([]forwardDeclaration, 0, len(declarations))
 	for _, owned := range declarations {
 		declaration := owned.declaration
@@ -146,6 +162,16 @@ func forwardDeclarationsFromAnalysis(
 			continue
 		}
 		seen[key] = struct{}{}
+		reason := declaration.unsupported
+		for _, requirement := range declaration.requirements {
+			if !availableEnums[requirement] {
+				reason = "template requires an enum unavailable in the forward header"
+			}
+		}
+		if reason != "" {
+			skipped = append(skipped, fmt.Sprintf("%s (%s): %s", declaration.name, owned.file, reason))
+			continue
+		}
 
 		var templates []string
 		if len(declaration.templates) != 0 {
@@ -165,24 +191,32 @@ func forwardDeclarationsFromAnalysis(
 			templates:  templates,
 			kind:       declaration.kind,
 			name:       declaration.name,
+			enumBase:   declaration.enumBase,
+			constraint: declaration.constraint,
 		})
 	}
-	return result
+	return result, skipped
 }
 
 func sourceForwardContents(
-	output string,
+	source string,
 	analysis clangAnalysis,
 	dependencies []string,
 	cflags []string,
 	workingDirectory string,
+	progresses ...*progressBar,
 ) ([]byte, error) {
-	declarations := forwardDeclarationsFromAnalysis(analysis, dependencies, workingDirectory)
-	declarations, err := safeForwardDeclarations(output, declarations, cflags, workingDirectory)
-	if err != nil {
-		return nil, err
+	started := time.Now()
+	declarations, skipped := selectForwardDeclarations(analysis, dependencies, workingDirectory)
+	contents := renderForwardDeclarations(declarations)
+	if len(progresses) != 0 {
+		progress := progresses[0]
+		progress.detail(source, "forward generated: %d declarations, %d skipped, %s; no libclang validation", len(declarations), len(skipped), time.Since(started).Round(time.Microsecond))
+		for _, reason := range skipped {
+			progress.detail(source, "skipped %s", reason)
+		}
 	}
-	return renderForwardDeclarations(declarations), nil
+	return contents, nil
 }
 
 func clangHeaderArguments(cflags []string, workingDirectory string) []string {
@@ -229,32 +263,6 @@ func comparableClangPath(path, workingDirectory string) (string, bool) {
 		return "", false
 	}
 	return filepath.Clean(absolute), true
-}
-
-func safeForwardDeclarations(
-	output string,
-	declarations []forwardDeclaration,
-	cflags []string,
-	workingDirectory string,
-) ([]forwardDeclaration, error) {
-	accepted := make([]forwardDeclaration, 0, len(declarations))
-	for _, declaration := range declarations {
-		candidate := append(append([]forwardDeclaration(nil), accepted...), declaration)
-		analysis, err := analyzeClangFile(
-			output,
-			renderForwardDeclarations(candidate),
-			clangHeaderArguments(cflags, workingDirectory),
-			clangAnalysisOptions{skipFunctionBodies: true},
-		)
-		if err != nil {
-			return nil, err
-		}
-		if clangAnalysisHasErrors(analysis) {
-			continue
-		}
-		accepted = candidate
-	}
-	return accepted, nil
 }
 
 func clangAnalysisHasErrors(analysis clangAnalysis) bool {
@@ -307,6 +315,24 @@ func stripTemplateDefault(parameter string) string {
 }
 
 func renderForwardDeclarations(declarations []forwardDeclaration) []byte {
+	// All opaque enums precede templates, including references across namespaces.
+	// Do not regroup a later template with the earlier enum namespace.
+	var enums, others []forwardDeclaration
+	for _, declaration := range declarations {
+		if declaration.enumBase != "" {
+			enums = append(enums, declaration)
+		} else {
+			others = append(others, declaration)
+		}
+	}
+	var output strings.Builder
+	output.WriteString("#pragma once\n")
+	renderForwardGroups(&output, enums)
+	renderForwardGroups(&output, others)
+	return []byte(output.String())
+}
+
+func renderForwardGroups(output *strings.Builder, declarations []forwardDeclaration) {
 	groups := make([]forwardGroup, 0)
 	groupIndexes := make(map[string]int)
 	for _, declaration := range declarations {
@@ -324,28 +350,32 @@ func renderForwardDeclarations(declarations []forwardDeclaration) []byte {
 		groups[index].declarations = append(groups[index].declarations, declaration)
 	}
 
-	var output strings.Builder
-	output.WriteString("#pragma once\n")
 	for _, group := range groups {
 		output.WriteByte('\n')
 		for _, namespace := range group.namespaces {
 			if namespace.inline {
 				output.WriteString("inline ")
 			}
-			fmt.Fprintf(&output, "namespace %s\n{\n", namespace.name)
+			fmt.Fprintf(output, "namespace %s\n{\n", namespace.name)
 		}
 		for _, declaration := range group.declarations {
 			for _, template := range declaration.templates {
 				output.WriteString(template)
 				output.WriteByte('\n')
 			}
-			fmt.Fprintf(&output, "%s %s;\n", declaration.kind, declaration.name)
+			if declaration.constraint != "" {
+				output.WriteString(declaration.constraint + "\n")
+			}
+			fmt.Fprintf(output, "%s %s", declaration.kind, declaration.name)
+			if declaration.enumBase != "" {
+				fmt.Fprintf(output, " : %s", declaration.enumBase)
+			}
+			output.WriteString(";\n")
 		}
 		for range group.namespaces {
 			output.WriteString("}\n")
 		}
 	}
-	return []byte(output.String())
 }
 
 func sourceForwardHeaderPath(root, environment, source string, layouts ...*cacheLayout) (string, error) {

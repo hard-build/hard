@@ -222,6 +222,14 @@ Successful analysis, compilation, linking, and delivery are reused from the
 content cache. `--no-cache` forces the build work for the current invocation
 without deleting downloaded repository snapshots.
 
+With dependencies and package flags ready, an analysis-cache miss needs one
+libclang parse per source. Its AST supplies the include graph, entry point,
+and complete `.fwd.h`; a cache hit needs no libclang calls. Another parse is
+needed only when dependency resolution or package flags change. The ordinary
+compilation checks the generated declarations together with the source.
+Verbose output shows cache decisions, numbered libclang calls and retry
+reasons, forward declaration counts and skipped declarations, and timings.
+
 ### `hard fetch`
 
 Downloads the complete external source closure needed by selected ordinary and
