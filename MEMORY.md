@@ -1,6 +1,6 @@
 # hard project memory
 
-Last updated: 2026-09-16.
+Last updated: 2026-09-24.
 
 This document is a self-contained memory snapshot for the current Go
 implementation of `hard`. It records the product intent, confirmed
@@ -105,7 +105,7 @@ Implemented:
   and externally configured corporate replacements and dependency proxies;
 - Cobra-based argument parsing;
 - environment-backed configuration;
-- an embedded `v7.0-development` version assembled from the `7.0` version
+- an embedded `v8.0-development` version assembled from the `8.0` version
   number and `development` prerelease identifier, with a source-independent
   `version` command and release-time prerelease removal;
 - a read-only release contract check that builds development and release
@@ -1085,12 +1085,12 @@ and cause status 1. A normally started program that exits nonzero under
 
 `version` prints one line assembled from two values embedded in the Go binary:
 
-    versionNumber = 7.0
+    versionNumber = 8.0
     versionPrerelease = development
 
-The default output is `v7.0-development`. A non-empty prerelease identifier is
+The default output is `v8.0-development`. A non-empty prerelease identifier is
 separated from the version number by one hyphen. Release packaging clears only
-the prerelease value through `-X main.versionPrerelease=`, producing `v7.0`,
+the prerelease value through `-X main.versionPrerelease=`, producing `v8.0`,
 and rejects a binary whose reported version differs from the release tag.
 
 The command does not resolve the runtime root, read a runtime version file,
@@ -1119,6 +1119,14 @@ test fixtures remain unchanged. The source bump was subsequently committed and
 tagged locally as `v7.0`; no push or publication was performed. The complete
 `make check` and `make release-check VERSION=v7.0` passed, verifying both
 development and release version forms.
+
+On 2026-09-24 the user selected `8.0` as the next development version.
+`make bump VERSION=8.0` advanced the embedded number from `7.0` while keeping
+the `development` prerelease identifier. Current-version documentation was
+updated; historical version records, container-image tags, and test fixtures
+retain their original values. Verification passed the complete `make check`
+and `make release-check VERSION=v8.0`, including the exact development/release
+versions and the release environment report.
 
 `make release-check` builds both forms from the current checkout. Without a
 `VERSION` value it derives the release version from the required

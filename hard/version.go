@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-var versionNumber = "7.0"
+var versionNumber = "8.0"
 var versionPrerelease = "development"
 
 func hardVersion() string {

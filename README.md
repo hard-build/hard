@@ -162,8 +162,8 @@ Prints the version embedded in the running backend:
 hard version
 ```
 
-A development build reports `v7.0-development`. A release build reports
-`v7.0`; release packaging removes the prerelease component from the binary and
+A development build reports `v8.0-development`. A release build reports
+`v8.0`; release packaging removes the prerelease component from the binary and
 checks the result against the release tag. The command does not read runtime
 files, load `HARD_*` configuration, inspect the toolchain, or scan sources.
 
@@ -659,7 +659,7 @@ make unittest
 make install
 ```
 
-`make` writes the development backend, which reports `v7.0-development`, to
+`make` writes the development backend, which reports `v8.0-development`, to
 `build/hard`. `make bump VERSION=X.Y` advances the embedded development version
 when `X.Y` is greater than the current value and the `vX.Y` tag does not exist.
 `make check` verifies formatting,
