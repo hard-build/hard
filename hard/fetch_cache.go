@@ -94,7 +94,7 @@ func inspectFetchSourceWithCache(
 			return result
 		}
 	}
-	if activity != nil {
+	if activity != nil && !libraryManager.progress.hasAnalyzed(job.source, workingDirectory) {
 		activity(job.source, false)
 	}
 	fatal, dependencies, analysis, effectiveFlags, libraries, libraryHeaders, diagnostics, err := sourceAnalysisWithLibraries(

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 type forwardNamespace struct {
@@ -206,17 +205,12 @@ func sourceForwardContents(
 	workingDirectory string,
 	progresses ...*progressBar,
 ) ([]byte, error) {
-	started := time.Now()
-	declarations, skipped := selectForwardDeclarations(analysis, dependencies, workingDirectory)
-	contents := renderForwardDeclarations(declarations)
-	if len(progresses) != 0 {
+	if len(progresses) != 0 && progresses[0] != nil {
 		progress := progresses[0]
-		progress.detail(source, "forward generated: %d declarations, %d skipped, %s; no libclang validation", len(declarations), len(skipped), time.Since(started).Round(time.Microsecond))
-		for _, reason := range skipped {
-			progress.detail(source, "skipped %s", reason)
-		}
+		progress.updateStep("Generating " + progress.path(source) + ".fwd.h")
 	}
-	return contents, nil
+	declarations := forwardDeclarationsFromAnalysis(analysis, dependencies, workingDirectory)
+	return renderForwardDeclarations(declarations), nil
 }
 
 func clangHeaderArguments(cflags []string, workingDirectory string) []string {

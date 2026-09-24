@@ -760,9 +760,9 @@ template parameters can also use their canonical type, such as `size_t` as
 
 Template constraints retain their original tokens and order. Signatures that
 depend on unavailable aliases, concepts, values, macros, or unsupported header
-context are omitted as a whole, with a reason in verbose output; hard does not
-silently remove a `requires` clause. Ordinary enums without a fixed underlying
-type cannot be forward-declared and are omitted. Templates requiring such an
+context are omitted as a whole; hard does not silently remove a `requires`
+clause. Ordinary enums without a fixed underlying type cannot be forward-declared
+and are omitted. Templates requiring such an
 enum are omitted too. These are conservative supported forms, not a promise
 to synthesize every C++ declaration. Conditional and macro-expanded class and
 namespace names still come from the source's active AST.
@@ -997,6 +997,8 @@ unknown denominator:
 [1/?] Searching source files
 [1/?] Parsing example.cpp
 [1/?] Downloading github.com/owner/repository@<commit>
+[1/?] Parsing example.cpp (dependencies updated)
+[1/?] Generating example.cpp.fwd.h
 [2/4] Compiling example.cpp
 [3/4] Linking example
 [4/4] Copying example
@@ -1022,13 +1024,13 @@ lines, and silent mode hides the complete progress stream. All entries follow
   immediately follows its `Compiling` or `Linking` entry. Every argument is
   POSIX-shell escaped, so the command can be copied and run manually. Copying
   is internal Go code and has no command line.
-- Verbose analysis details identify their source and show cache hit/miss
-  reasons, each actual libclang attempt and duration, missing dependencies
-  and their including file, and why another attempt is required. Forward
-  generation reports emitted/skipped counts, reasons for unsupported
-  declarations, and elapsed time. Compile/link and CMake work report timings.
-  Attempt numbers continue across dependency-view refreshes. Parallel detail
-  lines are serialized and always carry their owner.
+- Repeated analysis appears as `Parsing <source> (dependencies updated)` or
+  `Parsing <source> (library includes updated)`, including retries after the
+  dependency view is refreshed. `Generating <source>.fwd.h` marks forward
+  generation; a cached analysis restores the forward without this stage.
+  Internal cache reasons, libclang call numbers, declaration statistics,
+  skipped declarations, and timings are omitted. Tool errors retain their
+  diagnostics.
 - Build does not print a preliminary header list. Preparation progress may show
   `Parsing <source>` while libclang analysis is running.
 - `-s` suppresses progress and successful compiler output; compiler, linker,

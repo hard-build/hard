@@ -140,15 +140,27 @@ func TestPreparedLibraryFlagsReachFirstAnalysis(t *testing.T) {
 		manager := newLibraryManager(root, "host", "c++", 1, true, false, project, nil, cache, progress, io.Discard)
 		manager.results[header] = libraryArtifact{key: header, header: header, cflags: []string{"-I" + installed}}
 		before := clangParseCount()
-		result := inspectBuildSourceWithCache(root, "host", "", nil, []string{"-std=c++20"}, []string{"main"}, buildJob{source: source}, project, nil, cache, manager)
+		activity := func(path string, cached bool) {
+			progress.updateStep("Parsing " + progress.path(path))
+		}
+		result := inspectBuildSourceWithCache(root, "host", "", nil, []string{"-std=c++20"}, []string{"main"}, buildJob{source: source}, project, activity, cache, manager)
 		return result, int(clangParseCount() - before)
 	}
 	if result, count := inspect(); result.err != nil || count != 2 {
 		t.Fatalf("initial: %v, calls %d\n%s", result.err, count, output.String())
 	}
+	want := "[1/?] Parsing main.cpp\n[1/?] Parsing main.cpp (library includes updated)\n[1/?] Generating main.cpp.fwd.h\n"
+	if output.String() != want {
+		t.Fatalf("initial progress = %q, want %q", output.String(), want)
+	}
+	output.Reset()
 	writeBuildFile(t, project, "main.cpp", "#include \"library.hard.h\"\nint main(){return 1;}\n")
 	if result, count := inspect(); result.err != nil || count != 1 || !strings.Contains(result.forward, "class Parser;") {
 		t.Fatalf("prepared: %+v, calls %d\n%s", result, count, output.String())
+	}
+	want = "[1/?] Parsing main.cpp\n[1/?] Generating main.cpp.fwd.h\n"
+	if output.String() != want {
+		t.Fatalf("prepared progress = %q, want %q", output.String(), want)
 	}
 	writeBuildFile(t, project, "main.cpp", "int main(){return 0;}\n")
 	if result, count := inspect(); result.err != nil || count != 2 || len(result.libraries) != 0 || len(result.cflags) != 1 {
@@ -172,17 +184,14 @@ func TestColdTransitiveLibrariesAnalyzeThreeTimes(t *testing.T) {
 	if clangParseCount()-before != 3 {
 		t.Fatalf("actual libclang calls: %d", clangParseCount()-before)
 	}
-	if strings.Count(out, "started (full AST)") != 3 || strings.Count(out, "forward generated:") != 1 || !strings.Contains(out, "libclang #3") {
-		t.Fatalf("cold analysis counts:\n%s", out)
-	}
-	if !strings.Contains(out, "a.h") || !strings.Contains(out, "requested by") {
-		t.Fatalf("missing dependency owner:\n%s", out)
+	if strings.Count(out, "Parsing main.cpp") != 3 || strings.Count(out, "Parsing main.cpp (dependencies updated)") != 2 || strings.Count(out, "Generating main.cpp.fwd.h") != 1 {
+		t.Fatalf("cold analysis progress:\n%s", out)
 	}
 	out = runDiscoveryCommand(t, configuration, "build", "-v", "--no-color")
 	if clangParseCount()-before != 3 {
 		t.Fatal("cache hit called libclang")
 	}
-	if strings.Contains(out, "started (full AST)") || !strings.Contains(out, "analysis cache hit") {
+	if strings.Contains(out, "Generating ") || !strings.Contains(out, "Parsing main.cpp (CACHED)") {
 		t.Fatalf("warm analysis:\n%s", out)
 	}
 }

@@ -227,8 +227,9 @@ libclang parse per source. Its AST supplies the include graph, entry point,
 and complete `.fwd.h`; a cache hit needs no libclang calls. Another parse is
 needed only when dependency resolution or package flags change. The ordinary
 compilation checks the generated declarations together with the source.
-Verbose output shows cache decisions, numbered libclang calls and retry
-reasons, forward declaration counts and skipped declarations, and timings.
+Verbose output shows build stages, `(CACHED)` markers, and compiler/linker
+commands. A repeated `Parsing` stage includes a short reason, such as
+`library includes updated`; `Generating main.cpp.fwd.h` marks forward generation.
 
 ### `hard fetch`
 

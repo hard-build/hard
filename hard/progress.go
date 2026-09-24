@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 )
 
@@ -46,17 +45,17 @@ func newProgressBar(writer io.Writer, total int, verbose, silent, noColor bool) 
 	}
 }
 
-// Details are one locked write, with an owner on every line even when workers
-// complete out of order. They never change the normal progress counter.
-func (progress *progressBar) detail(owner, format string, values ...any) {
+func (progress *progressBar) hasAnalyzed(source, workingDirectory string) bool {
 	if progress == nil {
-		return
+		return false
 	}
-	progress.mutex.Lock()
-	defer progress.mutex.Unlock()
-	if progress.verbose && !progress.silent && !progress.finished {
-		progress.writeLocked(fmt.Sprintf("  %s: %s\n", progress.path(owner), fmt.Sprintf(format, values...)))
+	absoluteSource, err := lexicalAbsolutePath(source, workingDirectory)
+	if err != nil {
+		return false
 	}
+	progress.analyses.mutex.Lock()
+	defer progress.analyses.mutex.Unlock()
+	return progress.analyses.calls[absoluteSource] != 0
 }
 
 func (progress *progressBar) path(path string) string {
@@ -66,22 +65,16 @@ func (progress *progressBar) path(path string) string {
 	return path
 }
 
-func (progress *progressBar) beginAnalysis(source string, skipBodies bool) func() {
+func (progress *progressBar) beginAnalysis(source, retryReason string) {
 	if progress == nil {
-		return func() {}
+		return
 	}
 	progress.analyses.mutex.Lock()
 	progress.analyses.calls[source]++
 	attempt := progress.analyses.calls[source]
 	progress.analyses.mutex.Unlock()
-	mode := "full AST"
-	if skipBodies {
-		mode = "dependencies only"
-	}
-	progress.detail(source, "libclang #%d started (%s)", attempt, mode)
-	started := time.Now()
-	return func() {
-		progress.detail(source, "libclang #%d finished in %s", attempt, time.Since(started).Round(time.Millisecond))
+	if attempt > 1 {
+		progress.updateStep("Parsing " + progress.path(source) + " (" + retryReason + ")")
 	}
 }
 

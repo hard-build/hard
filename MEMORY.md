@@ -1779,9 +1779,9 @@ offset order after sorting by canonical physical file path and source offset;
 opaque enums are emitted before templates across all namespace groups.
 The complete forward is rendered without reparsing any candidates. The bridge
 preserves constraints and uses libclang references to reject signatures that
-need unavailable header context (aliases, concepts, values, macros), reporting
-the omission in verbose output. Builtin typedefs in value-parameter types can
-be replaced with their canonical type; constraints are never weakened.
+need unavailable header context (aliases, concepts, values, macros).
+Builtin typedefs in value-parameter types can be replaced with their canonical
+type; constraints are never weakened.
 Actual object compilation checks compatibility with original definitions.
 
 Forward outputs begin with `#pragma once`. Their path mirrors the lexical
@@ -4148,8 +4148,8 @@ The first analysis now receives package flags restored from the prior semantic
 parse record even when the source fingerprint changed. Newly active dependencies
 or changed package flags still trigger another analysis; inactive recipe flags
 are removed based on the new graph. An initially unknown ordinary include chain
-main -> A -> B requires three analyses and one forward generation. Attempt
-numbers persist across the invocation's include-view refreshes.
+main -> A -> B requires three analyses and one forward generation. Analysis
+progress tracks repeated sources across the invocation's include-view refreshes.
 
 The bridge supplies scoped/fixed-base enums, canonical underlying types,
 template parameters, preserved requires tokens, and semantic references.
@@ -4157,15 +4157,28 @@ All supported enums are emitted even when unused, before templates across
 namespace groups. Builtin typedefs in non-type parameters can be canonicalized
 without header context (TinyXML2's size_t parameters are supported). Unsupported
 signatures depending on unavailable aliases, concepts, values or macros are
-omitted whole with verbose reasons; constraints are never silently removed.
+omitted whole; constraints are never silently removed.
 Unscoped enums without explicit bases remain ineligible. This is conservative
 support, not a complete serializer for arbitrary C++ declarations.
 
-Verbose output reports cache decisions, numbered/timed libclang attempts,
-missing include origins, retry reasons, forward emitted/skipped counts and
-reasons, compile/link timings, and CMake durations. Details use serialized,
-owner-labelled lines and preserve silent/normal behavior. Cache schema is 4;
-old records are misses. Compiler command rendering remains unchanged.
+The approved output simplification keeps verbose build stages, `(CACHED)`
+markers, and exact compiler/linker commands. Repeated analyses show
+`Parsing <source> (dependencies updated)` or `(library includes updated)`;
+`Generating <source>.fwd.h` marks actual forward generation. Cached analysis
+restores the forward without a generation stage. Internal cache reasons,
+libclang call numbers, declaration/skipping details, and all added timings
+are omitted. Normal/silent modes and error diagnostics retain their behavior.
+Cache schema remains 4; compiler command rendering and the analysis algorithm
+are unchanged.
+
+The output simplification passed a fresh complete `make check`. Regression
+tests check exact preparation output, library-flag retry labels, three visible
+analyses for the cold A/B chain, and cached restoration without `Generating`;
+the actual C API parse-count assertions remain in place. An isolated TinyXML2
+build confirmed the CMake stages, one concise retry, forward generation, and
+compiler/linker commands, followed by an entirely cached second build. Logs
+and the test runtime are under `/tmp/hard-quiet-verbose-9f18cb`; the installed
+backend and user's example/cache were not changed.
 
 Verification passed: complete `make check` (ordinary and race suites, vet,
 formatting, out-of-tree build, module verification, shell syntax, target manifest
@@ -4180,8 +4193,8 @@ An isolated copy of `test_recipe_2` using copied source snapshots measured three
 changed-source builds with the installed baseline and the new backend. Baseline
 times were 3.803/3.662/3.687 s (median 3.687); new times were
 0.560/0.556/0.542 s (median 0.556), about 6.6x faster. Package preparation was
-warmed before measuring. The new verbose trace showed one ~205 ms full parse
-and ~475 us forward generation for all 17 TinyXML2 class/template declarations;
+warmed before measuring. The initial instrumented trace showed one ~205 ms full
+parse and ~475 us forward generation for all 17 TinyXML2 class/template declarations;
 two non-fixed enums were explicitly skipped. The final warm cache hit was
 0.089 s. These are local measurements, not a cross-machine performance guarantee.
 Runtime, fixtures, logs and benchmark records were kept under `/tmp`; the

@@ -81,7 +81,6 @@ type clangAnalysis struct {
 
 type clangAnalysisOptions struct {
 	skipFunctionBodies bool
-	progress           *progressBar
 }
 
 type clangDependencySet struct {
@@ -123,8 +122,6 @@ func analyzeClangFile(
 	}
 
 	var errorCode C.int
-	finished := options.progress.beginAnalysis(source, options.skipFunctionBodies)
-	defer finished()
 	analysis := C.hard_clang_analyze(
 		cSource,
 		cContents,
@@ -399,8 +396,11 @@ func sourceAnalysisWithLibraries(
 	if pathError != nil {
 		return true, clangDependencySet{}, clangAnalysis{}, cflags, nil, nil, nil, pathError
 	}
+	retryReason := "dependencies updated"
 	for {
-		analysis, err := analyzeClangFile(absoluteSource, nil, clangSourceArguments(cflags, workingDirectory), clangAnalysisOptions{skipFunctionBodies: skipBodies, progress: progress})
+		progress.beginAnalysis(absoluteSource, retryReason)
+		retryReason = "dependencies updated"
+		analysis, err := analyzeClangFile(absoluteSource, nil, clangSourceArguments(cflags, workingDirectory), clangAnalysisOptions{skipFunctionBodies: skipBodies})
 		if err != nil {
 			return true, clangDependencySet{}, clangAnalysis{}, cflags, nil, nil, nil, err
 		}
@@ -408,17 +408,7 @@ func sourceAnalysisWithLibraries(
 		if err != nil {
 			return true, clangDependencySet{}, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
-		for _, edge := range analysis.includes {
-			if edge.target == "" {
-				if _, managed := githubRepositoryFromDependency(filepath.ToSlash(edge.spelling)); managed {
-					progress.detail(source, "dependency %s requested by %s", edge.spelling, progress.path(edge.source))
-				}
-			}
-		}
 		if err := githubResolver.prepareInheritedIncludes(analysis, workingDirectory); err != nil {
-			if errors.Is(err, errDependencySetChanged) {
-				progress.detail(source, "retry required: inherited dependency selection changed")
-			}
 			return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
 		var artifacts []libraryArtifact
@@ -426,14 +416,11 @@ func sourceAnalysisWithLibraries(
 		if libraryManager != nil {
 			artifacts, libraryHeaders, err = libraryManager.prepareDependencies(dependencies.managed)
 			if err != nil {
-				if errors.Is(err, errDependencySetChanged) {
-					progress.detail(source, "retry required: recipe dependency selection changed")
-				}
 				return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 			}
 			updatedCFlags := libraryCFlags(baseCFlags, artifacts)
 			if !equalStringSlices(updatedCFlags, cflags) {
-				progress.detail(source, "retry required: library compiler flags changed")
+				retryReason = "library includes updated"
 				cflags = updatedCFlags
 				continue
 			}
@@ -465,9 +452,6 @@ func sourceAnalysisWithLibraries(
 				continue
 			}
 			if err := githubResolver.ensure(repository); err != nil {
-				if errors.Is(err, errDependencySetChanged) {
-					progress.detail(source, "retry required: dependency %s became available", include)
-				}
 				downloadErrors = append(downloadErrors, err)
 			}
 		}
@@ -475,7 +459,6 @@ func sourceAnalysisWithLibraries(
 			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, clangErrorDiagnostics(analysis), err
 		}
 		if newRepository {
-			progress.detail(source, "retry required: downloaded missing includes")
 			continue
 		}
 
