@@ -264,6 +264,17 @@ struct template_context
 	CXSourceLocation last_parameter;
 };
 
+CXChildVisitResult inspect_expanded_parameter(CXCursor cursor, CXCursor, CXClientData data)
+{
+	auto& value = *static_cast<hard_declaration*>(data);
+	CXCursorKind kind = clang_getCursorKind(cursor);
+	if (clang_isReference(kind) || kind == CXCursor_DeclRefExpr)
+	{
+		inspect_signature_token({to_string(clang_getCursorSpelling(cursor)), CXToken_Identifier, cursor}, value);
+	}
+	return CXChildVisit_Recurse;
+}
+
 CXChildVisitResult collect_template_parameter(CXCursor cursor, CXCursor, CXClientData data)
 {
 	auto& context = *static_cast<template_context*>(data);
@@ -271,14 +282,15 @@ CXChildVisitResult collect_template_parameter(CXCursor cursor, CXCursor, CXClien
 		return CXChildVisit_Continue;
 	CXSourceRange extent = clang_getCursorExtent(cursor);
 	context.last_parameter = clang_getRangeEnd(extent);
-	auto tokens = signature_tokens(context.unit, extent);
-	std::string original;
-	for (const auto& token : tokens)
+	// Print the semantic declaration: raw source ranges can be empty or still
+	// contain macro names even though the complete parameter is in the AST.
+	std::string original = to_string(clang_getCursorPrettyPrinted(cursor, nullptr));
+	if (original.empty())
 	{
-		if (!original.empty())
-			original += ' ';
-		original += token.text;
+		context.value->unsupported = "template parameter printing unavailable";
+		return CXChildVisit_Continue;
 	}
+	auto tokens = signature_tokens(context.unit, extent);
 	std::string name = to_string(clang_getCursorSpelling(cursor));
 	for (auto& token : tokens)
 	{
@@ -316,10 +328,19 @@ CXChildVisitResult collect_template_parameter(CXCursor cursor, CXCursor, CXClien
 				angles -= 2;
 		}
 	}
+	if (tokens.empty() || std::any_of(tokens.begin(), tokens.end(), [](const signature_token& token)
+	    { return clang_getCursorKind(token.cursor) == CXCursor_MacroExpansion; }))
+	{
+		// Lexical annotations cannot describe an expanded macro's dependencies.
+		// Inspect its AST references before using the printed parameter instead.
+		clang_visitChildren(cursor, inspect_expanded_parameter, context.value);
+		context.value->template_parameters.push_back(std::move(original));
+		return CXChildVisit_Continue;
+	}
 	if (clang_getCursorKind(cursor) == CXCursor_NonTypeTemplateParameter)
 	{
 		bool canonical = canonicalize_parameter_types(tokens);
-		// Preserve raw defaults unless canonicalization changed the spelling.
+		// Keep AST printing unless a builtin typedef needs canonical spelling.
 		std::string prefix = render_signature(tokens, *context.value);
 		context.value->template_parameters.push_back(canonical ? std::move(prefix) : std::move(original));
 	}

@@ -285,6 +285,20 @@ func TestStripTemplateDefault(t *testing.T) {
 	}
 }
 
+func TestForwardRejectsIncompleteTemplateParameters(t *testing.T) {
+	project := t.TempDir()
+	header := filepath.Join(project, "types.h")
+	for _, parameters := range [][]string{{""}, {"", "class T"}, {"typename T", " "}} {
+		analysis := clangAnalysis{declarations: []clangDeclaration{{
+			file: header, name: "Box", kind: "class", templates: parameters,
+		}}}
+		declarations, skipped := selectForwardDeclarations(analysis, []string{header}, project)
+		if len(declarations) != 0 || len(skipped) != 1 || !strings.Contains(skipped[0], "template parameter unavailable") {
+			t.Fatalf("parameters %q: declarations=%v, skipped=%v", parameters, declarations, skipped)
+		}
+	}
+}
+
 func TestAppendForwardNamespaceDoesNotModifyInput(t *testing.T) {
 	input := []forwardNamespace{{name: "outer"}}
 	got := appendForwardNamespace(input, forwardNamespace{name: "inner"})

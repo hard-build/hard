@@ -223,7 +223,7 @@ func TestAnalyzeClangFileResolvesMacroNamespacesAndTemplates(t *testing.T) {
 	}
 	if want := []string{
 		"typename Type",
-		"typename Nested = pack < pack < Type >>",
+		"typename Nested = pack<pack<Type>>",
 		"int Size = 4",
 	}; !reflect.DeepEqual(value.templates, want) {
 		t.Errorf("value templates = %#v, want %#v", value.templates, want)
@@ -232,7 +232,7 @@ func TestAnalyzeClangFileResolvesMacroNamespacesAndTemplates(t *testing.T) {
 	if !ok {
 		t.Fatalf("parameter-pack declaration was not found: %#v", analysis.declarations)
 	}
-	if want := []string{"typename ... Types"}; !reflect.DeepEqual(pack.templates, want) {
+	if want := []string{"typename ...Types"}; !reflect.DeepEqual(pack.templates, want) {
 		t.Errorf("pack templates = %#v, want %#v", pack.templates, want)
 	}
 }

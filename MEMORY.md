@@ -1786,6 +1786,13 @@ Excluded declarations:
 Template default arguments are removed. Declarations are considered in source
 offset order after sorting by canonical physical file path and source offset;
 opaque enums are emitted before templates across all namespace groups.
+Template parameter text comes from `clang_getCursorPrettyPrinted`, including
+macro-expanded and nested template parameters. Source tokens are used for
+dependency checks and builtin alias canonicalization, not as the parameter
+serializer. When a parameter's lexical range is empty or contains a macro,
+the bridge checks references in its AST before retaining the printed parameter.
+An unavailable parameter rejects the whole declaration; it is never dropped
+from an otherwise emitted parameter list.
 The complete forward is rendered without reparsing any candidates. The bridge
 preserves constraints and uses libclang references to reject signatures that
 need unavailable header context (aliases, concepts, values, macros).
@@ -2821,8 +2828,10 @@ creation, and download failures. Tests never publish to GitHub.
 Verification on 2026-09-24 passed all 17 publication scenarios and the complete
 `make check`, including race tests. YAML and inline Bash syntax were validated;
 the build, smoke, and container jobs, pinned inputs, and permissions were
-compared against the previous workflow and are unchanged. Actual publication
-with this recovery logic has not yet been exercised on GitHub.
+compared against the previous workflow and are unchanged. GitHub run
+`36049091134` subsequently published the v8.0 host assets successfully; its
+Windows smoke failure was a separate forward-generation regression described
+below.
 
 For check-workflow changes, parse the workflow as YAML, verify the two event
 triggers, read-only contents permission, runner, action versions, Go version,
@@ -4231,6 +4240,41 @@ two non-fixed enums were explicitly skipped. The final warm cache hit was
 Runtime, fixtures, logs and benchmark records were kept under `/tmp`; the
 installed backend, original example projects and original user cache were not
 modified. `.agents` was mounted read-only, preventing the requested dialogue log.
+
+## AST printing of macro-expanded template parameters (2026-09-24)
+
+Release v8.0's Windows smoke tests exposed a regression in the single-AST
+forward generator. GoogleTest's `GTEST_TEMPLATE_`, defined in another header,
+produced a complete `TemplateTemplateParameter` cursor, but tokenizing its
+source extent returned no lexical tokens. The bridge serialized an empty
+parameter and Go dropped it, creating a two-parameter declaration for a
+three-parameter class. The previous v7 generator retained the macro name in
+the candidate text and rejected that candidate during its extra parse.
+The issue also reproduced with native libclang 18; it was not Windows-specific.
+
+The user approved using libclang's declaration printer rather than merely
+omitting these declarations. `clang_getCursorPrettyPrinted` now supplies
+parameter text from the existing AST. Expanded macro references are inspected
+semantically, preserving the conservative treatment of unavailable aliases,
+concepts and values. Ordinary parameters retain the existing dependency checks
+and builtin typedef canonicalization. Constraints retain their original tokens;
+there are no additional libclang parses. Both the bridge and forward selection
+reject incomplete parameter lists as whole declarations. Changing the backend
+invalidates previous analysis results through its existing executable digest.
+
+Regression coverage compiles generated forwards with their original headers
+for 18 same-header/separate-header cases: template-template parameters, whole
+parameter lists, type parameters, packs, non-type parameters, scoped enums,
+default-only macros, and hidden alias/concept dependencies. Each case requires
+exactly one real libclang parse. Separate tests reject empty parameter records.
+The complete local `make check` and these signature tests against libclang 22
+passed. All 12 host integration scenarios passed. Windows scenarios 002–012,
+including all four previously failing GoogleTest scenarios, passed in the
+existing local LLVM-MinGW 20260616 / libclang 22.1.8 image. Scenario 001 initially
+failed the harness's stderr check because Wine initialized its profile; its
+repeat with that profile passed. The checks used a newly built backend, copied
+snapshots, and isolated runtime/cache/output paths under `/tmp`, without network
+access. GitHub CI has not yet run with this fix.
 
 ## Resume checklist
 

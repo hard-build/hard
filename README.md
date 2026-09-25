@@ -227,6 +227,8 @@ libclang parse per source. Its AST supplies the include graph, entry point,
 and complete `.fwd.h`; a cache hit needs no libclang calls. Another parse is
 needed only when dependency resolution or package flags change. The ordinary
 compilation checks the generated declarations together with the source.
+Supported template parameters are printed from libclang's AST, including
+expanded macros defined in other headers; their parameters are preserved.
 Verbose output shows build stages, `(CACHED)` markers, and compiler/linker
 commands. A repeated `Parsing` stage includes a short reason, such as
 `library includes updated`; `Generating main.cpp.fwd.h` marks forward generation.

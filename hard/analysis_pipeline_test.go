@@ -69,6 +69,63 @@ func TestForwardTemplateRecoveredAfterSemanticError(t *testing.T) {
 	}
 }
 
+func TestForwardMacroParametersFromAST(t *testing.T) {
+	for _, test := range []struct {
+		name, definitions, declaration, want string
+		skipped                              bool
+	}{
+		{"template_template", "#define PARAM template <typename T> class", "template<PARAM Fixture, class TestSel, typename Types> class Box {};", "template <template <typename T> class Fixture, class TestSel, typename Types>", false},
+		{"parameter_list", "#define PARAM template <typename T> class Fixture, class TestSel, typename Types", "template<PARAM> class Box {};", "template <template <typename T> class Fixture, class TestSel, typename Types>", false},
+		{"type", "#define PARAM typename", "template<PARAM T = int> class Box {};", "template <typename T>", false},
+		{"pack", "#define PARAM typename...", "template<PARAM Types> class Box {};", "template <typename ...Types>", false},
+		{"value", "#define PARAM int", "template<PARAM N = (1 < 2 ? 3 : 4)> class Box {};", "template <int N>", false},
+		{"enum", "enum class Mode { Fast };\n#define PARAM Mode", "template<PARAM M> class Box {};", "class Box;", false},
+		{"default_only", "class Default {};\n#define PARAM Default", "template<class T = PARAM> class Box {};", "template <class T>", false},
+		{"hidden_alias", "using Index = unsigned;\n#define PARAM template<Index N> class", "template<PARAM Fixture, class T> class Box {};", "#pragma once", true},
+		{"hidden_concept", "template<class T> concept Good = sizeof(T)>1;\n#define PARAM template<Good T> class", "template<PARAM Fixture, class T> class Box {};", "#pragma once", true},
+	} {
+		for _, separate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/separate_header=%t", test.name, separate), func(t *testing.T) {
+				project := t.TempDir()
+				definitions := test.definitions + "\n"
+				headers := []string{filepath.Join(project, "types.h")}
+				if separate {
+					writeBuildFile(t, project, "macros.h", "#pragma once\n"+definitions)
+					definitions = "#include \"macros.h\"\n"
+					headers = append(headers, filepath.Join(project, "macros.h"))
+				}
+				writeBuildFile(t, project, "types.h", "#pragma once\n"+definitions+test.declaration+"\n")
+				source := filepath.Join(project, "main.cpp")
+				writeBuildFile(t, project, "main.cpp", "#include \"types.h\"\nint main() { return 0; }\n")
+				before := clangParseCount()
+				analysis, err := analyzeClangFile(source, nil, []string{"-std=c++20"}, clangAnalysisOptions{})
+				if err != nil || clangAnalysisHasErrors(analysis) {
+					t.Fatalf("analysis: %v; diagnostics: %+v", err, analysis.diagnostics)
+				}
+				declarations, skipped := selectForwardDeclarations(analysis, headers, project)
+				contents := renderForwardDeclarations(declarations)
+				if !strings.Contains(string(contents), test.want) || strings.Contains(string(contents), "PARAM") {
+					t.Fatalf("missing expanded %q:\n%s\nskipped: %v", test.want, contents, skipped)
+				}
+				if test.skipped && (strings.Contains(string(contents), "class Box;") || !strings.Contains(strings.Join(skipped, "\n"), "Box")) {
+					t.Fatalf("unsafe declaration retained or unreported:\n%s\nskipped: %v", contents, skipped)
+				}
+				if count := clangParseCount() - before; count != 1 {
+					t.Fatalf("libclang parses = %d, want 1", count)
+				}
+				forward := filepath.Join(project, "main.fwd.h")
+				if err := os.WriteFile(forward, contents, 0600); err != nil {
+					t.Fatal(err)
+				}
+				command := exec.Command("c++", "-std=c++20", "-include", forward, "-fsyntax-only", source)
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("compiler: %v\n%s\nforward:\n%s", err, output, contents)
+				}
+			})
+		}
+	}
+}
+
 func TestBuildAnalysisUsesOneASTAndRestoresForward(t *testing.T) {
 	project, root := t.TempDir(), t.TempDir()
 	var header strings.Builder

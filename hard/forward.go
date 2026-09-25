@@ -167,6 +167,11 @@ func selectForwardDeclarations(analysis clangAnalysis, files []string, workingDi
 				reason = "template requires an enum unavailable in the forward header"
 			}
 		}
+		for _, parameter := range declaration.templates {
+			if stripTemplateDefault(strings.TrimSpace(parameter)) == "" {
+				reason = "template parameter unavailable"
+			}
+		}
 		if reason != "" {
 			skipped = append(skipped, fmt.Sprintf("%s (%s): %s", declaration.name, owned.file, reason))
 			continue
@@ -176,14 +181,9 @@ func selectForwardDeclarations(analysis clangAnalysis, files []string, workingDi
 		if len(declaration.templates) != 0 {
 			parameters := make([]string, 0, len(declaration.templates))
 			for _, parameter := range declaration.templates {
-				parameter = stripTemplateDefault(strings.TrimSpace(parameter))
-				if parameter != "" {
-					parameters = append(parameters, parameter)
-				}
+				parameters = append(parameters, stripTemplateDefault(strings.TrimSpace(parameter)))
 			}
-			if len(parameters) != 0 {
-				templates = []string{"template <" + strings.Join(parameters, ", ") + ">"}
-			}
+			templates = []string{"template <" + strings.Join(parameters, ", ") + ">"}
 		}
 		result = append(result, forwardDeclaration{
 			namespaces: append([]forwardNamespace(nil), declaration.namespaces...),
