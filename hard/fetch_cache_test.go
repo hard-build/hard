@@ -131,12 +131,13 @@ func TestFetchCachePinnedRecipe(t *testing.T) {
 	proxy := newInheritanceTestProxy(t)
 	vendor, archive := inheritedTestSnapshot(t, "github.com/owner/library", "release", secondCommit, map[string]string{
 		"library.h":      "#pragma once\nint library_value();\n",
-		"library.cpp":    "#include \"library.h\"\nint library_value() { return 1; }\n",
+		"library.cpp":    "#include <generated_only_by_cmake.h>\nint library_value() { return 1; }\n",
 		"CMakeLists.txt": "message(FATAL_ERROR \"fetch must not run CMake\")\n",
 	})
 	proxy.add(vendor, archive)
 	recipe, archive := inheritedTestSnapshot(t, "github.com/hard-build/recipe", "main", firstCommit, map[string]string{
-		"library.hard.h": "/* hard.recipe.v1\n" + validLibraryRecipeYAML() + "*/\n#pragma once\n#include <library.h>\n",
+		"library.hard.h": "#pragma once\n#include <library.h>\n",
+		"library.hard":   validLibraryRecipeYAML(),
 		"hard.yaml":      inheritedTestYAML(t, map[string]repositoryPin{vendor.Source: vendor}),
 	})
 	proxy.add(recipe, archive)
@@ -152,7 +153,7 @@ func TestFetchCachePinnedRecipe(t *testing.T) {
 		if err != nil || diagnostics != "" {
 			t.Fatalf("%v: %v\n%s\n%s", args, err, out, diagnostics)
 		}
-		for _, source := range []string{"main.cpp", vendor.Source + "/library.cpp"} {
+		for _, source := range []string{"main.cpp"} {
 			want := "Parsing " + source
 			if cached {
 				want += " (CACHED)"
@@ -160,6 +161,9 @@ func TestFetchCachePinnedRecipe(t *testing.T) {
 			if !strings.Contains(out, want+"\n") {
 				t.Fatalf("missing %q:\n%s", want, out)
 			}
+		}
+		if strings.Contains(out, "Parsing "+vendor.Source+"/library.cpp") {
+			t.Fatalf("fetch inspected vendor implementation: %s", out)
 		}
 		if strings.Contains(out, "snapshot/") || strings.Contains(out, "../") {
 			t.Fatalf("physical paths in progress:\n%s", out)
@@ -203,7 +207,7 @@ func TestFetchCachePinnedRecipe(t *testing.T) {
 		t.Fatalf("cached analysis bypassed --locked: %v", err)
 	}
 	writeProjectTestFile(t, project, "main.cpp", "#include <recipe/library.hard.h>\nint main() { return library_value(); }\n")
-	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--locked", "-v", "--no-color"); err != nil || !strings.Contains(out, "Parsing main.cpp\n") || !strings.Contains(out, "Parsing "+vendor.Source+"/library.cpp (CACHED)") {
+	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--locked", "-v", "--no-color"); err != nil || !strings.Contains(out, "Parsing main.cpp\n") {
 		t.Fatalf("source-only invalidation: %v\n%s\n%s", err, out, diagnostics)
 	}
 	run(true, "--locked")
@@ -221,18 +225,40 @@ func TestFetchCachePinnedRecipe(t *testing.T) {
 }
 
 func TestFetchCacheRevalidatesInheritedEdges(t *testing.T) {
+	testFetchCacheRevalidatesInheritedEdges(t, false)
+}
+
+func TestFetchCacheRevalidatesRecipeDependencies(t *testing.T) {
+	testFetchCacheRevalidatesInheritedEdges(t, true)
+}
+
+func testFetchCacheRevalidatesInheritedEdges(t *testing.T, recipes bool) {
 	proxy := newInheritanceTestProxy(t)
 	leaf, archive := inheritedTestSnapshot(t, "github.com/demo/leaf", "release", secondCommit, map[string]string{"leaf.h": "#pragma once\n"})
+	if recipes {
+		leaf, archive = inheritedTestSnapshot(t, leaf.Source, leaf.Ref, leaf.Commit, map[string]string{"leaf.hard": validLibraryRecipeYAML()})
+	}
 	proxy.add(leaf, archive)
+	vendor, vendorArchive := inheritedTestSnapshot(t, "github.com/owner/library", "main", firstCommit, map[string]string{"library.h": "#pragma once\n"})
+	proxy.add(vendor, vendorArchive)
 	other := leaf
 	other.Commit = nextCommit
-	pins := map[string]repositoryPin{leaf.Source: leaf}
+	pins := map[string]repositoryPin{leaf.Source: leaf, vendor.Source: vendor}
+	parentHeader := "parent.h"
+	if recipes {
+		parentHeader = "parent.hard.hpp"
+	}
 	for index, required := range []repositoryPin{leaf, other} {
 		name := "github.com/demo/" + []string{"first", "second"}[index]
-		parent, archive := inheritedTestSnapshot(t, name, "main", firstCommit, map[string]string{
+		files := map[string]string{
 			"parent.h":  "#pragma once\n#include <" + leaf.Source + "/leaf.h>\n",
-			"hard.yaml": inheritedTestYAML(t, map[string]repositoryPin{leaf.Source: required}),
-		})
+			"hard.yaml": inheritedTestYAML(t, map[string]repositoryPin{leaf.Source: required, vendor.Source: vendor}),
+		}
+		if recipes {
+			files[parentHeader] = "#pragma once\n"
+			files["parent.hard"] = validLibraryRecipeYAML() + "dependencies: [\"" + leaf.Source + "/leaf.hard\"]\n"
+		}
+		parent, archive := inheritedTestSnapshot(t, name, "main", firstCommit, files)
 		proxy.add(parent, archive)
 		pins[name] = parent
 	}
@@ -240,7 +266,7 @@ func TestFetchCacheRevalidatesInheritedEdges(t *testing.T) {
 	withWorkingDirectory(t, project)
 	configuration := projectTestConfiguration(t)
 	filename := writeProjectTestFile(t, project, projectFilename, inheritedTestYAML(t, pins))
-	writeProjectTestFile(t, project, "main.cpp", "#include <github.com/demo/first/parent.h>\n#include <github.com/demo/second/parent.h>\n")
+	writeProjectTestFile(t, project, "main.cpp", "#include <github.com/demo/first/"+parentHeader+">\n#include <github.com/demo/second/"+parentHeader+">\n")
 	for pass := 0; pass < 2; pass++ {
 		out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--locked", "-v", "--no-color")
 		if err != nil || pass == 1 && !strings.Contains(out, "Parsing main.cpp (CACHED)") {

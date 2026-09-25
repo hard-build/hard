@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +19,8 @@ func TestForwardSignaturesCompileWithOriginalDefinitions(t *testing.T) {
 		{"parameters", "template<typename T = int, class A = int> class Collection {};", "template <typename T, class A>", ""},
 		{"enum", "namespace demo { enum class Mode { Fast }; template<Mode M> class Parser {}; enum class Unused : unsigned char { X }; }", "template <Mode M>", ""},
 		{"enum_base", "using Integer = unsigned long; enum Flags : Integer { First = 1 }; template<Flags F> class Options {};", "enum Flags : unsigned long;", ""},
+		{"anonymous_typedef", "typedef struct { int value; } Image, *ImagePointer; typedef enum { Value } Kind;", "#pragma once", ""},
+		{"named_typedef", "typedef struct Named { int value; } Named;", "struct Named;", ""},
 		{"requires", "template<class T> requires (sizeof(T) > 1) class Box {};", "requires ( sizeof ( T ) > 1 )", ""},
 		{"concept", "template<class T> concept Good = sizeof(T)>1; template<Good T> class Box {};", "#pragma once", "Box"},
 		{"unscoped", "enum Unfixed { X }; template<Unfixed F> class Box {};", "#pragma once", "Box"},
@@ -187,7 +192,8 @@ func TestPreparedLibraryFlagsReachFirstAnalysis(t *testing.T) {
 	project, root, installed := t.TempDir(), t.TempDir(), t.TempDir()
 	writeBuildFile(t, installed, "library.h", "enum class Mode { Fast }; template<Mode M> class Parser {};\n")
 	header := filepath.Join(project, "library.hard.h")
-	writeBuildFile(t, project, "library.hard.h", "/* hard.recipe.v1\n"+validLibraryRecipeYAML()+"*/\n#include <library.h>\n")
+	writeBuildFile(t, project, "library.hard", validLibraryRecipeYAML())
+	writeBuildFile(t, project, "library.hard.h", "#include <library.h>\n")
 	source := filepath.Join(project, "main.cpp")
 	writeBuildFile(t, project, "main.cpp", "#include \"library.hard.h\"\nint main(){return 0;}\n")
 	var output bytes.Buffer
@@ -195,7 +201,9 @@ func TestPreparedLibraryFlagsReachFirstAnalysis(t *testing.T) {
 		progress := newProgressBar(&output, -1, true, false, true)
 		cache := newTestArtifactCache(t, true)
 		manager := newLibraryManager(root, "host", "c++", 1, true, false, project, nil, cache, progress, io.Discard)
-		manager.results[header] = libraryArtifact{key: header, header: header, cflags: []string{"-I" + installed}}
+		encoded, _ := json.Marshal([]string{validLibraryRecipeYAML(), ""})
+		key := sha256.Sum256(append([]byte(filepath.Join(project, "library.hard")+"\x00"), encoded...))
+		manager.results[hex.EncodeToString(key[:])] = libraryArtifact{key: header, header: header, cflags: []string{"-I" + installed}}
 		before := clangParseCount()
 		activity := func(path string, cached bool) {
 			progress.updateStep("Parsing " + progress.path(path))

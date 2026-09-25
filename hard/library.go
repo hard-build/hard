@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	libraryRecipeMarker    = "hard.recipe.v1"
-	libraryManifestVersion = 2
+	libraryManifestVersion = 3
 )
 
 type libraryRecipe struct {
+	Version                  int      `yaml:"version"`
+	Dependencies             []string `yaml:"dependencies"`
 	Source                   string   `yaml:"source"`
 	BuildSystem              string   `yaml:"build_system"`
 	SourceDirectory          string   `yaml:"source_directory"`
@@ -32,10 +33,13 @@ type libraryRecipe struct {
 }
 
 type libraryArtifact struct {
-	key      string
-	header   string
-	cflags   []string
-	archives []string
+	key             string
+	header          string
+	cflags          []string
+	archives        []string
+	prefix          string
+	sourceDirectory string
+	dependencies    []string
 }
 
 type libraryManifest struct {
@@ -95,70 +99,27 @@ func newLibraryManager(
 }
 
 func (manager *libraryManager) prepareDependencies(dependencies []string) ([]libraryArtifact, []string, error) {
-	headers := make([]string, 0)
-	for _, dependency := range dependencies {
-		contents, err := os.ReadFile(dependency)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read possible library recipe %s: %w", dependency, err)
-		}
-		_, found, err := parseLibraryRecipe(contents)
-		if err != nil {
-			return nil, nil, fmt.Errorf("parse library recipe %s: %w", dependency, err)
-		}
-		if found {
-			headers = append(headers, dependency)
-		}
+	graph, headers, err := manager.discoverLibraries(clangAnalysis{}, dependencies, nil)
+	if err != nil {
+		return nil, nil, err
 	}
-	artifacts, err := manager.prepareHeaders(headers)
+	artifacts, err := manager.prepareGraph(graph)
 	return artifacts, headers, err
 }
 
 func (manager *libraryManager) prepareHeaders(headers []string) ([]libraryArtifact, error) {
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-
-	artifacts := make([]libraryArtifact, 0, len(headers))
-	seen := make(map[string]struct{})
-	for _, header := range headers {
-		canonical, err := realAbsolutePath(header, manager.workingDirectory)
-		if err != nil {
-			return nil, fmt.Errorf("resolve library recipe header %s: %w", header, err)
-		}
-		if artifact, ok := manager.results[canonical]; ok {
-			if _, duplicate := seen[artifact.key]; !duplicate {
-				seen[artifact.key] = struct{}{}
-				artifacts = append(artifacts, artifact)
-			}
-			continue
-		}
-		contents, err := os.ReadFile(canonical)
-		if err != nil {
-			return nil, fmt.Errorf("read library recipe %s: %w", canonical, err)
-		}
-		recipe, found, err := parseLibraryRecipe(contents)
-		if err != nil {
-			return nil, fmt.Errorf("parse library recipe %s: %w", canonical, err)
-		}
-		if !found {
-			return nil, fmt.Errorf("library recipe marker is no longer present in %s", canonical)
-		}
-		artifact, err := manager.prepareRecipe(canonical, contents, recipe)
-		if err != nil {
-			return nil, err
-		}
-		manager.results[canonical] = artifact
-		if _, duplicate := seen[artifact.key]; !duplicate {
-			seen[artifact.key] = struct{}{}
-			artifacts = append(artifacts, artifact)
-		}
+	graph, _, err := manager.discoverLibraries(clangAnalysis{}, headers, nil)
+	if err != nil {
+		return nil, err
 	}
-	return artifacts, nil
+	return manager.prepareGraph(graph)
 }
 
 func (manager *libraryManager) prepareRecipe(
 	header string,
 	headerContents []byte,
 	recipe libraryRecipe,
+	dependencies ...libraryArtifact,
 ) (libraryArtifact, error) {
 	repository, err := libraryRecipeRepository(recipe.Source)
 	if err != nil {
@@ -183,7 +144,7 @@ func (manager *libraryManager) prepareRecipe(
 	}
 	sourceDirectory := filepath.Join(sourceRoot, filepath.FromSlash(recipe.SourceDirectory))
 	if manager.build {
-		return manager.buildRecipe(header, headerContents, recipe, sourceRoot, sourceDirectory)
+		return manager.buildRecipe(header, headerContents, recipe, sourceRoot, sourceDirectory, dependencies...)
 	}
 
 	cflags := make([]string, 0, len(recipe.SourceIncludeDirectories))
@@ -195,10 +156,22 @@ func (manager *libraryManager) prepareRecipe(
 		cflags = append(cflags, "-I"+path)
 	}
 	return libraryArtifact{
-		key:    header,
-		header: header,
-		cflags: cflags,
+		key:             header,
+		header:          header,
+		cflags:          cflags,
+		sourceDirectory: sourceDirectory,
 	}, nil
+}
+
+func libraryOwnsHeader(header string, artifacts []libraryArtifact) bool {
+	for _, artifact := range artifacts {
+		for _, root := range []string{artifact.sourceDirectory, artifact.prefix} {
+			if root != "" && pathWithin(root, header) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (manager *libraryManager) buildRecipe(
@@ -207,6 +180,7 @@ func (manager *libraryManager) buildRecipe(
 	recipe libraryRecipe,
 	sourceRoot string,
 	sourceDirectory string,
+	dependencies ...libraryArtifact,
 ) (libraryArtifact, error) {
 	if manager.cache == nil {
 		return libraryArtifact{}, errors.New("library build requires an artifact cache")
@@ -237,6 +211,9 @@ func (manager *libraryManager) buildRecipe(
 		"compiler-path:" + compilerFingerprint.Path,
 		"compiler-digest:" + compilerFingerprint.Digest,
 	}
+	for _, dependency := range dependencies {
+		arguments = append(arguments, "dependency:"+dependency.key)
+	}
 	arguments = append(arguments, sourceEntries...)
 	arguments = append(arguments, "source-directory:"+recipe.SourceDirectory)
 	for _, argument := range recipe.ConfigureArguments {
@@ -249,7 +226,7 @@ func (manager *libraryManager) buildRecipe(
 		arguments = append(arguments, "archive:"+library)
 	}
 	input, err := manager.cache.actionFingerprintWithWorkingDirectory(
-		"library-cmake-v2",
+		"library-cmake-v3",
 		cmake,
 		arguments,
 		inputs,
@@ -337,6 +314,7 @@ func (manager *libraryManager) buildRecipe(
 		"Configuring "+recipe.Source,
 		configure,
 		sourceDirectory,
+		dependencies...,
 	); err != nil {
 		return libraryArtifact{}, err
 	}
@@ -345,6 +323,7 @@ func (manager *libraryManager) buildRecipe(
 		"Building "+recipe.Source,
 		[]string{"--build", buildDirectory, "--parallel", fmt.Sprintf("%d", manager.jobs)},
 		sourceDirectory,
+		dependencies...,
 	); err != nil {
 		return libraryArtifact{}, err
 	}
@@ -353,6 +332,7 @@ func (manager *libraryManager) buildRecipe(
 		"Installing "+recipe.Source,
 		[]string{"--install", buildDirectory},
 		sourceDirectory,
+		dependencies...,
 	); err != nil {
 		return libraryArtifact{}, err
 	}
@@ -381,6 +361,7 @@ func (manager *libraryManager) runCMake(
 	step string,
 	arguments []string,
 	workingDirectory string,
+	dependencies ...libraryArtifact,
 ) error {
 	if manager.progress != nil {
 		manager.progress.updateStep(step)
@@ -389,6 +370,7 @@ func (manager *libraryManager) runCMake(
 	command.Dir = workingDirectory
 	command.Env = environmentWithoutVariable(os.Environ(), "CXXFLAGS")
 	command.Env = append(command.Env, "CXXFLAGS=")
+	command.Env = libraryBuildEnvironment(command.Env, dependencies)
 	var diagnostics bytes.Buffer
 	command.Stdout = &diagnostics
 	command.Stderr = &diagnostics
@@ -404,49 +386,7 @@ func (manager *libraryManager) runCMake(
 }
 
 func parseLibraryRecipe(contents []byte) (libraryRecipe, bool, error) {
-	text := string(contents)
-	position := 0
-	if strings.HasPrefix(text, "\ufeff") {
-		position += len("\ufeff")
-	}
-	found := false
-	var document string
-	for {
-		for position < len(text) && strings.ContainsRune(" \t\r\n", rune(text[position])) {
-			position++
-		}
-		if strings.HasPrefix(text[position:], "//") {
-			if newline := strings.IndexByte(text[position:], '\n'); newline >= 0 {
-				position += newline + 1
-				continue
-			}
-			break
-		}
-		if !strings.HasPrefix(text[position:], "/*") {
-			break
-		}
-		end := strings.Index(text[position+2:], "*/")
-		if end < 0 {
-			return libraryRecipe{}, false, errors.New("unterminated leading block comment")
-		}
-		body := text[position+2 : position+2+end]
-		trimmed := strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n"))
-		if trimmed == libraryRecipeMarker || strings.HasPrefix(trimmed, libraryRecipeMarker+"\n") {
-			if found {
-				return libraryRecipe{}, false, errors.New("multiple hard.recipe.v1 blocks")
-			}
-			found = true
-			document = strings.TrimPrefix(trimmed, libraryRecipeMarker)
-			document = strings.TrimPrefix(document, "\n")
-		}
-		position += 2 + end + 2
-	}
-	if !found {
-		return libraryRecipe{}, false, nil
-	}
-	if strings.TrimSpace(document) == "" {
-		return libraryRecipe{}, false, errors.New("empty hard.recipe.v1 document")
-	}
+	document := string(contents)
 	if err := validateLibraryYAML([]byte(document)); err != nil {
 		return libraryRecipe{}, false, err
 	}
@@ -517,6 +457,14 @@ func validateLibraryYAMLNode(node *yaml.Node) error {
 }
 
 func validateLibraryRecipe(recipe libraryRecipe) error {
+	if recipe.Version != 1 {
+		return fmt.Errorf("unsupported recipe version %d; expected 1", recipe.Version)
+	}
+	for _, dependency := range recipe.Dependencies {
+		if strings.TrimSpace(dependency) == "" || !strings.HasSuffix(dependency, ".hard") || strings.ContainsAny(dependency, "\x00\r\n") {
+			return fmt.Errorf("invalid dependency %q; expected a .hard path", dependency)
+		}
+	}
 	if _, err := libraryRecipeRepository(recipe.Source); err != nil {
 		return err
 	}
@@ -663,7 +611,7 @@ func libraryInstalledArtifact(
 	installDirectory string,
 	key string,
 ) (libraryArtifact, error) {
-	artifact := libraryArtifact{key: key, header: header}
+	artifact := libraryArtifact{key: key, header: header, prefix: installDirectory}
 	for _, directory := range recipe.IncludeDirectories {
 		path := filepath.Join(installDirectory, filepath.FromSlash(directory))
 		if err := requireLibraryDirectory(path, "installed include"); err != nil {
@@ -743,12 +691,35 @@ func libraryInstallManifestFiles(root string) ([]cacheFile, error) {
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("library install contains a non-regular file: %s", path)
-		}
-		digest, err := digestInputFile(path)
-		if err != nil {
-			return err
+		var digest string
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if filepath.IsAbs(target) {
+				return fmt.Errorf("library install contains an absolute symlink: %s", path)
+			}
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+			if !pathWithin(root, resolved) {
+				return fmt.Errorf("library install symlink escapes prefix: %s", path)
+			}
+			targetDigest, err := digestInputFile(resolved)
+			if err != nil {
+				return err
+			}
+			digest = "symlink:" + filepath.ToSlash(target) + ":" + targetDigest
+		} else {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("library install contains a non-regular file: %s", path)
+			}
+			digest, err = digestInputFile(path)
+			if err != nil {
+				return err
+			}
 		}
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
@@ -823,19 +794,78 @@ func libraryCFlags(base []string, artifacts []libraryArtifact) []string {
 }
 
 func libraryArchivesByIndexes(artifactsBySource [][]libraryArtifact, indexes []int) []string {
-	archives := make([]string, 0)
-	seen := make(map[string]struct{})
+	// A stable topological ordering across the entire binary closure puts each
+	// archive before all archives that satisfy its references, including diamonds.
+	var ordered []libraryArtifact
+	byKey := make(map[string]libraryArtifact)
+	incoming := make(map[string]int)
 	for _, index := range indexes {
 		if index < 0 || index >= len(artifactsBySource) {
 			continue
 		}
 		for _, artifact := range artifactsBySource[index] {
-			if _, ok := seen[artifact.key]; ok {
+			if _, ok := byKey[artifact.key]; !ok {
+				byKey[artifact.key] = artifact
+				ordered = append(ordered, artifact)
+			}
+		}
+	}
+	for _, artifact := range ordered {
+		for _, key := range artifact.dependencies {
+			if _, ok := byKey[key]; ok {
+				incoming[key]++
+			}
+		}
+	}
+	var archives []string
+	emitted := make(map[string]bool)
+	for len(emitted) < len(ordered) {
+		progressed := false
+		for _, artifact := range ordered {
+			if emitted[artifact.key] || incoming[artifact.key] != 0 {
 				continue
 			}
-			seen[artifact.key] = struct{}{}
+			emitted[artifact.key] = true
 			archives = append(archives, artifact.archives...)
+			for _, key := range artifact.dependencies {
+				incoming[key]--
+			}
+			progressed = true
+		}
+		// Graphs are cycle-checked before building. Keep this helper total for
+		// synthetic metadata supplied by internal callers.
+		if !progressed {
+			break
 		}
 	}
 	return archives
+}
+
+func libraryBuildEnvironment(environment []string, dependencies []libraryArtifact) []string {
+	var prefixes, pkgconfig []string
+	seen := make(map[string]bool)
+	for _, artifact := range dependencies {
+		if artifact.prefix == "" || seen[artifact.prefix] {
+			continue
+		}
+		seen[artifact.prefix] = true
+		prefixes = append(prefixes, artifact.prefix)
+		pkgconfig = append(pkgconfig, filepath.Join(artifact.prefix, "lib", "pkgconfig"), filepath.Join(artifact.prefix, "share", "pkgconfig"))
+	}
+	for _, item := range []struct {
+		name   string
+		values []string
+	}{{"CMAKE_PREFIX_PATH", prefixes}, {"PKG_CONFIG_PATH", pkgconfig}} {
+		if len(item.values) == 0 {
+			continue
+		}
+		for _, value := range environment {
+			if strings.HasPrefix(value, item.name+"=") && len(value) > len(item.name)+1 {
+				item.values = append(item.values, strings.TrimPrefix(value, item.name+"="))
+			}
+		}
+		environment = environmentWithoutVariable(environment, item.name)
+		environment = append(environment, item.name+"="+strings.Join(item.values, string(os.PathListSeparator)))
+	}
+	return environment
 }

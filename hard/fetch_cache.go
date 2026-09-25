@@ -75,7 +75,7 @@ func inspectFetchSourceWithCache(
 				result.err = err
 				return result
 			}
-			result.libraries, err = libraryManager.prepareHeaders(record.LibraryHeaders)
+			result.libraries, err = libraryManager.prepareGraph(record.LibraryGraph)
 			if err != nil {
 				result.err = err
 				return result
@@ -101,10 +101,11 @@ func inspectFetchSourceWithCache(
 		resolver, libraryManager, cflags, job.source, workingDirectory,
 	)
 	result.dependencies = dependencies.managed
-	result.cacheDependencies = dependencies.managed
+	result.cacheDependencies = append(append([]string(nil), dependencies.managed...), libraryGraphFiles(analysis.libraryGraph)...)
 	result.cflags = effectiveFlags
 	result.libraries = libraries
 	result.libraryHeaders = libraryHeaders
+	result.libraryGraph = analysis.libraryGraph
 	result.diagnostics = append([]byte(nil), diagnostics...)
 	result.fatal = fatal
 	result.err = err
@@ -116,6 +117,7 @@ func inspectFetchSourceWithCache(
 		Dependencies:        result.cacheDependencies,
 		ManagedDependencies: result.dependencies,
 		LibraryHeaders:      result.libraryHeaders,
+		LibraryGraph:        result.libraryGraph,
 	}
 	for _, include := range analysis.includes {
 		if !include.system {

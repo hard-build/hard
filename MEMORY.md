@@ -123,8 +123,8 @@ Implemented:
 - parallel formatting with internal unified diffs;
 - unified libclang 18 dependency, declaration, and entry-point analysis;
 - recursive GitHub snapshot fetching and persistent caching;
-- strict embedded `hard.recipe.v1` YAML recipes for content-addressed CMake
-  builds of reachable static third-party libraries;
+- standalone version-1 `.hard` YAML recipes, wrapper/include and descriptor
+  dependencies, and per-preprocessing-variant CMake static packages;
 - the well-known `hard/` library and `recipe/` recipe repository mappings;
 - one source-context forward-declaration file per compiled translation unit;
 - object compilation, dependency-object resolution, ordinary executable
@@ -3208,6 +3208,9 @@ complete required Go check set also passed. No image was pushed or published.
 
 ## Compiled external library recipe decision
 
+Historical format; superseded by the standalone recipe graph decision below
+on 2026-09-25. The later shared-cache section still describes generation storage.
+
 On 2026-08-23, compiled third-party library integration was defined around an
 active included recipe header. A recipe is a leading block comment marked
 `hard.recipe.v1`, followed by strict YAML, and may coexist with arbitrary C++
@@ -4295,3 +4298,118 @@ When resuming work:
    integration checks;
 9. reread the complete diff skeptically;
 10. report result, exact verification evidence, and remaining work.
+
+
+## Standalone recipe graph and preprocessing variants (2026-09-25)
+
+User-approved migration: YAML moves to `LIB.hard` with `version: 1`, while
+`LIB.hard.h/.hh/.hpp/.h++` contains C++ only. Case-insensitive header extension
+recognition reuses `companionFile` from implementation-source lookup. No embedded
+format compatibility remains. Both active includes of recipe wrappers and
+`dependencies: [other.hard]` in YAML contribute to a dependency DAG. Descriptor
+references use quoted-include directories, GitHub and well-known resolution,
+including existing project/corporate overrides, pins and checksum enforcement.
+Direct `.hard` references do not inspect adjacent wrappers. Cycles fail.
+
+The user explicitly chose the wrapper's own expanded code plus recipe graph
+for variant identity, excluding recursively inlined public-header contents.
+`library_preprocess.go` runs the configured compiler with `-E -dI`, tracks
+individual wrapper entries, and retains guard-skipped dependency edges. Distinct
+macro contexts, even repeated includes in one source, can select separate
+variants; dependencies' keys propagate into parent package identities. Empty
+wrappers can share a package with the equivalent standalone descriptor.
+Memoization separates descriptor origins so inherited requirements are checked.
+
+Libclang's keep-going analysis first finds wrappers despite missing public
+headers. Temporary empty non-recipe headers allow bootstrap preprocessing;
+real installed headers replace them on subsequent analysis passes. If missing
+vendor macros prevent preprocessing, the keep-going graph supplies provisional
+packages first; final preprocessing with real headers must succeed. Package
+include changes are bounded to 32 passes to diagnose unstable variants. Fetch
+continues to use only libclang and source include directories, without starting
+the compiler or CMake or creating packages. Parse records now store the complete
+descriptor/context graph and hash transitive descriptors; cache version is 5.
+Cached graph edges revalidate inherited requirements.
+
+Only include directories and static archives reach consumers. All transitive
+install prefixes are prepended to the vendor process's CMAKE_PREFIX_PATH;
+lib/pkgconfig and share/pkgconfig extend PKG_CONFIG_PATH. Existing environment
+and system search remain enabled. CXXFLAGS remains cleared, HARD_CC remains
+authoritative for CMAKE_CXX_COMPILER, and HARD_CFLAGS/HARD_LDFLAGS are still not
+forwarded to vendor builds. No Meson, Autotools or archive-free tool packages
+are introduced in this pilot. Packages build leaves first; whole-binary archive
+ordering is dependents before dependencies, deduplicated by package key.
+
+The package fingerprint kind is library-cmake-v3. The installed manifest version
+is 3 and validates internal relative symlinks and their regular-file target
+contents (needed by libpng install aliases); escaping links remain invalid.
+Shared generation storage and no-cache preservation of existing consumers are
+unchanged. Anonymous C typedef tags are excluded from generated forward headers:
+libclang can expose the typedef alias as a struct name, which conflicts with the
+original anonymous definition. This was exposed by libpng's png_image API.
+
+The companion recipe repository migrates all recipes and adds libpng -> zlib.
+Libpng v1.6.58 is pinned at 3061454d980de7d53608f594194cfac722721d2a. The
+initial prebuilt-configuration workaround was removed by the follow-up below.
+SDL3 and the SDL3_image/ttf/mixer platform dependency closure remain a separate,
+later task: the user requires those Linux dependencies to be built by recipes,
+not assumed preinstalled. The existing SDL3 draft is retained and migrated.
+
+Fetch source closure excludes automatic implementation discovery below active
+recipe source directories (and installed package prefixes in build closure).
+It still analyzes the included public headers and explicit recipe dependencies.
+This avoids treating png.c or tinyxml2.cpp as standalone project translation
+units; vendor implementation files may depend on CMake-generated configuration.
+Ordinary headers retain same-stem discovery, including newly created sources on
+cache hits. Explicitly selected vendor source files remain explicit inputs.
+
+Verification: complete `make check` passed in both the temporary checkout and
+/home/taitov/projects/hard-build/hard after applying the reviewed files, including
+ordinary and race tests, vet, out-of-tree build, module and target validation.
+The updated backend passed all six recipe binaries (eight GoogleTests) on the
+host and a repeat reused all package/parse/compile/link/test caches. Pinned
+`fetch --locked .` also passed with HARD_CC=compiler-must-not-run. The libpng
+CMake cache records ZLIB_INCLUDE_DIR and ZLIB_LIBRARY_RELEASE under hard's zlib
+package generation, and the PNG RGBA memory round-trip test passed. Include
+variant tracing was checked with c++ and clang++-18, also through a symlinked
+source view. No container or cross-target execution was performed; no backend
+installation, commit or publication was made.
+
+
+### Fetch and generated vendor headers (2026-09-25 follow-up)
+
+The user rejected the libpng wrapper's conditional include of
+scripts/pnglibconf.h.prebuilt as a workaround for fetch, and approved fixing
+hard instead. The wrapper now only includes png.h; PNG_LIBCONF_HEADER is no
+longer forced. The library's CMake build prepares and installs its configuration.
+
+`library_fetch.go` classifies unresolved includes by the canonical including
+file after source include paths and the recipe graph stabilize. Missing ordinary
+includes inside active recipe source directories are deferred during fetch.
+Project headers, includes from recipe wrappers (even inside vendor sources),
+recipe wrappers/descriptors and GitHub/well-known references remain strict; equal include spellings in vendor and project files are handled
+separately before deduplication. Build/run/test keep their existing checks.
+No configuration tool, compiler, generated placeholder file or package build
+is added to fetch. Existing fetch cache stores the visible graph and repeats
+normal pin/checksum validation on hits.
+
+This rule does not distinguish a generated vendor header from a vendor typo;
+verification belongs to the subsequent package/application build. Dependencies
+conditional on unavailable generated macros cannot be fully discovered before
+configuration. Declare dependencies that fetch must obtain explicitly in YAML;
+final build analysis determines the actual preprocessed wrapper variant.
+
+Verification of the follow-up: complete make check passed in the actual hard
+workspace (ordinary and race tests, vet, build, modules, shell/target checks).
+Regression tests cover missing generated vendor headers, strict project and
+wrapper includes, GitHub/well-known references, symlinked source views, fetch
+cache/no-cache, discovery after incomplete public declarations, a subsequent
+CMake build, and rejection of a missing installed configuration header.
+A fresh HARD_ROOT with only copied snapshots passed libpng fetch with a
+nonexistent HARD_CC and created no build/package directories. Cached fetch and
+fetch of all six recipes passed. The real libpng PNG memory-round-trip test
+passed with PNG_LIBCONF_HEADER empty; CMake prepared pnglibconf.h in its build
+directory and used hard's zlib package. The source snapshot remained unchanged.
+The final backend also passed fetch --locked --no-cache for all recipes with a
+nonexistent compiler. Host-only verification; no installed runtime update or
+commit was made.

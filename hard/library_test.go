@@ -10,8 +10,7 @@ import (
 )
 
 func TestParseLibraryRecipeYAML(t *testing.T) {
-	contents := []byte(`/* clang-format off */
-/* hard.recipe.v1
+	contents := []byte(`version: 1
 source: "github.com/owner/library"
 build_system: "cmake"
 source_directory: "."
@@ -23,10 +22,6 @@ include_directories:
   - "include"
 static_libraries:
   - "lib/liblibrary.a"
-*/
-/* clang-format on */
-#pragma once
-#include <library.h>
 `)
 
 	got, found, err := parseLibraryRecipe(contents)
@@ -37,6 +32,7 @@ static_libraries:
 		t.Fatal("parseLibraryRecipe() found = false")
 	}
 	want := libraryRecipe{
+		Version:                  1,
 		Source:                   "github.com/owner/library",
 		BuildSystem:              "cmake",
 		SourceDirectory:          ".",
@@ -134,7 +130,7 @@ func TestParseLibraryRecipeRejectsNonStrictYAML(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			contents := []byte("/* hard.recipe.v1\n" + tt.document + "*/\n#pragma once\n")
+			contents := []byte(tt.document)
 			_, _, err := parseLibraryRecipe(contents)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("parseLibraryRecipe() error = %v, want %q", err, tt.want)
@@ -143,34 +139,11 @@ func TestParseLibraryRecipeRejectsNonStrictYAML(t *testing.T) {
 	}
 }
 
-func TestParseLibraryRecipeOnlyUsesLeadingComments(t *testing.T) {
-	contents := []byte("#pragma once\n/* hard.recipe.v1\n" + validLibraryRecipeYAML() + "*/\n")
-	_, found, err := parseLibraryRecipe(contents)
-	if err != nil {
-		t.Fatalf("parseLibraryRecipe() error = %v", err)
-	}
-	if found {
-		t.Fatal("parseLibraryRecipe() found recipe after a C++ token")
-	}
-
-	contents = []byte(
-		"/* hard.recipe.v1\n" + validLibraryRecipeYAML() + "*/\n" +
-			"/* hard.recipe.v1\n" + validLibraryRecipeYAML() + "*/\n",
-	)
-	_, _, err = parseLibraryRecipe(contents)
-	if err == nil || !strings.Contains(err.Error(), "multiple hard.recipe.v1 blocks") {
-		t.Fatalf("parseLibraryRecipe() duplicate error = %v", err)
-	}
-}
-
-func TestParseLibraryRecipeIgnoresOldMarker(t *testing.T) {
-	contents := []byte("/* hard.library.v1\n" + validLibraryRecipeYAML() + "*/\n#pragma once\n")
-	_, found, err := parseLibraryRecipe(contents)
-	if err != nil {
-		t.Fatalf("parseLibraryRecipe() error = %v", err)
-	}
-	if found {
-		t.Fatal("parseLibraryRecipe() recognized the old hard.library.v1 marker")
+func TestParseLibraryRecipeRejectsEmbeddedFormat(t *testing.T) {
+	for _, marker := range []string{"hard.recipe.v1", "hard.library.v1"} {
+		if _, _, err := parseLibraryRecipe([]byte("/* " + marker + "\n" + validLibraryRecipeYAML() + "*/\n#pragma once\n")); err == nil {
+			t.Fatal("accepted embedded recipe", marker)
+		}
 	}
 }
 
@@ -181,11 +154,12 @@ func TestLibraryManagerBuildsAndReusesCMakePackage(t *testing.T) {
 	writeBuildFile(t, repositoryRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.10)\n")
 	writeBuildFile(t, repositoryRoot, "library.h", "#pragma once\n")
 	header := filepath.Join(workingDirectory, "library.hard.h")
+	writeBuildFile(t, workingDirectory, "library.hard.h", "#pragma once\n")
 	writeBuildFile(
 		t,
 		workingDirectory,
-		"library.hard.h",
-		"/* hard.recipe.v1\n"+validLibraryRecipeYAML()+"*/\n#pragma once\n",
+		"library.hard",
+		validLibraryRecipeYAML(),
 	)
 	tools := t.TempDir()
 	compiler := filepath.Join(tools, "custom-c++")
@@ -304,11 +278,12 @@ func TestLibraryManagerFetchUsesSourceIncludesWithoutEnvironment(t *testing.T) {
 	repositoryRoot := filepath.Join(root, "source", "github.com", "owner", "library")
 	writeBuildFile(t, repositoryRoot, "library.h", "#pragma once\n")
 	header := filepath.Join(workingDirectory, "library.hard.h")
+	writeBuildFile(t, workingDirectory, "library.hard.h", "#pragma once\n")
 	writeBuildFile(
 		t,
 		workingDirectory,
-		"library.hard.h",
-		"/* hard.recipe.v1\n"+validLibraryRecipeYAML()+"*/\n#pragma once\n",
+		"library.hard",
+		validLibraryRecipeYAML(),
 	)
 	manager := newLibraryManager(
 		root,
@@ -343,11 +318,12 @@ func TestInspectBuildSourceTreatsUnavailableCachedLibraryAsMiss(t *testing.T) {
 	writeBuildFile(t, repositoryRoot, "library.h", "#pragma once\n")
 	writeBuildFile(t, project, "source.cpp", "#include \"library.hard.h\"\n")
 	header := filepath.Join(project, "library.hard.h")
+	writeBuildFile(t, project, "library.hard.h", "#pragma once\n")
 	writeBuildFile(
 		t,
 		project,
-		"library.hard.h",
-		"/* hard.recipe.v1\n"+validLibraryRecipeYAML()+"*/\n#pragma once\n",
+		"library.hard",
+		validLibraryRecipeYAML(),
 	)
 
 	firstCache, err := newArtifactCache(true)
@@ -436,7 +412,7 @@ func TestInspectBuildSourceTreatsUnavailableCachedLibraryAsMiss(t *testing.T) {
 }
 
 func validLibraryRecipeYAML() string {
-	return "source: github.com/owner/library\n" +
+	return "version: 1\nsource: github.com/owner/library\n" +
 		"build_system: cmake\n" +
 		"source_directory: .\n" +
 		"configure_arguments: []\n" +

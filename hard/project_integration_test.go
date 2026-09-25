@@ -17,16 +17,13 @@ func TestProjectRecipeAndVendorAreBothPinned(t *testing.T) {
 	if _, err := exec.LookPath("cmake"); err != nil {
 		t.Skip("cmake not installed")
 	}
-	recipe := `/* hard.recipe.v1
+	recipe := `version: 1
 source: github.com/demo/vendor
 build_system: cmake
 source_directory: .
 source_include_directories: [.]
 include_directories: [include]
 static_libraries: [lib/libvendor.a]
-*/
-#pragma once
-#include <vendor.h>
 `
 	vendorFiles := map[string]string{
 		"CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(vendor LANGUAGES CXX)\nadd_library(vendor STATIC vendor.cpp)\ninstall(TARGETS vendor ARCHIVE DESTINATION lib)\ninstall(FILES vendor.h DESTINATION include)\n",
@@ -37,7 +34,8 @@ static_libraries: [lib/libvendor.a]
 	vendorFiles["vendor.cpp"] = "int vendor_value() { return 19; }\n"
 	override, overrideArchive := inheritedTestSnapshot(t, vendorPin.Source, "override", nextCommit, vendorFiles)
 	_, recipeArchive := inheritedTestSnapshot(t, "github.com/hard-build/recipe", "main", firstCommit, map[string]string{
-		"vendor.hard.h": recipe,
+		"vendor.hard.h": "#pragma once\n#include <vendor.h>\n",
+		"vendor.hard":   recipe,
 		"hard.yaml":     inheritedTestYAML(t, map[string]repositoryPin{vendorPin.Source: vendorPin}),
 	})
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -79,8 +77,8 @@ static_libraries: [lib/libvendor.a]
 		if err != nil {
 			t.Fatalf("recipe fetch: %v\n%s\n%s", err, out, diagnostics)
 		}
-		if !strings.Contains(out, "Parsing github.com/demo/vendor/vendor.cpp") || strings.Contains(out, "snapshot/") {
-			t.Errorf("recipe fetch lost canonical vendor label:\n%s", out)
+		if strings.Contains(out, "Parsing github.com/demo/vendor/vendor.cpp") || strings.Contains(out, "snapshot/") {
+			t.Errorf("recipe fetch exposed vendor implementation or snapshot paths:\n%s", out)
 		}
 	}
 	file, err := readProjectFile(filepath.Join(project, projectFilename))

@@ -461,6 +461,18 @@ CXChildVisitResult visit_cursor(CXCursor cursor, CXCursor, CXClientData client_d
 	if (declaration)
 	{
 		if (clang_Location_isInSystemHeader(clang_getCursorLocation(cursor))) return CXChildVisit_Continue;
+		// libclang spells anonymous typedef tags using the alias. Declaring that
+		// spelling as a tag would conflict with the original C typedef. Such
+		// cursors point at the tag keyword, even when isAnonymous returns false.
+		if (clang_Cursor_isAnonymous(cursor)) return CXChildVisit_Recurse;
+		CXToken* name_token = clang_getToken(analysis->unit, clang_getCursorLocation(cursor));
+		if (name_token)
+		{
+			std::string spelling = to_string(clang_getTokenSpelling(analysis->unit, *name_token));
+			clang_disposeTokens(analysis->unit, name_token, 1);
+			if (spelling == "struct" || spelling == "class" || spelling == "enum")
+				return CXChildVisit_Recurse;
+		}
 		hard_declaration value;
 		if (!is_direct_declaration(cursor) ||
 		    !declaration_namespaces(cursor, value.namespaces))

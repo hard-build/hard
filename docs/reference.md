@@ -132,7 +132,7 @@ Depending on the command, using `hard` also requires:
 
 - a C/C++ compiler supporting the configured flags (`c++` by default) for
   `build`, `run`, and `test`;
-- CMake when an active source include contains a `hard.recipe.v1` recipe;
+- CMake when an active source include reaches a `*.hard.h` recipe wrapper;
 - `clang-format` for source formatting;
 - `pkg-config` and GoogleTest's `gtest_main` package for test compilation and
   linking;
@@ -624,14 +624,14 @@ and does not cause a network request.
 
 #### Compiled library recipes
 
-An active included header may describe one compiled static library in a
-leading block comment. A `.hard.h` suffix is recommended so the recipe header
-does not collide with the library public header, but the suffix is a convention
-rather than a parser requirement:
+An active include of `name.hard.h`, `.hh`, `.hpp`, or `.h++` activates the
+neighboring `name.hard` descriptor. Header extensions are case-insensitive.
+The lookup shares the same canonical sibling-file mechanism used to find an
+implementation source for a header; a missing descriptor is an error.
+`name.hard` is a standalone, strict YAML document:
 
-```cpp
-/* clang-format off */
-/* hard.recipe.v1
+```yaml
+version: 1
 source: "github.com/leethomason/tinyxml2"
 build_system: "cmake"
 source_directory: "."
@@ -648,19 +648,45 @@ include_directories:
   - "include"
 static_libraries:
   - "lib/libtinyxml2.a"
-*/
-/* clang-format on */
+```
+
+Its C++ wrapper contains the public include and any ordinary C++ code:
+
+```cpp
 #pragma once
 
 #include <tinyxml2.h>
 ```
 
-The marker must occur among the file's leading whitespace and comments before
-the first C++ token. The header may contain ordinary includes and arbitrary C++
-code after the recipe. Exactly one marker block is allowed. YAML decoding is
-strict. The previous `hard.library.v1` spelling is not recognized. Unknown and
-duplicate fields, multiple documents, aliases, anchors, merge keys, custom
-tags, absolute paths, and paths escaping through `..` are rejected.
+The migration is immediate: embedded `hard.recipe.v1` and `hard.library.v1`
+comments are not parsed. Unknown and duplicate fields, multiple documents,
+aliases, anchors, merge keys, custom tags, unsupported versions, and invalid
+source/install paths are rejected.
+
+Dependencies may be declared in the descriptor:
+
+```yaml
+dependencies:
+  - "zlib.hard"
+  - "recipe/another.hard"
+  - "github.com/owner/repository/library.hard"
+```
+
+Or a wrapper may actively include another recipe wrapper:
+
+```cpp
+#include "zlib.hard.h"
+#include <png.h>
+```
+
+Both forms contribute to the same graph, including wrapper includes reached
+through ordinary headers. Inactive branches are ignored. Descriptor references
+use quoted-include lookup: the referring descriptor's directory, then `-iquote`,
+`-I`, `-isystem`, and `-idirafter` directories. Relative paths, including `..`,
+and absolute local references work like includes. GitHub and well-known paths
+use the existing repository resolver and the same pin, override, checksum and
+inherited-requirement rules. Each reference must end in `.hard`. It loads only
+the descriptor, without preprocessing an adjacent wrapper. Cycles are errors.
 
 Version 1 supports a GitHub source written exactly as
 `github.com/<owner>/<repository>`, the `cmake` build system, and installed
@@ -681,10 +707,21 @@ runs with the declared vendor source directory as its working directory, so
 relative configure-argument values and the package fingerprint do not depend
 on the directory from which `hard` was invoked.
 
+Dependencies build before their consumers. Their transitive install prefixes
+are prepended to the CMake process's `CMAKE_PREFIX_PATH`, and `lib/pkgconfig`
+and `share/pkgconfig` below each prefix are prepended to `PKG_CONFIG_PATH`.
+Existing environment values are preserved. System search paths and other
+ambient CMake settings remain available: this is not a hermetic build policy.
+Recipe-specific discovery still follows the upstream CMake project. No
+additional definitions, compiler flags or linker flags are exported to the
+application; consumer exports are only include directories and static archives.
+
 Installed include directories are appended only to translation units whose
 active libclang include graph reaches the recipe header. Installed archives
 are appended only when linking a binary whose reachable source closure uses
-that recipe. Includes hidden by an inactive preprocessor branch therefore do
+that recipe or one of its dependencies. Across the whole binary closure,
+archives are deduplicated by package variant and ordered with dependents before
+their dependencies. Includes hidden by an inactive preprocessor branch therefore do
 not cause a download, package build, compiler flag, or link input.
 
 Packages are stored at:
@@ -698,14 +735,21 @@ HARD_ROOT/project/HARD_ENV/
         └── install/
 ```
 
-The fingerprint includes the `hard` executable, complete recipe header bytes,
-full downloaded source tree, CMake executable, resolved `HARD_CC` executable,
-recipe paths, configure arguments, and stable vendor source working directory.
+The fingerprint includes the `hard` executable, YAML descriptor contents,
+the wrapper's own preprocessed code, dependency package variants, full downloaded
+source tree, CMake executable, resolved `HARD_CC` executable, recipe paths,
+configure arguments, and stable vendor source working directory. Included
+public-header contents are not part of the wrapper's own-code component.
+Different expanded code or dependency variants select different packages;
+repeated unguarded includes retain separate contexts. Empty wrappers and direct
+descriptor references with the same dependency variants share a package.
 Neither the invocation working directory nor the recipe header's filename is
 part of this package key. Packages are shared between projects, including
 pinned projects with separate source views and projects with identical local
 recipes. `HARD_ENV` and differing package inputs keep builds isolated. A
-manifest verifies the complete installed file tree before reuse.
+manifest verifies the complete installed file tree before reuse. Relative
+installed symlinks to regular files inside the install prefix are supported;
+escaping links are rejected and changes to their targets invalidate the package.
 
 An interprocess lock serializes validation and building of each package.
 Successful builds atomically publish a manifest pointing to a new generation;
@@ -731,6 +775,18 @@ example:
 This maps to `github.com/hard-build/recipe/tinyxml2.hard.h`. The existing GitHub
 resolver first downloads the recipe repository, then discovers its active
 recipe and obtains TinyXML2.
+
+Discovery does not require installed public headers: libclang keeps processing
+active recipe includes after missing vendor includes. For `build`, `run`, and
+`test`, `HARD_CC -E -dI` supplies each wrapper's own expanded code and active
+include context. On the bootstrap pass, temporary empty headers stand in for
+unresolved ordinary includes. If missing vendor macros prevent preprocessing,
+the keep-going graph first supplies provisional packages. Analysis and
+preprocessing must succeed with real installed headers before compilation. A
+graph that does not stabilize within 32 package-include updates is an error. A valid analysis
+cache hit restores stored variants without another preprocessing subprocess.
+`fetch` uses only libclang and source-tree includes; it neither starts the
+compiler nor creates packages.
 
 Each root or automatically discovered translation unit produces one
 source-context forward file from the declarations visible in its final
@@ -788,19 +844,19 @@ A successful translation-unit analysis is persisted as a versioned
 `.hard-parse-cache.json` record under the owner's `parse/build/<context-key>`
 directory, preserving the source-relative path. The record
 stores its managed dependency list, complete active non-system dependency
-snapshot, active library recipe headers, detected entry point, and final
-generated source-forward text. Records include a checksum of that semantic
-result and the selected snapshot key. After the checksum is validated, a
-prospective hit restores the packages and package include flags named by those
-headers before its action fingerprint is validated against current inputs.
+snapshot, active recipe headers and descriptor/variant dependency graph,
+detected entry point, and final generated source-forward text. Records include
+a checksum of that semantic result and the selected snapshot key. After the checksum is validated, a
+prospective hit restores the packages and package include flags named by that
+graph before its action fingerprint is validated against current inputs.
 
 A parse-cache key includes the `hard` executable digest, libclang version, the
 effective compiler flags (configured, hard-managed, and active-package flags),
 configured entry-point names when relevant, and the content of the input plus
 every active non-system dependency known from the previous successful
-analysis, including non-system force-included headers. The invocation working
-directory participates only when a compiler argument can depend on it, such as
-a relative include, forced-include, toolchain, or response-file path, or an
+analysis, including non-system force-included headers and transitive `.hard`
+descriptors. The invocation working directory participates only when a compiler
+argument can depend on it, such as a relative include, forced-include, toolchain, or response-file path, or an
 opaque forwarded driver argument. The storage context key retains the
 invocation's include context but excludes selected snapshots; the record checks
 the snapshot selection before reuse. Different invocation directories do not
@@ -1123,9 +1179,9 @@ hard fetch [--lock | --locked | --update=<repository>@<ref>...]
 
 `fetch` downloads the external GitHub dependencies required by the selected C
 and C++ translation units without building them. This includes repositories
-named by active `hard.recipe.v1` recipe headers. Unlike `build`, its default
-recursive selection includes ordinary, `*.test.*`, and legacy `*_test.*`
-translation units. Explicit files and directories use the common path-selection
+named by active recipe wrappers and their transitive `.hard` dependencies.
+Unlike `build`, its default recursive selection includes ordinary, `*.test.*`,
+and legacy `*_test.*` translation units. Explicit files and directories use the common path-selection
 rules.
 
 Dependency analysis uses libclang 18 with skipped function bodies and the
@@ -1147,18 +1203,18 @@ runs once even on a cold cache.
 
 The key includes the hard executable digest, libclang version, ordered base
 analysis flags, and contents of the source and every previously known active
-non-system header, including recipe and force-included headers. Cwd-dependent
-flags also include the invocation directory. `HARD_ENV` separates immutable
-toolchains and system headers; record selection keys separate dependency
+non-system header and transitive `.hard` descriptors, including force-included
+headers. Cwd-dependent flags also include the invocation directory. `HARD_ENV`
+separates immutable toolchains and system headers; record selection keys separate dependency
 revisions and context keys separate include contexts. Missing, changed,
 malformed, or semantically inconsistent records cause fresh analysis. The same
 `__has_include` guard and depfile-style include-path topology limitations
 described for build analysis apply.
 
 A hit skips libclang, restores the dependency list and recipe source includes,
-and still discovers same-stem implementations. Stored include edges are replayed
-to validate inherited requirements, and recipe vendors are revalidated without
-building packages. Project/corporate configuration and snapshot checksums are
+and still discovers same-stem implementations. Stored include and recipe edges
+are replayed to validate inherited requirements, and recipe vendors are
+revalidated without building packages. Project/corporate configuration and snapshot checksums are
 still checked; cache hits cannot bypass `--locked` or inherited-pin conflicts.
 `--no-cache` forces fresh analysis and replaces successful records, but does not
 update recorded revisions or redownload valid snapshots. Failed analysis does
@@ -1168,7 +1224,27 @@ header or changing optional-header availability inside a dependency.
 When a recipe is active, `fetch` temporarily appends its
 `source_include_directories` below the downloaded repository and repeats
 dependency analysis. It does not start CMake or `HARD_CC`, install a package,
-write a manifest, or create build artifacts.
+write a manifest, or create build artifacts. Headers belonging to these packages
+do not trigger same-stem vendor implementation discovery: their C/C++ sources
+belong to the external build and may require generated configuration files.
+Ordinary project headers still discover neighboring implementations as before.
+
+Before the external build, public vendor headers may include configuration
+headers that do not exist yet. During `fetch`, unresolved ordinary includes
+originating inside an active recipe's source directory are deferred to that
+package's build. Recipe wrappers themselves remain strict, even within a vendor
+source directory. Ownership is checked on each including file, so an identical
+missing include in the project still fails. Missing recipe wrappers, `.hard`
+references, and GitHub/well-known includes remain errors, including inside a
+vendor source tree. The check also runs after cache invalidation and leaves
+`build`/`run`/`test` validation of installed headers unchanged. Wrappers do not
+need conditional prebuilt headers or special CMake settings for fetch.
+
+Fetch discovers branches visible with the currently available headers and
+macros. It cannot guarantee discovery of dependencies hidden behind macros
+from headers that only the vendor build generates. Dependencies that fetch
+must obtain before configuration should be explicit in YAML `dependencies`;
+the final build analysis determines the actual wrapper variant and includes.
 
 This command does not generate forward headers, compile objects, link or copy
 binaries, run tests, or create an environment build tree. An empty selection
@@ -1294,7 +1370,7 @@ step and
 compilation continues at `[2/M]`, whether dependencies were downloaded or
 already cached.
 
-Active `hard.recipe.v1` recipes use the same package build and cache rules as
+Active `.hard` recipes use the same package build and cache rules as
 ordinary builds. Each test translation unit receives only its own active
 package include directories, and each test binary links only the static
 archives reachable from that test source closure.

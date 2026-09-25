@@ -24,6 +24,7 @@ type buildResult struct {
 	cflags            []string
 	libraries         []libraryArtifact
 	libraryHeaders    []string
+	libraryGraph      []libraryNode
 	entrypoint        string
 	forward           string
 	diagnostics       []byte
@@ -442,6 +443,12 @@ func discoverBuildSourceClosureWithLibraries(
 				if !isBuildHeader(dependency) {
 					continue
 				}
+				// Package implementations belong to the external build. In fetch,
+				// these source headers can have neighboring .c/.cpp files which
+				// require generated configuration unavailable before CMake runs.
+				if libraryOwnsHeader(dependency, librariesBySource[index]) {
+					continue
+				}
 				source, err := implementationSourceForHeader(dependency, workingDirectory)
 				if err != nil {
 					return nil, nil, nil, nil, nil, nil, nil, err
@@ -657,7 +664,7 @@ func inspectBuildSourceWithCache(
 			candidateResult, resultError := parseResultFingerprint(candidate)
 			if ok && candidate.Version == artifactCacheVersion && candidate.Kind == "source-parse" &&
 				resultError == nil && candidate.Result == candidateResult {
-				result.libraries, err = libraryManager.prepareHeaders(candidate.LibraryHeaders)
+				result.libraries, err = libraryManager.prepareGraph(candidate.LibraryGraph)
 				if err != nil {
 					cacheCandidateReady = false
 					result.libraries = nil
@@ -666,6 +673,7 @@ func inspectBuildSourceWithCache(
 				} else {
 					result.cflags = libraryCFlags(cflags, result.libraries)
 					result.libraryHeaders = append([]string(nil), candidate.LibraryHeaders...)
+					result.libraryGraph = candidate.LibraryGraph
 				}
 			}
 		}
@@ -729,10 +737,11 @@ func inspectBuildSourceWithCache(
 		result.cflags,
 	)
 	result.dependencies = dependencies.managed
-	result.cacheDependencies = dependencies.managed
+	result.cacheDependencies = append(append([]string(nil), dependencies.managed...), libraryGraphFiles(analysis.libraryGraph)...)
 	result.cflags = effectiveCFlags
 	result.libraries = libraries
 	result.libraryHeaders = libraryHeaders
+	result.libraryGraph = analysis.libraryGraph
 	result.diagnostics = append([]byte(nil), diagnostics...)
 	result.fatal = fatal
 	var entryError error
@@ -787,6 +796,7 @@ func inspectBuildSourceWithCache(
 			Dependencies:        append([]string(nil), result.cacheDependencies...),
 			ManagedDependencies: append([]string(nil), result.dependencies...),
 			LibraryHeaders:      append([]string(nil), result.libraryHeaders...),
+			LibraryGraph:        result.libraryGraph,
 			Includes:            cacheIncludes(analysis),
 			EntryPoint:          result.entrypoint,
 			Forward:             result.forward,
@@ -803,49 +813,47 @@ func inspectBuildSourceWithCache(
 }
 
 func implementationSourceForHeader(header, workingDirectory string) (string, error) {
+	return companionFile(header, workingDirectory, "implementation", func(name string) bool {
+		matches, _ := matchesSource("build", name)
+		return matches && strings.TrimSuffix(name, filepath.Ext(name)) == strings.TrimSuffix(filepath.Base(header), filepath.Ext(header))
+	}, func(path string) string { return strings.TrimSuffix(path, filepath.Ext(path)) })
+}
+
+func companionFile(header, workingDirectory, kind string, matches func(string) bool, key func(string) string) (string, error) {
 	directory := filepath.Dir(header)
 	entries, err := os.ReadDir(directory)
 	if err != nil {
-		return "", fmt.Errorf("search implementation for header %s: %w", header, err)
+		return "", fmt.Errorf("search %s for header %s: %w", kind, header, err)
 	}
-	stem := strings.TrimSuffix(filepath.Base(header), filepath.Ext(header))
 	headerKey := strings.TrimSuffix(header, filepath.Ext(header))
 	var candidates []string
 	for _, entry := range entries {
-		matches, err := matchesSource("build", entry.Name())
-		if err != nil {
-			return "", err
-		}
-		if !matches || strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())) != stem {
+		if !matches(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
 		info, err := os.Stat(path)
 		if err != nil {
-			return "", fmt.Errorf("inspect implementation source %s: %w", path, err)
+			return "", fmt.Errorf("inspect %s %s: %w", kind, path, err)
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		canonicalPath, err := realAbsolutePath(path, workingDirectory)
+		canonical, err := realAbsolutePath(path, workingDirectory)
 		if err != nil {
-			return "", fmt.Errorf("resolve implementation source %s: %w", path, err)
+			return "", err
 		}
-		if strings.TrimSuffix(canonicalPath, filepath.Ext(canonicalPath)) != headerKey {
+		if key(canonical) != headerKey {
 			continue
 		}
-		relativePath, err := filepath.Rel(workingDirectory, path)
+		relative, err := filepath.Rel(workingDirectory, path)
 		if err != nil {
-			return "", fmt.Errorf("make implementation source relative %s: %w", path, err)
+			return "", err
 		}
-		candidates = append(candidates, filepath.Clean(relativePath))
+		candidates = append(candidates, filepath.Clean(relative))
 	}
 	if len(candidates) > 1 {
-		return "", fmt.Errorf(
-			"multiple sources implement header %s: %s",
-			header,
-			strings.Join(candidates, ", "),
-		)
+		return "", fmt.Errorf("multiple sources implement header %s: %s", header, strings.Join(candidates, ", "))
 	}
 	if len(candidates) == 0 {
 		return "", nil

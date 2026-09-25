@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-const artifactCacheVersion = 4
+const artifactCacheVersion = 5
 
 const (
 	buildCacheSuffix      = ".hard-cache.json"
@@ -54,6 +54,7 @@ type parseCacheRecord struct {
 	Dependencies        []string                   `json:"dependencies"`
 	ManagedDependencies []string                   `json:"managed_dependencies,omitempty"`
 	LibraryHeaders      []string                   `json:"library_headers,omitempty"`
+	LibraryGraph        []libraryNode              `json:"library_graph,omitempty"`
 	Includes            []parseCacheInclude        `json:"includes,omitempty"`
 	EntryPoint          string                     `json:"entry_point,omitempty"`
 	Forward             string                     `json:"forward,omitempty"`
@@ -634,6 +635,7 @@ func parseResultFingerprint(record parseCacheRecord) (string, error) {
 		Dependencies        []string                   `json:"dependencies"`
 		ManagedDependencies []string                   `json:"managed_dependencies,omitempty"`
 		LibraryHeaders      []string                   `json:"library_headers,omitempty"`
+		LibraryGraph        []libraryNode              `json:"library_graph,omitempty"`
 		Includes            []parseCacheInclude        `json:"includes,omitempty"`
 		EntryPoint          string                     `json:"entry_point,omitempty"`
 		Forward             string                     `json:"forward,omitempty"`
@@ -644,6 +646,7 @@ func parseResultFingerprint(record parseCacheRecord) (string, error) {
 		Dependencies:        record.Dependencies,
 		ManagedDependencies: record.ManagedDependencies,
 		LibraryHeaders:      record.LibraryHeaders,
+		LibraryGraph:        record.LibraryGraph,
 		Includes:            record.Includes,
 		EntryPoint:          record.EntryPoint,
 		Forward:             record.Forward,

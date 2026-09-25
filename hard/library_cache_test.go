@@ -32,7 +32,8 @@ func sharedLibraryManager(t *testing.T, configuration configuration, vendor repo
 	t.Helper()
 	project := t.TempDir()
 	filename := writeProjectTestFile(t, project, projectFilename, inheritedTestYAML(t, map[string]repositoryPin{vendor.Source: vendor}))
-	header := writeProjectTestFile(t, project, "vendor.hard.h", "/* hard.recipe.v1\nsource: github.com/demo/vendor\nbuild_system: cmake\nsource_directory: .\nsource_include_directories: [.]\ninclude_directories: [include]\nstatic_libraries: [lib/libvendor.a]\n*/\n#pragma once\n")
+	header := writeProjectTestFile(t, project, "vendor.hard.h", "#pragma once\n")
+	writeProjectTestFile(t, project, "vendor.hard", "version: 1\nsource: github.com/demo/vendor\nbuild_system: cmake\nsource_directory: .\nsource_include_directories: [.]\ninclude_directories: [include]\nstatic_libraries: [lib/libvendor.a]\n")
 	file, err := readProjectFile(filename)
 	if err != nil {
 		t.Fatal(err)
@@ -203,9 +204,10 @@ func TestLibraryPackageEnvironmentAndRecipeIsolation(t *testing.T) {
 	}
 	configuration.env = "host"
 	manager, header = sharedLibraryManager(t, configuration, vendor, false, io.Discard)
-	contents := readTestFile(t, header)
+	descriptor := strings.TrimSuffix(header, ".h")
+	contents := readTestFile(t, descriptor)
 	contents = strings.Replace(contents, "source_directory: .", "source_directory: .\nconfigure_arguments: [-DCMAKE_BUILD_TYPE=Debug]", 1)
-	writeProjectTestFile(t, filepath.Dir(header), filepath.Base(header), contents)
+	writeProjectTestFile(t, filepath.Dir(descriptor), filepath.Base(descriptor), contents)
 	third := prepareSharedLibrary(t, manager, header)
 	if first.key == third.key || first.archives[0] == third.archives[0] {
 		t.Fatal("reused a package with different recipe arguments")

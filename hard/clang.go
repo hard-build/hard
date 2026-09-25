@@ -73,10 +73,12 @@ type clangDiagnostic struct {
 }
 
 type clangAnalysis struct {
-	includes     []clangInclude
-	declarations []clangDeclaration
-	functions    []clangFunction
-	diagnostics  []clangDiagnostic
+	libraryGraph  []libraryNode
+	libraryVisits []libraryVisit
+	includes      []clangInclude
+	declarations  []clangDeclaration
+	functions     []clangFunction
+	diagnostics   []clangDiagnostic
 }
 
 type clangAnalysisOptions struct {
@@ -397,6 +399,7 @@ func sourceAnalysisWithLibraries(
 		return true, clangDependencySet{}, clangAnalysis{}, cflags, nil, nil, nil, pathError
 	}
 	retryReason := "dependencies updated"
+	libraryRetries := 0
 	for {
 		progress.beginAnalysis(absoluteSource, retryReason)
 		retryReason = "dependencies updated"
@@ -411,25 +414,8 @@ func sourceAnalysisWithLibraries(
 		if err := githubResolver.prepareInheritedIncludes(analysis, workingDirectory); err != nil {
 			return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
-		var artifacts []libraryArtifact
-		var libraryHeaders []string
-		if libraryManager != nil {
-			artifacts, libraryHeaders, err = libraryManager.prepareDependencies(dependencies.managed)
-			if err != nil {
-				return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
-			}
-			updatedCFlags := libraryCFlags(baseCFlags, artifacts)
-			if !equalStringSlices(updatedCFlags, cflags) {
-				retryReason = "library includes updated"
-				cflags = updatedCFlags
-				continue
-			}
-		}
-		unresolved := clangUnresolvedIncludes(analysis)
-		if len(unresolved) == 0 {
-			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, nil, nil
-		}
 
+		unresolved := clangUnresolvedIncludes(analysis)
 		newRepository := false
 		managedInclude := false
 		var downloadErrors []error
@@ -456,10 +442,63 @@ func sourceAnalysisWithLibraries(
 			}
 		}
 		if err := errors.Join(downloadErrors...); err != nil {
-			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, clangErrorDiagnostics(analysis), err
+			return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
 		}
 		if newRepository {
 			continue
+		}
+
+		var artifacts []libraryArtifact
+		var libraryHeaders []string
+		if libraryManager != nil {
+			var preprocessingError error
+			if libraryManager.build {
+				for _, path := range dependencies.managed {
+					if isLibraryHeader(path) {
+						libraryHeaders = append(libraryHeaders, path)
+					}
+				}
+				if len(libraryHeaders) > 0 {
+					analysis.libraryVisits, preprocessingError = libraryManager.preprocessLibraryVisits(absoluteSource, cflags, libraryHeaders, unresolved, analysis.includes)
+					if preprocessingError != nil && len(unresolved) == 0 {
+						err = preprocessingError
+					}
+				}
+			}
+			if err == nil {
+				analysis.libraryGraph, libraryHeaders, err = libraryManager.discoverLibraries(analysis, dependencies.managed, cflags)
+			}
+			if err == nil {
+				artifacts, err = libraryManager.prepareGraph(analysis.libraryGraph)
+			}
+			if err != nil {
+				return false, dependencies, analysis, cflags, nil, nil, clangErrorDiagnostics(analysis), err
+			}
+			updatedCFlags := libraryCFlags(baseCFlags, artifacts)
+			if !equalStringSlices(updatedCFlags, cflags) {
+				libraryRetries++
+				if libraryRetries > 32 {
+					return false, dependencies, analysis, cflags, nil, nil, nil, fmt.Errorf("recipe variants did not stabilize for %s after 32 analysis passes", source)
+				}
+				retryReason = "library includes updated"
+				cflags = updatedCFlags
+				continue
+			}
+			// Missing vendor macros can prevent even bootstrap preprocessing.
+			// In that case the keep-going graph supplies provisional packages;
+			// only a successful pass with real headers can finish the analysis.
+			if preprocessingError != nil {
+				return false, dependencies, analysis, cflags, nil, nil, nil, preprocessingError
+			}
+			if !libraryManager.build {
+				unresolved, err = fetchUnresolvedIncludes(analysis, artifacts, workingDirectory)
+				if err != nil {
+					return false, dependencies, analysis, cflags, nil, nil, nil, err
+				}
+			}
+		}
+		if len(unresolved) == 0 {
+			return false, dependencies, analysis, cflags, artifacts, libraryHeaders, nil, nil
 		}
 
 		diagnostics := clangErrorDiagnostics(analysis)

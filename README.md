@@ -244,6 +244,14 @@ hard fetch -j src tests
 
 `fetch` performs dependency analysis but does not compile, link, run CMake,
 create build artifacts, or execute tests. Existing snapshots are reused.
+Public headers in recipe-owned sources may depend on generated configuration;
+missing ordinary includes within those sources are deferred to the package
+build. Missing project headers, wrapper includes and recipe/repository references
+remain errors.
+Recipe wrappers need no fetch-specific includes or prebuilt configuration.
+Dependencies conditional on generated macros can be completed only after the
+package build; declare required fetch dependencies explicitly in `.hard`.
+
 Successful analysis is cached separately from build artifacts. Repeating an
 unchanged invocation reports `Parsing <source> (CACHED)`, including discovered
 library implementations. Source/header changes, analysis flags, `HARD_ENV`,
@@ -314,9 +322,29 @@ links its installed static library:
 #include <recipe/tinyxml2.hard.h>
 ```
 
-A project can also keep its own `*.hard.h` recipe beside its sources. The full
-`hard.recipe.v1` YAML schema, validation rules, package layout, and cache
-behavior are documented in the
+A project can also keep a `name.hard.h` (or `.hh`, `.hpp`, `.h++`) wrapper
+beside a `name.hard` YAML recipe with `version: 1`. The wrapper contains ordinary
+C++ includes and code; embedded recipe comments are no longer supported.
+Dependencies can be active includes of other recipe wrappers or a YAML list:
+
+```yaml
+dependencies:
+  - "zlib.hard"
+  - "recipe/another.hard"
+  - "github.com/owner/repository/library.hard"
+```
+
+These references use quoted-include search paths and the existing GitHub and
+well-known resolver, including recorded revisions. A `.hard` reference loads
+only that descriptor, without an adjacent wrapper. Packages build in dependency
+order; their include directories reach consumers and static archives link in
+dependent-before-dependency order. Only headers and archives are exported.
+The package variant includes the wrapper's own preprocessed code and the recipe
+dependency variants. Different macro expansions can therefore build different
+packages, including repeated includes in one source file.
+
+The full YAML schema, validation rules, package layout, and cache behavior are
+documented in the
 [compiled-library recipe reference](docs/reference.md#compiled-library-recipes).
 
 Compiled libraries are shared between projects under
