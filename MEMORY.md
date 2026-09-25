@@ -4414,6 +4414,41 @@ The final backend also passed fetch --locked --no-cache for all recipes with a
 nonexistent compiler. Host-only verification; no installed runtime update or
 commit was made.
 
+## Download only the selected repository closure (2026-09-25)
+
+The user reported that `hard -v test libpng*` downloaded every repository in the
+recipe project's hard.yaml before parsing the test. `dependencySession.view`
+previously materialized every pin. Pins now constrain revisions while a separate
+requested set activates repositories through include/recipe resolution or an
+explicit --update. Only that set is obtained, checksum-validated and exposed in
+the include view. Unused project records are preserved. Explicit updates still
+obtain and verify their named snapshots even without an active include.
+
+The existing discovery hint in root-source parse records now also serves recorded
+projects, preserving warm parse hits without preloading unrelated pins. Its
+version-2 record stores only the selected closure and separately checks the
+project configuration digest. After recording new pins or an update, publication
+uses the newly written configuration, so the next invocation can reuse the hint.
+Restoration cannot override project pins or explicit updates or supply an
+unrecorded locked dependency. Sources, headers, recipe descriptors and used
+defaults remain content-validated; --no-cache still forces rediscovery.
+
+Regression coverage reproduces the original unwanted HTTP request and exercises
+fetch/build/run/test in normal and locked modes, warm hits, inactive or removed
+includes, YAML recipe dependencies, unchanged project records, snapshot integrity,
+and explicit updates of unreferenced repositories. Low-level fixtures that
+construct a preselected session now request their fixtures explicitly.
+
+Verification: full make check passed in the actual hard workspace (ordinary tests
+40.658s, race tests 50.138s, vet, isolated build, modules, shell/target and diff
+checks). Local documentation links were checked. A fresh temporary backend ran
+`test libpng*` against the real recipe project with an empty temporary HARD_ROOT
+and a loopback snapshot server serving the previously verified upstream trees.
+Exactly two HTTP requests obtained zlib and libpng; no ref resolution or unrelated
+repository request occurred. The PNG test passed, the repeat reused all caches
+and made no HTTP requests, and hard.yaml remained byte-for-byte unchanged.
+No installed runtime update or additional commit was made.
+
 ## Recommendation against __has_include (2026-09-25)
 
 The user requested a documented recommendation to avoid __has_include with hard.

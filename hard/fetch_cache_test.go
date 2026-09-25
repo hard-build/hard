@@ -281,6 +281,9 @@ func testFetchCacheRevalidatesInheritedEdges(t *testing.T, recipes bool) {
 		t.Fatal(err)
 	}
 	defer session.close()
+	if err := session.prepareDiscoveryCache(configuration, parsed, []string{"main.cpp"}); err != nil {
+		t.Fatal(err)
+	}
 	// Model an in-progress resolution with the same selected pins but no root
 	// override for leaf: a parse hit must not conceal the two parent requirements.
 	delete(file.Repositories, leaf.Source)

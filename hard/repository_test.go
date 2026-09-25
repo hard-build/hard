@@ -142,8 +142,8 @@ func TestPinnedProjectFetchBuildUpdateAndLocked(t *testing.T) {
 	if out, diagnostics, err := runProjectTestCommand(configuration, "fetch", "--locked"); err != nil {
 		t.Fatalf("locked download: %v\n%s\n%s", err, out, diagnostics)
 	}
-	if requests.Load()-requestCount != 3 {
-		t.Fatalf("expected only three snapshot downloads, got %d", requests.Load()-requestCount)
+	if requests.Load()-requestCount != 2 {
+		t.Fatalf("expected only two reachable snapshot downloads, got %d", requests.Load()-requestCount)
 	}
 }
 
@@ -279,6 +279,7 @@ func TestParallelProjectsUseDifferentImmutableViews(t *testing.T) {
 				t.Fatal(err)
 			}
 			session.pins["github.com/demo/"+name] = pin
+			session.requested["github.com/demo/"+name] = true
 		}
 		view, err := session.view(configuration, nil)
 		if err != nil {

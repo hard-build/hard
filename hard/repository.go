@@ -32,6 +32,7 @@ type dependencySession struct {
 
 	mutex        sync.Mutex
 	pins         map[string]repositoryPin
+	requested    map[string]bool
 	snapshots    map[string]string
 	selected     map[string]string
 	manifests    map[string]*projectFile
@@ -51,7 +52,7 @@ func newDependencySession(project *projectFile, root string, options projectOpti
 		project: project, provider: provider, root: root, locked: options.locked,
 		record:           project.recorded || options.lock,
 		workingDirectory: filepath.Dir(project.filename),
-		pins:             make(map[string]repositoryPin), snapshots: make(map[string]string),
+		pins:             make(map[string]repositoryPin), requested: make(map[string]bool), snapshots: make(map[string]string),
 		manifests: make(map[string]*projectFile), requirements: make(map[string]map[string]repositoryRequirement),
 		dirty: !project.recorded,
 	}
@@ -88,6 +89,9 @@ func newDependencySession(project *projectFile, root string, options projectOpti
 				resolved.Checksum = pin.Checksum
 			}
 			pin = resolved
+			// Explicit updates are requested even without an active source edge:
+			// their new contents must be obtained and verified before recording.
+			session.requested[name] = true
 			session.dirty = true
 		} else if replaced && (replacement.Source != pin.Source || replacement.Ref != "" && replacement.Ref != pin.Ref) {
 			return nil, fmt.Errorf("replacement conflicts with recorded %s; use fetch --update=%s@ref", name, name)
@@ -142,6 +146,7 @@ func (session *dependencySession) ensure(repository githubRepository, progress *
 	if session.locked && !exists {
 		return fmt.Errorf("--locked: repository %s is not recorded in %s", name, session.project.filename)
 	}
+	session.requested[name] = true
 	if !exists {
 		if required != nil {
 			pin = required.pin
@@ -204,8 +209,10 @@ func (session *dependencySession) view(configuration configuration, progress *pr
 	}
 	session.changed = false
 	session.selected = make(map[string]string)
-	names := make([]string, 0, len(session.pins))
-	for name := range session.pins {
+	// Pins constrain revisions; only active dependencies (or explicit updates)
+	// belong to this invocation's include view and download closure.
+	names := make([]string, 0, len(session.requested))
+	for name := range session.requested {
 		names = append(names, name)
 	}
 	sort.Strings(names)

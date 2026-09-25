@@ -528,6 +528,13 @@ recorded repository and may be repeated. `--locked` requires sufficient records
 and never changes them; it can still download and verify missing pinned
 snapshots. `--no-cache` never refreshes dependency revisions.
 
+Recorded entries constrain versions; they do not request downloads. Each command
+obtains only repositories reached from its selected sources through active
+includes or recipes. For example, testing a local libpng recipe downloads libpng
+and zlib even if `hard.yaml` also records SDL3 and other unused libraries.
+An explicit `fetch --update` obtains and verifies its named repository even
+when the selected sources do not use it. Unused records remain in `hard.yaml`.
+
 When a downloaded repository includes another dependency or supplies its recipe,
 hard reads that repository's root `hard.yaml` and inherits the dependency's exact
 record when the project has not already recorded its own choice, without
@@ -653,8 +660,10 @@ keys retain the project include context for direct compilation; recipe packages
 can be reused across projects with identical package inputs.
 
 Parse records have a stable context path independent of the selected snapshots.
-For an unrecorded project, a successful root-source record also remembers the
-last resolved selection and its source, header and used `@default` digests.
+For both recorded and unrecorded projects, a successful root-source record also
+remembers the last required repository selection and its source, header and
+used `@default` digests. The current project record is validated separately;
+cached selections cannot override pins or explicit updates.
 Snapshots and inherited requirements are still validated before reuse. This
 avoids an initial rediscovery pass on warm builds without creating `hard.yaml`
 or a separate dependency index. Only the last parse result per source/context

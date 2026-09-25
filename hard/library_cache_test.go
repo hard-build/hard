@@ -47,6 +47,7 @@ func sharedLibraryManager(t *testing.T, configuration configuration, vendor repo
 		t.Fatal(err)
 	}
 	t.Cleanup(session.close)
+	session.requested[vendor.Source] = true
 	view, err := session.view(configuration, nil)
 	if err != nil {
 		t.Fatal(err)

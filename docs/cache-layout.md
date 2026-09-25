@@ -134,6 +134,9 @@ wrapper; `@runtime/wine` is initialized only when Wine is used.
   Explicit project updates and `--no-cache` never switch `@default`.
   `fetch --lock` can record a cached default without refreshing it. When only
   its commit is known, that exact commit is also its recorded `ref`.
+- Project records constrain revisions without requesting downloads. Only active
+  include/recipe dependencies and explicit updates enter the invocation's
+  snapshot selection. Unused records are preserved in `hard.yaml`.
 - A project without `repositories` does not acquire or modify a dependency
   record automatically. The `hard.yaml` schema and explicit recording controls
   remain unchanged.
@@ -180,7 +183,7 @@ trees. Old caches are left untouched, and the first invocation after upgrading
 may download and build again. Historical container images keep their historical
 backend and runtime layout; changing cache paths does not republish those images.
 
-Unrecorded commands attach the last successfully resolved dependency selection
+Both recorded and unrecorded commands attach the last required dependency selection
 and input digests to a successful root-source parse record. Its stable path can
 be found before selecting snapshots, under the project/environment lock. The
 record's context includes the hard executable, command, root sources, project
@@ -191,7 +194,9 @@ the existing include-path topology limitations still apply.
 
 This is disposable cache state, not a lockfile or a project choice. Restored
 snapshots are verified and inherited requirements are checked on active include
-edges. Project recording bypasses this hint and retains its normal authority.
+edges. The project configuration is validated, and its pins and explicit updates
+retain authority over the hint. Recording new pins updates the hint's project
+digest for the next invocation.
 Warm unchanged invocations can immediately use validated parse records.
 Cold or invalidated invocations may need multiple analysis passes, but root
 source discovery runs only once. No `hard.yaml` is created implicitly.

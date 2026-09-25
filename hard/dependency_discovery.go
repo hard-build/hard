@@ -23,12 +23,13 @@ type dependencyDiscoveryRecord struct {
 	Version int                      `json:"version"`
 	Key     string                   `json:"key"`
 	Pins    map[string]repositoryPin `json:"repositories"`
+	Project string                   `json:"project"`
 	Inputs  map[string]string        `json:"inputs"`
 	Result  string                   `json:"result"`
 }
 
 func (session *dependencySession) prepareDiscoveryCache(configuration configuration, parsed arguments, sources []string) error {
-	if session == nil || session.record || parsed.command == "format" || len(sources) == 0 {
+	if session == nil || parsed.command == "format" || len(sources) == 0 {
 		return nil
 	}
 	owner, err := localProjectRoot(session.root, configuration.env, session.workingDirectory)
@@ -47,9 +48,8 @@ func (session *dependencySession) prepareDiscoveryCache(configuration configurat
 	}
 	context, err := json.Marshal(struct {
 		Hard, Build, Command, Project string
-		Configuration                 []byte
 		Sources                       []string
-	}{cache.hard, layout.buildKey, parsed.command, session.project.filename, session.project.original, sources})
+	}{cache.hard, layout.buildKey, parsed.command, session.project.filename, sources})
 	if err != nil {
 		return err
 	}
@@ -156,13 +156,20 @@ func (session *dependencySession) restoreDiscoveryCache() {
 			continue
 		}
 		record := parse.Discovery
-		if record.Version != 1 || record.Key != discovery.key ||
+		if record.Version != 2 || record.Key != discovery.key || record.Project != repositoryDigest(session.project.original) ||
 			record.Result != discoveryRecordDigest(*record) || !discoveryInputsMatch(record.Inputs) {
 			continue
 		}
 		valid := true
 		for name, pin := range record.Pins {
 			if validateRepositoryPin(name, pin) != nil {
+				valid = false
+				break
+			}
+			// Project pins and explicit updates are authoritative. A hint must
+			// neither replace them nor authorize an unrecorded locked dependency.
+			current, recorded := session.pins[name]
+			if recorded && current != pin || session.locked && !recorded {
 				valid = false
 				break
 			}
@@ -178,6 +185,7 @@ func (session *dependencySession) restoreDiscoveryCache() {
 		}
 		for name, pin := range record.Pins {
 			session.pins[name] = pin
+			session.requested[name] = true
 		}
 		for path, digest := range record.Inputs {
 			discovery.inputs[path] = digest
@@ -193,7 +201,21 @@ func (session *dependencySession) storeDiscoveryCache() error {
 	if discovery == nil || discovery.disabled || !discoveryInputsMatch(discovery.inputs) {
 		return nil
 	}
-	record := dependencyDiscoveryRecord{Version: 1, Key: discovery.key, Pins: session.pins, Inputs: discovery.inputs}
+	pins := make(map[string]repositoryPin, len(session.selected))
+	for name := range session.selected {
+		pins[name] = session.pins[name]
+	}
+	project := session.project.original
+	if session.record && session.dirty {
+		// commit has just published newly discovered pins or an explicit update.
+		// Validate the hint against that new configuration on the next invocation.
+		var err error
+		project, err = readRegularProjectFile(session.project.filename)
+		if err != nil {
+			return err
+		}
+	}
+	record := dependencyDiscoveryRecord{Version: 2, Key: discovery.key, Pins: pins, Project: repositoryDigest(project), Inputs: discovery.inputs}
 	record.Result = discoveryRecordDigest(record)
 	selection := session.layout.buildKey
 	if discovery.kind == "fetch-parse" {

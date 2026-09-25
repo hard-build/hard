@@ -1549,6 +1549,13 @@ Only active include graphs are discovered, including recipe and vendor-source
 repositories; separate platforms may add different entries. One logical
 repository has one selected revision. There is no semantic-version solver.
 
+Existing project records constrain versions without activating dependencies.
+Only repositories reached by the selected sources' active includes or recipes
+are downloaded, verified and exposed in the include view. Unused records remain
+in `hard.yaml`, including when a previously used dependency becomes inactive.
+Explicit `--update` requests also obtain and verify the named repositories even
+when the current source selection does not use them.
+
 When an active include or recipe requests a dependency from a downloaded
 repository, hard reads `hard.yaml` at the root of that repository's selected
 snapshot. If its `repositories` section records a dependency not yet recorded
@@ -1666,15 +1673,17 @@ Vendor package keys instead cover recipe contents, their source snapshot and
 build tools, allowing compatible cross-project reuse. Removing a replacement
 rule without changing selected contents does not invalidate analysis.
 
-For unrecorded projects, a successful root-source parse record also stores the
-last resolved selection for one command, root-source list and configuration.
+For both recorded and unrecorded projects, a successful root-source parse record
+also stores the last required selection for one command, root-source list and configuration.
 It fingerprints the hard executable, analyzed sources and active non-system
 headers, and used `@default` files. Restoration occurs under the include-view
 lock only when these inputs match; malformed or stale records are ignored.
 Snapshots still require checksum validation, and inherited pins are checked
 through active include edges. This cached selection is not a project pin:
 changing an input starts fresh discovery rather than preserving a now-inactive
-inherited choice. Recording mode does not consult it. `--no-cache` bypasses it,
+inherited choice. The project configuration must match, and restored choices
+must agree with current project pins and explicit updates. Newly written pins
+are reflected in the hint so the next invocation can reuse it. `--no-cache` bypasses it,
 and sources covered by the existing `__has_include` guard prevent its
 publication. The ordinary include-path topology limitations also apply.
 Only the last parse result per source/context is kept, so switching revisions
@@ -1689,8 +1698,8 @@ The reserved `@` prefix separates revision metadata from nested corporate
 repository paths. Project pins and inherited requirements override the default;
 explicit project updates and `--no-cache` do not change it.
 
-Recorded snapshots are hydrated and verified when constructing a view, including
-records inactive for the current platform. Fetch creates only dependency-analysis
+Required snapshots are hydrated and verified when constructing a view;
+unrequested records do not cause downloads or snapshot validation. Fetch creates only dependency-analysis
 records, not build artifacts. Existing unversioned source trees and hashed
 snapshots are neither adopted nor deleted; a first build with this layout may
 download and compile again. No cache garbage collection is performed.
