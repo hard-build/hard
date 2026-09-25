@@ -322,6 +322,14 @@ links its installed static library:
 #include <recipe/tinyxml2.hard.h>
 ```
 
+Avoid `__has_include` in projects built with hard, especially when deciding
+whether a dependency is available. It checks only the current include paths;
+a recorded or cached repository may not yet be exposed there during dependency
+discovery. A negative check can therefore silently disable code without asking
+hard to prepare the dependency. Prefer ordinary `#include` directives, with
+explicitly configured feature macros for optional dependencies. Recipe-to-recipe
+dependencies can also be declared in the `.hard` descriptor.
+
 A project can also keep a `name.hard.h` (or `.hh`, `.hpp`, `.h++`) wrapper
 beside a `name.hard` YAML recipe with `version: 1`. The wrapper contains ordinary
 C++ includes and code; embedded recipe comments are no longer supported.

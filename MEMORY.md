@@ -4413,3 +4413,20 @@ directory and used hard's zlib package. The source snapshot remained unchanged.
 The final backend also passed fetch --locked --no-cache for all recipes with a
 nonexistent compiler. Host-only verification; no installed runtime update or
 commit was made.
+
+## Recommendation against __has_include (2026-09-25)
+
+The user requested a documented recommendation to avoid __has_include with hard.
+README's Dependencies and Recipes section now explains that a recorded or cached
+repository may not yet be exposed in the current include view, so a negative
+probe can silently disable functionality without requesting that dependency.
+Use ordinary includes, explicit feature macros for optional dependencies, or
+.hard dependencies for recipe edges. This is usage guidance; no syntax ban or
+new dependency-discovery behavior was introduced by this documentation change.
+
+The preceding review compared old and new backends with an already cached,
+pinned zlib: __has_include selected zlib before lazy loading, but selected the
+fallback afterward. Ordinary includes and forced -include still worked. A
+separate review finding remains open: explicit updates of unused repositories
+enter the discovery hint and can trigger downloads on a subsequent ordinary
+fetch. This documentation request does not fix that cache issue.
